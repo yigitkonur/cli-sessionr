@@ -68,9 +68,26 @@ function parseWorkspaceYaml(sessionDir: string): WorkspaceMeta | null {
   try {
     const raw = fs.readFileSync(yamlPath, 'utf-8');
     const meta: Record<string, string> = {};
-    for (const line of raw.split('\n')) {
-      const match = line.match(/^(\w+):\s*(.+)$/);
-      if (match) meta[match[1]!] = match[2]!.trim();
+    const lines = raw.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const match = lines[i].match(/^(\w+):\s*(.*)$/);
+      if (!match) continue;
+      const key = match[1]!;
+      const val = match[2]!.trim();
+      // Handle YAML block scalars (|, |-, >-, etc.)
+      if (/^[|>][-+]?$/.test(val)) {
+        const blockLines: string[] = [];
+        for (let j = i + 1; j < lines.length; j++) {
+          if (lines[j].match(/^\s+/)) {
+            blockLines.push(lines[j].replace(/^\s+/, ''));
+          } else {
+            break;
+          }
+        }
+        meta[key] = blockLines.join(' ').trim();
+      } else {
+        meta[key] = val;
+      }
     }
     return meta as unknown as WorkspaceMeta;
   } catch {

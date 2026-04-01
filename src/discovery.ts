@@ -56,11 +56,21 @@ export async function listSessions(
     }
   }
 
-  merged.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  // Dedup by session ID — keep most recently updated entry
+  const seen = new Map<string, SessionListEntry>();
+  for (const entry of merged) {
+    const existing = seen.get(entry.id);
+    if (!existing || entry.updatedAt.getTime() > existing.updatedAt.getTime()) {
+      seen.set(entry.id, entry);
+    }
+  }
+  const deduped = [...seen.values()];
+
+  deduped.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 
   if (limit !== undefined && limit > 0) {
-    return merged.slice(0, limit);
+    return deduped.slice(0, limit);
   }
 
-  return merged;
+  return deduped;
 }

@@ -173,11 +173,16 @@ export function createTtyFormatter(): Formatter {
 
       for (const e of entries) {
         const src = colorSource(e.source);
-        const date = chalk.dim(formatDate(e.updatedAt));
+        const date = chalk.dim(relativeTime(e.updatedAt).padEnd(11));
         const id = chalk.cyan(shortId(e.id));
         const sum = e.summary ? chalk.dim(truncate(e.summary, 50)) : '';
         lines.push(`  ${src}  ${date}  ${id}  ${e.cwd}`);
         if (sum) lines.push(`    ${sum}`);
+      }
+
+      if (entries.length > 0) {
+        lines.push('');
+        lines.push(chalk.dim(`Tip: sessionr read ${shortId(entries[0].id)} to open a session`));
       }
 
       lines.push('');
@@ -209,6 +214,21 @@ function formatDate(d: Date): string {
   const hh = String(d.getHours()).padStart(2, '0');
   const min = String(d.getMinutes()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+}
+
+function relativeTime(d: Date): string {
+  const now = Date.now();
+  const diffMs = now - d.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return 'just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDays = Math.floor(diffHr / 24);
+  if (diffDays === 1) return 'yesterday';
+  if (diffDays < 30) return `${diffDays}d ago`;
+  return formatDate(d);
 }
 
 function formatBytes(bytes: number): string {

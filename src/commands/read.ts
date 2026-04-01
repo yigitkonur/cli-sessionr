@@ -87,21 +87,43 @@ function computeDetailHint(
   for (const name of presetNames) {
     if (name === currentPreset.name) continue;
     const p = getPreset(name);
-    // Estimate tokens at this preset (approximate: use raw message content)
     let est = 0;
     for (const msg of messages) {
-      est += estimateMessageTokens(msg);
-      // Add back hidden content that would become visible
+      est += 4; // role overhead
       for (const block of msg.blocks) {
-        if (block.type === 'tool_result' && !currentPreset.showToolResults && p.showToolResults) {
-          est += Math.ceil(block.content.length / 4);
-        }
-        if (block.type === 'thinking' && !currentPreset.showThinking && p.showThinking) {
-          est += Math.ceil(block.text.length / 4);
+        switch (block.type) {
+          case 'text': {
+            const len = p.maxContentChars === Infinity ? block.text.length : Math.min(block.text.length, p.maxContentChars);
+            est += Math.ceil(len / 4);
+            break;
+          }
+          case 'thinking': {
+            if (p.showThinking) {
+              const len = p.maxThinkingChars === Infinity ? block.text.length : Math.min(block.text.length, p.maxThinkingChars);
+              est += Math.ceil(len / 4);
+            }
+            break;
+          }
+          case 'tool_use': {
+            est += Math.ceil(block.name.length / 4);
+            if (p.showToolArgs) {
+              const raw = JSON.stringify(block.input);
+              const len = p.maxToolInputChars === Infinity ? raw.length : Math.min(raw.length, p.maxToolInputChars);
+              est += Math.ceil(len / 4);
+            }
+            break;
+          }
+          case 'tool_result': {
+            if (p.showToolResults) {
+              const len = p.maxToolResultChars === Infinity ? block.content.length : Math.min(block.content.length, p.maxToolResultChars);
+              est += Math.ceil(len / 4);
+            }
+            break;
+          }
         }
       }
     }
-    const roundedEst = Math.round(est / 100) * 100;
+    const roundedEst = Math.round(est / 100) * 100 || 100;
     upgradeOptions.push({
       preset: name,
       estimated_tokens: roundedEst,
