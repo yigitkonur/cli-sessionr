@@ -118,13 +118,36 @@ export function createPlainFormatter(): Formatter {
         }
       }
 
-      // Resume hint
-      if (meta?.next_action) {
+      // Detail hint (upsell)
+      if (meta?.detail_hint) {
+        const h = meta.detail_hint;
+        const parts: string[] = [];
+        if (h.hidden_tool_calls > 0) parts.push(`${h.hidden_tool_calls} tool calls hidden`);
+        if (h.truncated_results > 0) parts.push(`${h.truncated_results} tool results truncated`);
+        if (h.thinking_hidden) parts.push('thinking blocks hidden');
+        if (parts.length > 0 && h.upgrade_options.length > 0) {
+          const opts = h.upgrade_options.map((o) => `--preset ${o.preset} (~${(o.estimated_tokens / 1000).toFixed(0)}K tokens)`).join(' or ');
+          lines.push('');
+          lines.push(`[${parts.join(', ')}. For more detail: ${opts}]`);
+        }
+      }
+
+      // Cursor navigation
+      if (meta?.cursor) {
         lines.push('');
         lines.push('---');
-        lines.push(`${meta.next_action.description}:`);
-        lines.push(`  Interactive:      ${meta.next_action.interactive}`);
-        lines.push(`  Non-interactive:  ${meta.next_action.non_interactive}`);
+        if (meta.page) {
+          lines.push(`Page ${meta.page.current} of ${meta.page.total}`);
+        }
+        if (meta.cursor.prev) lines.push(`Prev: ${meta.cursor.prev}`);
+        if (meta.cursor.next) lines.push(`Next: ${meta.cursor.next}`);
+        if (meta.cursor.first && meta.cursor.prev) lines.push(`First: ${meta.cursor.first}`);
+      }
+
+      // Resume hint
+      if (meta?.next_action) {
+        if (!meta.cursor) { lines.push(''); lines.push('---'); }
+        lines.push(`Resume: ${meta.next_action.resume}`);
       }
 
       lines.push('');

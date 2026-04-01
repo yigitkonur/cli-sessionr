@@ -21,8 +21,8 @@ const program = new Command();
 
 program
   .name('sessionr')
-  .description('read, send, and orchestrate AI coding sessions')
-  .version('2.2.0')
+  .description('sessionr v2.3.0 — read, send, and orchestrate AI coding sessions')
+  .version('2.3.0')
   .option('--output <format>', 'Output format: json, jsonl, table, text')
   .option('--api-version <n>', 'API version for structured output', '1')
   .option('--timing', 'Include timing_ms in JSON responses');
@@ -46,8 +46,10 @@ program
   .argument('[source]', `Filter by source (${SOURCES})`)
   .description('List available sessions')
   .option('-n, --limit <n>', 'Max sessions to list', '20')
+  .option('--offset <n>', 'Skip first N sessions (for pagination)', '0')
+  .option('-q, --search <query>', 'Search sessions by content')
   .option('--json', '[deprecated] Use --output json')
-  .action(async (source: string | undefined, opts: { limit?: string; json?: boolean }) => {
+  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
     await listCommand(source, {
@@ -63,12 +65,13 @@ program
   .argument('[to]', 'End message index (1-based)')
   .description('Read session messages with token-aware pagination')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
-  .option('-p, --preset <name>', `Verbosity preset (${PRESET_NAMES.join(', ')})`, 'standard')
+  .option('-p, --preset <name>', `Verbosity preset (${PRESET_NAMES.join(', ')}) [default: verbose for agents, standard for TTY]`)
   .option('-d, --detail <level>', `Detail level (${DETAIL_LEVELS.join(', ')})`)
   .option('--tokens <n>', 'Token budget (env: SESSIONREADER_MAX_TOKENS)')
   .option('--anchor <anchor>', 'Slice anchor: head, tail, search', 'tail')
   .option('--search <query>', 'Search query (sets anchor=search)')
   .option('--role <roles>', 'Filter by role (comma-separated: user, assistant, system, tool_use, tool_result)')
+  .option('--page <n>', 'Page number (1-based, from head)')
   .option('--before <cursor>', 'Cursor: show messages before this index')
   .option('--after <cursor>', 'Cursor: show messages after this index')
   .option('--if-changed <etag>', 'Only return data if changed since ETag')
@@ -92,6 +95,7 @@ program
         anchor: opts.anchor as 'head' | 'tail' | 'search' | undefined,
         search: opts.search as string | undefined,
         role: opts.role as string | undefined,
+        page: opts.page ? parseInt(opts.page as string, 10) : undefined,
         before: opts.before ? parseInt(opts.before as string, 10) : undefined,
         after: opts.after ? parseInt(opts.after as string, 10) : undefined,
         ifChanged: opts.ifChanged as string | undefined,
@@ -117,7 +121,7 @@ program
   );
 
 program
-  .command('stats')
+  .command('stats', { hidden: true })
   .argument('<session-id>', 'Session ID or prefix')
   .description('Show full session statistics')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
@@ -132,7 +136,7 @@ program
   });
 
 program
-  .command('info')
+  .command('info', { hidden: true })
   .argument('<session-id>', 'Session ID or prefix')
   .description('Show lightweight session metadata (cheaper than stats)')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
@@ -147,7 +151,7 @@ program
   });
 
 program
-  .command('search')
+  .command('search', { hidden: true })
   .description('Search across sessions by content')
   .requiredOption('-q, --query <text>', 'Search query')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
@@ -164,7 +168,7 @@ program
   });
 
 program
-  .command('diff')
+  .command('diff', { hidden: true })
   .argument('<id1>', 'First session ID or prefix')
   .argument('<id2>', 'Second session ID or prefix')
   .description('Compare two sessions (structural diff)')
@@ -180,7 +184,7 @@ program
   });
 
 program
-  .command('tag')
+  .command('tag', { hidden: true })
   .argument('<session-id>', 'Session ID or prefix')
   .description('Add or remove session tags (idempotent)')
   .option('--add <tag>', 'Tag to add')
@@ -195,7 +199,7 @@ program
   });
 
 program
-  .command('prune')
+  .command('prune', { hidden: true })
   .description('Delete old sessions')
   .requiredOption('--older-than <duration>', 'Duration threshold (e.g., 7d, 24h)')
   .option('--dry-run', 'Preview what would be deleted')
@@ -213,7 +217,8 @@ program
   .command('send')
   .argument('[session-id]', 'Session ID to resume (omit with --new)')
   .description('Send a message to an AI session (sync by default, --async for background)')
-  .requiredOption('-m, --message <text>', 'Message to send')
+  .option('-m, --message <text>', 'Message to send (inline)')
+  .option('-f, --file <path>', 'Read message from file (e.g. prompt.md)')
   .option('-s, --source <source>', `Tool source — required with --new (${SOURCES})`)
   .option('--new', 'Create a new session instead of resuming')
   .option('--async', 'Run in background and return job ID')
@@ -224,7 +229,8 @@ program
     async (
       sessionId: string | undefined,
       opts: {
-        message: string;
+        message?: string;
+        file?: string;
         source?: string;
         new?: boolean;
         async?: boolean;
@@ -233,9 +239,32 @@ program
         preset?: string;
       },
     ) => {
+      let message: string;
+      if (opts.file && opts.message) {
+        process.stderr.write('Error: --message and --file are mutually exclusive\n');
+        process.exitCode = 2;
+        return;
+      }
+      if (opts.file) {
+        const { readFileSync } = await import('node:fs');
+        try {
+          message = readFileSync(opts.file, 'utf-8').trim();
+        } catch (err) {
+          process.stderr.write(`Error: Cannot read file "${opts.file}": ${(err as Error).message}\n`);
+          process.exitCode = 2;
+          return;
+        }
+      } else if (opts.message) {
+        message = opts.message;
+      } else {
+        process.stderr.write('Error: Either --message or --file is required\n');
+        process.exitCode = 2;
+        return;
+      }
+
       const parentOpts = program.opts();
       const sendOpts: SendOptions = {
-        message: opts.message,
+        message,
         source: opts.source,
         new: opts.new,
         async: opts.async,
@@ -249,7 +278,7 @@ program
   );
 
 program
-  .command('context')
+  .command('context', { hidden: true })
   .argument('<session-id>', 'Session ID or prefix')
   .description('Export session context for agent handoff')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
@@ -281,7 +310,7 @@ program
 // ── Job commands ───────────────────────────────────────────────────────────
 
 program
-  .command('jobs')
+  .command('jobs', { hidden: true })
   .description('List all async jobs')
   .option('--status <status>', 'Filter by status (running, completed, failed)')
   .action(async (opts: { status?: string }) => {
@@ -293,7 +322,7 @@ program
   });
 
 program
-  .command('job')
+  .command('job', { hidden: true })
   .argument('<job-id>', 'Job ID (from sessionr send --async)')
   .description('Check async job status (lazy PID finalization)')
   .action(async (jobId: string) => {
@@ -304,7 +333,7 @@ program
   });
 
 program
-  .command('wait')
+  .command('wait', { hidden: true })
   .argument('<job-id>', 'Job ID to wait for')
   .description('Block until an async job completes')
   .option('--timeout <seconds>', 'Timeout in seconds', '300')
@@ -319,7 +348,7 @@ program
   });
 
 program
-  .command('cancel')
+  .command('cancel', { hidden: true })
   .argument('<job-id>', 'Job ID to cancel')
   .description('Cancel a running async job (SIGTERM)')
   .action(async (jobId: string) => {
@@ -357,28 +386,40 @@ program.helpInformation = function () {
 };
 
 function buildHelpSchema(cmd: Command): Record<string, unknown> {
+  const PRIMARY = new Set(['list', 'read', 'send']);
+  const mapCmd = (c: Command) => ({
+    name: c.name(),
+    description: c.description(),
+    arguments: (c.registeredArguments ?? []).map((a) => ({
+      name: a.name(),
+      required: a.required,
+      description: a.description,
+    })),
+    options: c.options.map((o) => ({
+      flags: o.flags,
+      description: o.description,
+      default: o.defaultValue,
+    })),
+  });
+
+  const allCmds = cmd.commands.filter((c) => c.name() !== 'session');
+  const primary = allCmds.filter((c) => PRIMARY.has(c.name())).map(mapCmd);
+  const all = allCmds.filter((c) => !(c as unknown as Record<string, boolean>)._hidden || !PRIMARY.has(c.name())).map(mapCmd);
+
   return {
     api_version: 1,
+    version: '2.3.0',
     name: cmd.name(),
     description: cmd.description(),
     sources: SOURCES_LIST,
-    commands: cmd.commands
-      .filter((c) => !(c as unknown as Record<string, boolean>)._hidden)
-      .map((c) => ({
-        name: c.name(),
-        description: c.description(),
-        arguments: (c.registeredArguments ?? []).map((a) => ({
-          name: a.name(),
-          required: a.required,
-          description: a.description,
-        })),
-        options: c.options.map((o) => ({
-          flags: o.flags,
-          description: o.description,
-          default: o.defaultValue,
-        })),
-        subcommands: c.commands.length > 0 ? buildHelpSchema(c).commands : undefined,
-      })),
+    workflow: [
+      '1. sessionr list — discover sessions',
+      '2. sessionr read <id> — read last page (cursor-paginated)',
+      '3. Use cursor.prev / cursor.next to page through',
+      '4. sessionr send <id> -f prompt.md — resume session',
+    ],
+    primary_commands: primary,
+    all_commands: all,
     exit_codes: { 0: 'ok', 1: 'error', 2: 'bad usage', 3: 'not found', 42: 'no changes (etag)' },
   };
 }

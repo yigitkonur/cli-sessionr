@@ -80,11 +80,22 @@ export const DETAIL_LEVELS: DetailLevel[] = ['full', 'condensed', 'skeleton', 'm
 
 // ── Environment Variable Defaults ──────────────────────────────────────────
 
+const AGENT_DEFAULT_TOKEN_BUDGET = 24_000;
+
 export function getDefaultTokenBudget(): number | undefined {
   const env = process.env.SESSIONREADER_MAX_TOKENS;
-  if (!env) return undefined;
-  const n = parseInt(env, 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+  if (env) {
+    const n = parseInt(env, 10);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  }
+  // Non-TTY (agent) callers get a 24K default to prevent unbounded output
+  if (!process.stdout.isTTY) return AGENT_DEFAULT_TOKEN_BUDGET;
+  return undefined;
+}
+
+export function getDefaultPresetName(isTTY: boolean): PresetName {
+  // Agents get verbose by default (more context); TTY humans get standard
+  return isTTY ? 'standard' : 'verbose';
 }
 
 export function getDefaultOutputFormat(): OutputFormat | undefined {

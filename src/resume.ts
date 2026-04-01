@@ -1,127 +1,103 @@
 import type { SessionSource } from './types.js';
 
 export interface ResumeHint {
-  interactive: string;
-  nonInteractive: string;
-  description: string;
+  resume: string;
+  resume_async: string;
+  direct: string | null;
   verified: boolean;
+  tip: string;
 }
 
-// Verified: resume syntax confirmed from actual --help output on this machine.
-// Unverified: best-effort from GitHub source / official docs, not tested locally.
+interface ToolDirect {
+  cmd: (id: string) => string;
+  verified: boolean;
+  tip?: string;
+}
 
-const RESUME_TEMPLATES: Record<SessionSource, (id: string) => ResumeHint> = {
-  // VERIFIED: claude --help shows -r/--resume [value], -p for print mode
-  claude: (id) => ({
-    interactive: `claude -r ${id}`,
-    nonInteractive: `claude -p -r ${id} "your follow-up prompt"`,
-    description: 'Continue this Claude Code session',
+const TOOL_DIRECTS: Record<SessionSource, ToolDirect | null> = {
+  claude: {
+    cmd: (id) => `claude -r ${id} -p "$(cat prompt.md)"`,
     verified: true,
-  }),
-
-  // VERIFIED: codex resume --help, codex exec resume --help
-  codex: (id) => ({
-    interactive: `codex resume ${id}`,
-    nonInteractive: `codex exec resume ${id} "your follow-up prompt"`,
-    description: 'Continue this Codex session',
+  },
+  codex: {
+    cmd: (id) => `codex exec resume ${id} "$(cat prompt.md)"`,
     verified: true,
-  }),
-
-  // VERIFIED: gemini --help shows -r/--resume <string>, -p for headless
-  // Note: gemini uses session index or "latest", not UUID. Passing the UUID
-  // from sessionreader may not work directly — user may need --list-sessions first.
-  gemini: (id) => ({
-    interactive: `gemini -r "${id}"`,
-    nonInteractive: `gemini -p "your follow-up prompt" -r "${id}"`,
-    description: 'Continue this Gemini CLI session (may need session index from --list-sessions)',
+  },
+  gemini: {
+    cmd: (id) => `gemini -p "$(cat prompt.md)" -r "${id}"`,
     verified: true,
-  }),
-
-  // VERIFIED: binary is `agent` (symlink to cursor-agent). Has -p print mode.
-  'cursor-agent': (id) => ({
-    interactive: `agent --resume ${id}`,
-    nonInteractive: `agent -p --resume ${id} "your follow-up prompt"`,
-    description: 'Continue this Cursor Agent session',
+    tip: 'Gemini may need session index instead of UUID — run gemini --list-sessions',
+  },
+  'cursor-agent': {
+    cmd: (id) => `agent -p --resume ${id} "$(cat prompt.md)"`,
     verified: true,
-  }),
-
-  // VERIFIED: copilot --help shows --resume[=sessionId], --continue, -p for print
-  copilot: (id) => ({
-    interactive: `copilot --resume=${id}`,
-    nonInteractive: `copilot -p "your follow-up prompt" --resume=${id}`,
-    description: 'Continue this Copilot session',
+  },
+  copilot: {
+    cmd: (id) => `copilot -p "$(cat prompt.md)" --resume=${id}`,
     verified: true,
-  }),
-
-  // VERIFIED: opencode --help shows -s/--session <string>, -c/--continue
-  // Also has headless mode via `opencode run`. Project archived, now Crush.
-  opencode: (id) => ({
-    interactive: `opencode -s ${id}`,
-    nonInteractive: `opencode run -s ${id} "your follow-up prompt"`,
-    description: 'Continue this OpenCode session (project archived, now Crush)',
+  },
+  opencode: {
+    cmd: (id) => `opencode run -s ${id} "$(cat prompt.md)"`,
     verified: true,
-  }),
-
-  // UNVERIFIED: from commandcode.ai/docs/reference/cli
-  // Binary is `cmd`. --resume accepts session ID or opens picker without one.
-  commandcode: (id) => ({
-    interactive: `cmd --resume ${id}`,
-    nonInteractive: `cmd -p "your follow-up prompt" --resume ${id}`,
-    description: 'Continue this CommandCode session',
+  },
+  commandcode: {
+    cmd: (id) => `cmd -p "$(cat prompt.md)" --resume ${id}`,
     verified: false,
-  }),
-
-  // UNVERIFIED: from github.com/block/goose crates/goose-cli/src/cli.rs
-  // Supports --session-id <id> or -n <name> with --resume flag.
-  goose: (id) => ({
-    interactive: `goose session --resume --session-id ${id}`,
-    nonInteractive: `goose run --resume --session-id ${id} -t "your follow-up prompt"`,
-    description: 'Continue this Goose session',
+  },
+  goose: {
+    cmd: (id) => `goose run --resume --session-id ${id} -t "$(cat prompt.md)"`,
     verified: false,
-  }),
-
-  // UNVERIFIED: from kiro.dev/docs/cli/reference/cli-commands/
-  // --resume resumes most recent session in current dir. Cannot target by ID.
-  // --resume-picker opens interactive selection.
-  kiro: (_id) => ({
-    interactive: `kiro-cli chat --resume-picker`,
-    nonInteractive: `kiro-cli chat --no-interactive --resume`,
-    description: 'Continue this Kiro session (--resume = most recent in cwd, --resume-picker to choose)',
+  },
+  kiro: {
+    cmd: () => `kiro-cli chat --no-interactive --resume`,
     verified: false,
-  }),
-
-  // UNVERIFIED: Zed AI threads are GUI-only (Agent Panel).
-  // No CLI resume command exists. The `zed` binary only opens files/projects.
-  zed: (_id) => ({
-    interactive: `# No CLI resume — open Zed app > Agent Panel > select thread`,
-    nonInteractive: `# No CLI resume — Zed AI threads are GUI-only`,
-    description: 'Continue this Zed session (GUI only, no CLI resume)',
-    verified: false,
-  }),
+    tip: 'Kiro resumes most recent session in cwd (cannot target by ID)',
+  },
+  zed: null,
 };
 
 export function getResumeHint(source: SessionSource, sessionId: string): ResumeHint {
-  const template = RESUME_TEMPLATES[source];
-  if (!template) {
+  const base = `sessionr send ${sessionId} -f prompt.md --source ${source}`;
+  const tool = TOOL_DIRECTS[source];
+
+  const defaultTip = 'Write your prompt to prompt.md, then run resume. ' +
+    'Async returns a job ID — poll: sessionr job <id> | wait: sessionr wait <id>';
+
+  if (!tool) {
     return {
-      interactive: `# No known resume command for ${source}`,
-      nonInteractive: `# No known resume command for ${source}`,
-      description: `Continue this ${source} session`,
+      resume: base,
+      resume_async: `${base} --async`,
+      direct: null,
       verified: false,
+      tip: `${source} is GUI-only — use sessionr send instead. ${defaultTip}`,
     };
   }
-  return template(sessionId);
+
+  const tip = tool.tip
+    ? `${tool.tip}. ${defaultTip}`
+    : defaultTip;
+
+  return {
+    resume: base,
+    resume_async: `${base} --async`,
+    direct: tool.cmd(sessionId),
+    verified: tool.verified,
+    tip,
+  };
 }
 
 export function formatResumeHintPlain(source: SessionSource, sessionId: string): string {
   const hint = getResumeHint(source, sessionId);
   const lines: string[] = [];
   lines.push('---');
-  lines.push(`Continue this session:`);
-  lines.push(`  Interactive:      ${hint.interactive}`);
-  lines.push(`  Non-interactive:  ${hint.nonInteractive}`);
+  lines.push(`Resume: ${hint.resume}`);
+  lines.push(`Async:  ${hint.resume_async}`);
+  if (hint.direct) {
+    lines.push(`Direct: ${hint.direct}`);
+  }
+  lines.push(`Tip:    ${hint.tip}`);
   if (!hint.verified) {
-    lines.push(`  [!] Not verified locally — please confirm with the tool's --help`);
+    lines.push('[!] Direct command not verified locally — confirm with tool --help');
   }
   return lines.join('\n');
 }

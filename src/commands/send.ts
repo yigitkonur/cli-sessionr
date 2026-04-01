@@ -79,14 +79,14 @@ function resolveSource(
     throw new SessionReaderError('--source is required when creating a new session', {
       code: 'MISSING_SOURCE',
       exitCode: EXIT.USAGE,
-      suggestion: 'sessionr send --new --source claude --message "..."',
+      suggestion: 'sessionr send --new --source claude -f prompt.md',
     });
   }
   if (!sessionId) {
     throw new SessionReaderError('Either <session-id> or --new --source is required', {
       code: 'MISSING_SESSION',
       exitCode: EXIT.USAGE,
-      suggestion: 'sessionr send <session-id> --message "..." OR --new --source claude',
+      suggestion: 'sessionr send <session-id> -f prompt.md OR --new --source claude -f prompt.md',
     });
   }
   // Source will be auto-detected from session metadata in runSync/runAsync

@@ -126,6 +126,35 @@ export type OutputFormat = 'json' | 'jsonl' | 'table' | 'text';
 
 export type DetailLevel = 'full' | 'condensed' | 'skeleton' | 'meta';
 
+// ── Session Summary (embedded in read response) ────────────────────────────
+
+export interface SessionSummary {
+  id: string;
+  source: SessionSource;
+  model?: string;
+  cwd: string;
+  git_branch?: string;
+  total_messages: number;
+  total_tokens_estimate: number;
+  pages_estimate: number;
+  duration?: string;
+  by_role: {
+    user: number;
+    assistant: number;
+    system: number;
+    tool_use: number;
+    tool_result: number;
+  };
+}
+
+// ── Cursor Commands (copy-paste ready) ─────────────────────────────────────
+
+export interface CursorCommands {
+  next: string | null;
+  prev: string | null;
+  first: string | null;
+}
+
 // ── Slice Metadata (pagination envelope) ───────────────────────────────────
 
 export interface SliceMeta {
@@ -135,17 +164,31 @@ export interface SliceMeta {
   total_tokens_estimate: number;
   returned_tokens_estimate: number;
   token_budget: number | null;
-  anchor: 'head' | 'tail' | 'search' | null;
+  anchor: 'head' | 'tail' | 'search' | 'page' | null;
   range: { from: number; to: number };
   has_more_before: boolean;
   has_more_after: boolean;
   cursor_before: number | null;
   cursor_after: number | null;
+  cursor: CursorCommands;
+  page?: { current: number; total: number };
   next_action?: {
-    description: string;
-    interactive: string;
-    non_interactive: string;
+    resume: string;
+    resume_async: string;
+    direct: string | null;
     verified: boolean;
+    tip: string;
+  };
+  detail_hint?: {
+    current_preset: string;
+    hidden_tool_calls: number;
+    truncated_results: number;
+    thinking_hidden: boolean;
+    upgrade_options: Array<{
+      preset: string;
+      estimated_tokens: number;
+      command: string;
+    }>;
   };
 }
 
@@ -173,6 +216,7 @@ export interface ReadOptions {
   before?: number;
   after?: number;
   ifChanged?: string;
+  page?: number;
 }
 
 // ── Job Types (Write Path) ─────────────────────────────────────────────────
