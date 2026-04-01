@@ -62,23 +62,18 @@ export function createPlainFormatter(): Formatter {
       if (meta?.detail_hint) {
         const h = meta.detail_hint;
         const parts: string[] = [];
-        if (h.hidden_tool_calls > 0) parts.push(`${h.hidden_tool_calls} tool calls hidden`);
-        if (h.truncated_results > 0) parts.push(`${h.truncated_results} tool results truncated`);
-        if (h.thinking_hidden) parts.push('thinking blocks hidden');
+        if (h.truncated_results > 0) parts.push(`${h.truncated_results} tool results`);
+        if (h.hidden_tool_calls > 0) parts.push(`${h.hidden_tool_calls} tool call args`);
+        if (h.thinking_hidden) parts.push('thinking blocks');
         if (parts.length > 0) {
+          const sid = shortId(session.id);
           lines.push('');
-          lines.push(`Note: ${parts.join(', ')} by the "${h.current_preset}" preset.`);
-          lines.push('Available presets:');
-          lines.push('  minimal  — 80 char content, no tool args/results, no thinking');
-          lines.push('  standard — 500 char content, 80 char tool results, no thinking');
-          lines.push('  verbose  — 2K char content, 500 char tool results, 200 char thinking');
-          lines.push('  full     — everything, no truncation');
-          if (h.upgrade_options.length > 0) {
-            lines.push('Try:');
-            for (const o of h.upgrade_options) {
-              lines.push(`  ${o.command}`);
-            }
-          }
+          lines.push(`${parts.join(', ')} truncated. Presets control how much detail is shown:`);
+          lines.push(`  minimal  — headlines only    sessionr read ${sid} -p minimal`);
+          lines.push(`  standard — short summaries   sessionr read ${sid} -p standard`);
+          lines.push(`  verbose  — expanded detail   sessionr read ${sid} -p verbose`);
+          lines.push(`  full     — complete output   sessionr read ${sid} -p full`);
+          lines.push(`Currently using "${h.current_preset}".`);
         }
       }
 
