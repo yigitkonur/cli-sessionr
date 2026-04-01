@@ -1,0 +1,17 @@
+{"timestamp":"2026-01-15T10:00:00.000Z","type":"session_meta","payload":{"id":"test-codex-uuid-1234","timestamp":"2026-01-15T10:00:00.000Z","cwd":"/home/user/project","originator":"codex_cli_rs","cli_version":"0.116.0","source":"cli","git":{"branch":"main","repository_url":"https://github.com/user/project.git"}}}
+{"timestamp":"2026-01-15T10:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
+{"timestamp":"2026-01-15T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix the login bug in auth.ts"}]}}
+{"timestamp":"2026-01-15T10:00:01.500Z","type":"event_msg","payload":{"type":"user_message","message":"Fix the login bug in auth.ts"}}
+{"timestamp":"2026-01-15T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll fix the login bug. Let me read the file first."}]}}
+{"timestamp":"2026-01-15T10:00:02.500Z","type":"event_msg","payload":{"type":"assistant_message","message":"I'll fix the login bug. Let me read the file first."}}
+{"timestamp":"2026-01-15T10:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-001","arguments":"{\"cmd\":\"cat src/auth.ts\"}"}}
+{"timestamp":"2026-01-15T10:00:04.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-001","output":"export function login(user: string, pass: string) {\n  if (user === 'admin') return true;\n  return false;\n}"}}
+{"timestamp":"2026-01-15T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I can see the issue. The login function doesn't validate the password. Let me fix it."}]}}
+{"timestamp":"2026-01-15T10:00:06.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"call-002","input":"*** Update File: src/auth.ts\n@@ -1,4 +1,5 @@\n export function login(user: string, pass: string) {\n-  if (user === 'admin') return true;\n+  if (user === 'admin' && pass === 'secret') return true;\n   return false;\n }"}}
+{"timestamp":"2026-01-15T10:00:07.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-002","output":"Patch applied successfully"}}
+{"timestamp":"2026-01-15T10:00:08.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Fixed. The login function now validates both username and password."}]}}
+{"timestamp":"2026-01-15T10:00:09.000Z","type":"event_msg","payload":{"type":"token_count","input_tokens":1500,"output_tokens":350,"info":{"last_token_usage":{"input_tokens":1500,"output_tokens":350,"cached_input_tokens":0}}}}
+{"timestamp":"2026-01-15T10:00:10.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Now run the tests"}]}}
+{"timestamp":"2026-01-15T10:00:11.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-003","arguments":"{\"cmd\":\"npm test\"}"}}
+{"timestamp":"2026-01-15T10:00:15.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-003","output":"Error: Test failed\n  login should reject invalid passwords"}}
+{"timestamp":"2026-01-15T10:00:16.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Tests are failing. Let me fix the test expectations."}]}}

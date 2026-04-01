@@ -1,0 +1,72 @@
+{
+  "name": "sessionr",
+  "version": "2.0.0",
+  "description": "read, search, paginate, resume, and orchestrate AI coding sessions from 10 tools. npx sessionr — zero install, zero config.",
+  "type": "module",
+  "bin": {
+    "sessionr": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yigitkonur/cli-sessionr.git"
+  },
+  "homepage": "https://github.com/yigitkonur/cli-sessionr#readme",
+  "bugs": {
+    "url": "https://github.com/yigitkonur/cli-sessionr/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "session",
+    "reader",
+    "orchestrator",
+    "codex",
+    "claude",
+    "gemini",
+    "copilot",
+    "cursor",
+    "goose",
+    "opencode",
+    "kiro",
+    "zed",
+    "cli",
+    "mcp",
+    "multi-agent",
+    "npx"
+  ],
+  "author": "Yigit Konur",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "commander": "^14.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
