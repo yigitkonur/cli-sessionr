@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import chalk from 'chalk';
 import type {
   Formatter,
@@ -12,6 +13,11 @@ import type {
 import { truncate } from '../parsers/common.js';
 import { getAdapter } from '../parsers/registry.js';
 
+function shortenPath(p: string): string {
+  const home = homedir();
+  return p.startsWith(home) ? '~' + p.slice(home.length) : p;
+}
+
 export function createTtyFormatter(): Formatter {
   return {
     stats(session: NormalizedSession): string {
@@ -23,7 +29,7 @@ export function createTtyFormatter(): Formatter {
 
       lines.push(`${chalk.cyan('Source')}      ${colorSource(source)}`);
       if (m.model) lines.push(`${chalk.cyan('Model')}       ${m.model}`);
-      lines.push(`${chalk.cyan('CWD')}         ${m.cwd}`);
+      lines.push(`${chalk.cyan('CWD')}         ${shortenPath(m.cwd)}`);
       if (m.gitBranch) lines.push(`${chalk.cyan('Branch')}      ${m.gitBranch}`);
       if (m.gitRepo) lines.push(`${chalk.cyan('Repo')}        ${m.gitRepo}`);
       lines.push(`${chalk.cyan('Created')}     ${formatDate(m.createdAt)}`);
@@ -92,7 +98,7 @@ export function createTtyFormatter(): Formatter {
         lines.push('');
         lines.push(chalk.bold('Files Modified'));
         for (const f of s.filesModified) {
-          lines.push(`  ${f}`);
+          lines.push(`  ${shortenPath(f)}`);
         }
       }
 
@@ -109,11 +115,22 @@ export function createTtyFormatter(): Formatter {
       meta?: SliceMeta,
     ): string {
       const lines: string[] = [];
-      lines.push(
-        chalk.bold(
-          `Session ${shortId(session.id)} | Messages ${from}-${to} of ${session.stats.totalMessages}`,
-        ),
-      );
+
+      // Info bar
+      const md = session.metadata;
+      const st = session.stats;
+      const infoParts = [chalk.bold(shortId(session.id)), colorSource(session.source)];
+      if (md.model) infoParts.push(md.model);
+      infoParts.push(shortenPath(md.cwd));
+      lines.push(infoParts.join(chalk.dim(' | ')));
+      const line2Parts: string[] = [];
+      if (md.gitBranch) line2Parts.push(md.gitBranch);
+      line2Parts.push(`${st.totalMessages} msgs`);
+      if (st.durationMs != null) line2Parts.push(formatDuration(st.durationMs));
+      if (meta?.page) line2Parts.push(`Page ${meta.page.current} of ${meta.page.total}`);
+      else line2Parts.push(`Showing ${from}-${to}`);
+      lines.push(chalk.dim(line2Parts.join(' | ')));
+      lines.push(chalk.dim('\u2500'.repeat(60)));
 
       for (const msg of messages) {
         lines.push('');

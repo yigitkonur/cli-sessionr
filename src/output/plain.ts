@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import type {
   Formatter,
   NormalizedSession,
@@ -9,6 +10,11 @@ import type {
 } from '../types.js';
 import { truncate } from '../parsers/common.js';
 import { getAdapter } from '../parsers/registry.js';
+
+function shortenPath(p: string): string {
+  const home = homedir();
+  return p.startsWith(home) ? '~' + p.slice(home.length) : p;
+}
 
 export function createPlainFormatter(): Formatter {
   return {
@@ -22,7 +28,7 @@ export function createPlainFormatter(): Formatter {
       lines.push('|---|---|');
       lines.push(`| Source | ${sourceLabel(source)} |`);
       if (m.model) lines.push(`| Model | ${m.model} |`);
-      lines.push(`| CWD | ${m.cwd} |`);
+      lines.push(`| CWD | ${shortenPath(m.cwd)} |`);
       if (m.gitBranch) lines.push(`| Branch | ${m.gitBranch} |`);
       if (m.gitRepo) lines.push(`| Repo | ${m.gitRepo} |`);
       lines.push(`| Created | ${formatDate(m.createdAt)} |`);
@@ -82,7 +88,7 @@ export function createPlainFormatter(): Formatter {
         lines.push('');
         lines.push('## Files Modified');
         for (const f of s.filesModified) {
-          lines.push(`- ${f}`);
+          lines.push(`- ${shortenPath(f)}`);
         }
       }
 
@@ -99,9 +105,22 @@ export function createPlainFormatter(): Formatter {
       meta?: SliceMeta,
     ): string {
       const lines: string[] = [];
-      lines.push(
-        `# Session ${shortId(session.id)} | Messages ${from}-${to} of ${session.stats.totalMessages}`,
-      );
+
+      // Info bar
+      const m = session.metadata;
+      const s = session.stats;
+      const infoParts = [shortId(session.id), session.source];
+      if (m.model) infoParts.push(m.model);
+      infoParts.push(shortenPath(m.cwd));
+      lines.push(infoParts.join(' | '));
+      const line2Parts: string[] = [];
+      if (m.gitBranch) line2Parts.push(m.gitBranch);
+      line2Parts.push(`${s.totalMessages} msgs`);
+      if (s.durationMs != null) line2Parts.push(formatDuration(s.durationMs));
+      if (meta?.page) line2Parts.push(`Page ${meta.page.current} of ${meta.page.total}`);
+      else line2Parts.push(`Showing ${from}-${to}`);
+      lines.push(line2Parts.join(' | '));
+      lines.push('---');
 
       for (const msg of messages) {
         lines.push('');

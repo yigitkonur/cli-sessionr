@@ -34,6 +34,14 @@ export function estimatePageCount(messages: NormalizedMessage[], budget: number)
   return Math.max(1, Math.ceil(totalTokens / budget));
 }
 
+function trimToAssistantLast(messages: NormalizedMessage[]): NormalizedMessage[] {
+  let end = messages.length - 1;
+  while (end >= 0 && messages[end].role !== 'assistant') {
+    end--;
+  }
+  return end >= 0 ? messages.slice(0, end + 1) : messages;
+}
+
 // ── Page-Based Slicing ─────────────────────────────────────────────────────
 
 export function sliceByPage(
@@ -76,7 +84,8 @@ export function sliceByPage(
   const totalPages = pages.length;
   const pageIdx = Math.max(0, Math.min(page - 1, totalPages - 1));
   const pageRange = pages[pageIdx];
-  const selected = allMessages.slice(pageRange.from, pageRange.to + 1);
+  let selected = allMessages.slice(pageRange.from, pageRange.to + 1);
+  selected = trimToAssistantLast(selected);
   const returnedTokens = estimateSessionTokens(selected);
 
   const firstIdx = selected[0].index;
@@ -139,10 +148,11 @@ export function sliceByTokenBudget(
   }
 
   const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor);
+  const trimmed = trimToAssistantLast(selected);
 
-  const returnedTokens = estimateSessionTokens(selected);
-  const firstIdx = selected[0].index;
-  const lastIdx = selected[selected.length - 1].index;
+  const returnedTokens = estimateSessionTokens(trimmed);
+  const firstIdx = trimmed[0].index;
+  const lastIdx = trimmed[trimmed.length - 1].index;
 
   const meta: SliceMeta = {
     session_id: sessionId,
@@ -162,7 +172,7 @@ export function sliceByTokenBudget(
 
   meta.cursor = buildCursorCommands(sessionId, meta);
 
-  return { messages: selected, meta };
+  return { messages: trimmed, meta };
 }
 
 function emptySticeMeta(

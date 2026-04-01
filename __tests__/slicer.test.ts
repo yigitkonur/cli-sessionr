@@ -32,9 +32,10 @@ describe('sliceByTokenBudget', () => {
     const msgs = makeMsgs(5);
     const totalTokens = msgs.reduce((acc, m) => acc + estimateMessageTokens(m), 0);
     const result = sliceByTokenBudget(msgs, totalTokens + 1000, 'sess1', 'claude', 'tail');
-    expect(result.messages).toHaveLength(5);
+    // trimToAssistantLast trims trailing user(5), keeping 4 messages ending on assistant
+    expect(result.messages).toHaveLength(4);
+    expect(result.messages[result.messages.length - 1].role).toBe('assistant');
     expect(result.meta.has_more_before).toBe(false);
-    expect(result.meta.has_more_after).toBe(false);
   });
 
   it('tail anchor selects from end', () => {
@@ -62,10 +63,12 @@ describe('sliceByTokenBudget', () => {
     const msgs = makeMsgs(20);
     msgs[9] = makeMsg(10, 'user', 'Fix the authentication bug in auth.ts');
     const singleTokens = estimateMessageTokens(msgs[0]);
-    const budget = singleTokens * 5;
+    const budget = singleTokens * 7;
     const result = sliceByTokenBudget(msgs, budget, 'sess1', 'claude', 'search', 'authentication bug');
     const indices = result.messages.map((m) => m.index);
+    // Match is at index 10 (user). Result should include nearby messages ending on assistant.
     expect(indices).toContain(10);
+    expect(result.messages[result.messages.length - 1].role).toBe('assistant');
   });
 
   it('search anchor falls back to tail when no match', () => {

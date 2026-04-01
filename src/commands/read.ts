@@ -1,11 +1,17 @@
+import { homedir } from 'node:os';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
-import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName } from '../config.js';
+import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
 import { InvalidRangeError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget, sliceByPage, filterByRole, buildCursorCommands, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens, estimateMessageTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
 import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary } from '../types.js';
+
+function shortenPath(p: string): string {
+  const home = homedir();
+  return p.startsWith(home) ? '~' + p.slice(home.length) : p;
+}
 
 function buildSessionSummary(session: NormalizedSession, tokenBudget: number | undefined): SessionSummary {
   const totalTokens = estimateSessionTokens(session.messages);
@@ -23,7 +29,7 @@ function buildSessionSummary(session: NormalizedSession, tokenBudget: number | u
     id: session.id,
     source: session.source,
     model: session.metadata.model,
-    cwd: session.metadata.cwd,
+    cwd: shortenPath(session.metadata.cwd),
     git_branch: session.metadata.gitBranch,
     total_messages: session.stats.totalMessages,
     total_tokens_estimate: totalTokens,
@@ -177,19 +183,20 @@ export async function readCommand(
       ? getPresetForDetail(detail)
       : getPreset(presetName!);
 
-    // Token budget: --tokens flag > SESSIONREADER_MAX_TOKENS env > unlimited
-    const tokenBudget = opts?.tokens ?? getDefaultTokenBudget();
+    // Token budget: --tokens flag > SESSIONREADER_MAX_TOKENS env > default 8K, always capped
+    const rawBudget = opts?.tokens ?? getDefaultTokenBudget();
+    const tokenBudget = Math.min(rawBudget, MAX_CHUNK_BUDGET);
+
+    const outputFormat = opts?.output ?? (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
+    const summary = buildSessionSummary(session, tokenBudget);
 
     // ── Page-based pagination (--page N) ──────────────────────────────────
     if (opts?.page != null) {
-      const budget = tokenBudget ?? 4000;
-      const result = sliceByPage(messages, opts.page, budget, session.id, session.source);
+      const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source);
       let meta = injectNextAction(result.meta);
       meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
-      const outputFormat = opts?.output ?? (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
       if (outputFormat === 'json' || outputFormat === 'jsonl') {
-        const summary = buildSessionSummary(session, budget);
         const envelope = buildJsonEnvelope(session, result.messages, meta, preset, summary);
         console.log(JSON.stringify(envelope, dateReplacer, 2));
       } else {
@@ -220,81 +227,45 @@ export async function readCommand(
     // Apply range first (positional/cursor)
     let sliced = messages.slice(from - 1, to);
 
-    // Token-aware slicing
-    if (tokenBudget) {
-      const anchor = opts?.search
-        ? 'search' as const
-        : (opts?.anchor ?? 'tail') as 'head' | 'tail' | 'search';
+    // Always apply token budget (8K max enforced)
+    const anchor = opts?.search
+      ? 'search' as const
+      : (opts?.anchor ?? 'tail') as 'head' | 'tail' | 'search';
 
-      const result = sliceByTokenBudget(
-        sliced,
-        tokenBudget,
-        session.id,
-        session.source,
-        anchor,
-        opts?.search,
-      );
+    const result = sliceByTokenBudget(
+      sliced,
+      tokenBudget,
+      session.id,
+      session.source,
+      anchor,
+      opts?.search,
+    );
 
-      let meta = injectNextAction(result.meta);
-      meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
+    let meta = injectNextAction(result.meta);
+    meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
-      if (detail === 'meta') {
-        const metaMessages = result.messages.map((m) => ({
-          ...m,
-          content: '',
-          blocks: [],
-        }));
-        console.log(
-          formatter.read(session, metaMessages, meta.range.from, meta.range.to, preset, meta),
-        );
-      } else if (detail === 'skeleton') {
-        const skelMessages = result.messages.map((m) => ({
-          ...m,
-          content: m.content.slice(0, 60) + (m.content.length > 60 ? '...' : ''),
-          blocks: [{ type: 'text' as const, text: m.content.slice(0, 60) + (m.content.length > 60 ? '...' : '') }],
-        }));
-        console.log(
-          formatter.read(session, skelMessages, meta.range.from, meta.range.to, preset, meta),
-        );
-      } else {
-        console.log(
-          formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta),
-        );
-      }
+    let outputMessages = result.messages;
+    if (detail === 'meta') {
+      outputMessages = outputMessages.map((m) => ({
+        ...m,
+        content: '',
+        blocks: [],
+      }));
+    } else if (detail === 'skeleton') {
+      outputMessages = outputMessages.map((m) => ({
+        ...m,
+        content: m.content.slice(0, 60) + (m.content.length > 60 ? '...' : ''),
+        blocks: [{ type: 'text' as const, text: m.content.slice(0, 60) + (m.content.length > 60 ? '...' : '') }],
+      }));
+    }
+
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const envelope = buildJsonEnvelope(session, outputMessages, meta, preset, summary);
+      console.log(JSON.stringify(envelope, dateReplacer, 2));
     } else {
-      // No token budget — use plain range
-      const totalTokensEst = estimateSessionTokens(sliced);
-      const rawMeta: SliceMeta = {
-        session_id: session.id,
-        source: session.source,
-        total_messages: totalMessages,
-        total_tokens_estimate: estimateSessionTokens(session.messages),
-        returned_tokens_estimate: totalTokensEst,
-        token_budget: null,
-        anchor: null,
-        range: { from, to },
-        has_more_before: from > 1,
-        has_more_after: to < totalMessages,
-        cursor_before: from > 1 ? from - 1 : null,
-        cursor_after: to < totalMessages ? to + 1 : null,
-        cursor: { prev: null, next: null, first: null },
-      };
-      rawMeta.cursor = buildCursorCommands(session.id, rawMeta);
-
-      let meta = injectNextAction(rawMeta);
-      meta.detail_hint = computeDetailHint(sliced, session.id, preset);
-
-      if (detail === 'meta') {
-        sliced = sliced.map((m) => ({ ...m, content: '', blocks: [] }));
-      } else if (detail === 'skeleton') {
-        sliced = sliced.map((m) => ({
-          ...m,
-          content: m.content.slice(0, 60) + (m.content.length > 60 ? '...' : ''),
-          blocks: [{ type: 'text' as const, text: m.content.slice(0, 60) + (m.content.length > 60 ? '...' : '') }],
-        }));
-      }
-
-      console.log(formatter.read(session, sliced, from, to, preset, meta));
+      console.log(
+        formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta),
+      );
     }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));

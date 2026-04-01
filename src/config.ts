@@ -81,13 +81,14 @@ export const DETAIL_LEVELS: DetailLevel[] = ['full', 'condensed', 'skeleton', 'm
 // ── Environment Variable Defaults ──────────────────────────────────────────
 
 const TTY_DEFAULT_TOKEN_BUDGET = 8_000;
-const AGENT_DEFAULT_TOKEN_BUDGET = 24_000;
+const AGENT_DEFAULT_TOKEN_BUDGET = 8_000;
+export const MAX_CHUNK_BUDGET = 8_000;
 
-export function getDefaultTokenBudget(): number | undefined {
+export function getDefaultTokenBudget(): number {
   const env = process.env.SESSIONREADER_MAX_TOKENS;
   if (env) {
     const n = parseInt(env, 10);
-    return Number.isFinite(n) && n > 0 ? n : undefined;
+    if (Number.isFinite(n) && n > 0) return Math.min(n, MAX_CHUNK_BUDGET);
   }
   if (process.stdout.isTTY) return TTY_DEFAULT_TOKEN_BUDGET;
   return AGENT_DEFAULT_TOKEN_BUDGET;
