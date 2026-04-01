@@ -78,17 +78,14 @@ function resolveSource(
     throw new SessionReaderError('--source is required when creating a new session', {
       code: 'MISSING_SOURCE',
       exitCode: EXIT.USAGE,
-      suggestion: 'sessionr session send --new --source claude --message "..."',
+      suggestion: 'sessionr send --new --source claude --message "..."',
     });
   }
-  // For existing sessions, we could auto-detect from session metadata
-  // but that requires loading the session first. For now, require explicit source
-  // or let loadSession figure it out.
   if (!sessionId) {
     throw new SessionReaderError('Either <session-id> or --new --source is required', {
       code: 'MISSING_SESSION',
       exitCode: EXIT.USAGE,
-      suggestion: 'sessionr session send <session-id> --message "..." OR --new --source claude',
+      suggestion: 'sessionr send <session-id> --message "..." OR --new --source claude',
     });
   }
   // Try to detect source from session ID by loading it
@@ -208,7 +205,7 @@ async function runSync(
 
   envelope.actions = [
     {
-      command: `sessionr session read ${session.id} --after ${messageCountBefore}`,
+      command: `sessionr read ${session.id} --after ${messageCountBefore}`,
       description: 'Re-read new messages',
     },
   ];
@@ -269,9 +266,9 @@ async function runAsync(
       message_count_before: messageCountBefore,
     },
     actions: [
-      { command: `sessionr job status ${jobId}`, description: 'Check job status' },
-      { command: `sessionr job wait ${jobId}`, description: 'Wait for completion' },
-      { command: `sessionr job cancel ${jobId}`, description: 'Cancel job' },
+      { command: `sessionr job ${jobId}`, description: 'Check job status' },
+      { command: `sessionr wait ${jobId}`, description: 'Wait for completion' },
+      { command: `sessionr cancel ${jobId}`, description: 'Cancel job' },
     ],
   };
 

@@ -56,7 +56,7 @@ export class SessionNotFoundError extends SessionReaderError {
       code: 'SESSION_NOT_FOUND',
       exitCode: EXIT.NOT_FOUND,
       detail: { session_id: sessionId },
-      suggestion: 'sessionr session list --output json',
+      suggestion: 'sessionr list --output json',
       retry: false,
     });
     this.name = 'SessionNotFoundError';
@@ -83,7 +83,7 @@ export class InvalidRangeError extends SessionReaderError {
         code: 'INVALID_RANGE',
         exitCode: EXIT.USAGE,
         detail: { requested_from: from, requested_to: to, total_messages: total },
-        suggestion: `sessionr session read <session-id> 1 ${total}`,
+        suggestion: `sessionr read <session-id> 1 ${total}`,
         retry: false,
       },
     );
@@ -99,7 +99,7 @@ export class TokenBudgetExceededError extends SessionReaderError {
         code: 'TOKEN_LIMIT_EXCEEDED',
         exitCode: EXIT.USAGE,
         detail: { requested, available, session_id: sessionId },
-        suggestion: `sessionr session read ${sessionId} --tokens ${available}`,
+        suggestion: `sessionr read ${sessionId} --tokens ${available}`,
         retry: false,
       },
     );

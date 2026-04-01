@@ -18,18 +18,14 @@ const program = new Command();
 
 program
   .name('sessionr')
-  .description('Read and inspect AI coding sessions from Codex CLI, Claude Code, and more')
-  .version('2.0.0')
+  .description('read, send, and orchestrate AI coding sessions')
+  .version('2.1.0')
   .option('--output <format>', 'Output format: json, jsonl, table, text')
   .option('--api-version <n>', 'API version for structured output', '1');
 
-// ── session subcommand group ───────────────────────────────────────────────
+// ── Top-level commands ─────────────────────────────────────────────────────
 
-const session = program
-  .command('session')
-  .description('Session operations');
-
-session
+program
   .command('list [source]')
   .description('List available sessions')
   .option('-n, --limit <n>', 'Max sessions to list', '20')
@@ -43,7 +39,7 @@ session
     });
   });
 
-session
+program
   .command('read <session-id> [from] [to]')
   .description('Read session messages with token-aware pagination')
   .option('-s, --source <source>', 'Filter by source')
@@ -81,7 +77,6 @@ session
         ifChanged: opts.ifChanged as string | undefined,
       };
 
-      // ETag check
       if (readOpts.ifChanged) {
         const { loadSession } = await import('./discovery.js');
         const { computeETag } = await import('./etag.js');
@@ -101,7 +96,7 @@ session
     },
   );
 
-session
+program
   .command('stats <session-id>')
   .description('Show session statistics')
   .option('-s, --source <source>', 'Filter by source')
@@ -115,7 +110,7 @@ session
     });
   });
 
-session
+program
   .command('info <session-id>')
   .description('Show session metadata (lightweight stats)')
   .option('-s, --source <source>', 'Filter by source')
@@ -129,7 +124,7 @@ session
     });
   });
 
-session
+program
   .command('search')
   .description('Search across sessions by content')
   .requiredOption('-q, --query <text>', 'Search query')
@@ -145,7 +140,7 @@ session
     });
   });
 
-session
+program
   .command('diff <id1> <id2>')
   .description('Compare two sessions (structural diff)')
   .option('-s, --source <source>', 'Filter by source')
@@ -159,7 +154,7 @@ session
     });
   });
 
-session
+program
   .command('tag <session-id>')
   .description('Add or remove session tags (idempotent)')
   .option('--add <tag>', 'Tag to add')
@@ -173,7 +168,7 @@ session
     });
   });
 
-session
+program
   .command('prune')
   .description('Delete old sessions')
   .requiredOption('--older-than <duration>', 'Duration threshold (e.g., 7d, 24h)')
@@ -188,7 +183,7 @@ session
     });
   });
 
-session
+program
   .command('send [session-id]')
   .description('Send a message to an AI session (sync by default, --async for background)')
   .requiredOption('-m, --message <text>', 'Message to send')
@@ -226,67 +221,9 @@ session
     },
   );
 
-// ── job subcommand group ───────────────────────────────────────────────────
-
-const job = program
-  .command('job')
-  .description('Manage async send jobs');
-
-job
-  .command('status <job-id>')
-  .description('Check job status (lazy PID finalization)')
-  .action(async (jobId: string) => {
-    const parentOpts = program.opts();
-    await jobStatusCommand(jobId, {
-      output: parentOpts.output as OutputFormat | undefined,
-    });
-  });
-
-job
-  .command('wait <job-id>')
-  .description('Block until job completes')
-  .option('--timeout <seconds>', 'Timeout in seconds', '300')
-  .option('--interval <seconds>', 'Poll interval in seconds', '2')
-  .action(async (jobId: string, opts: { timeout?: string; interval?: string }) => {
-    const parentOpts = program.opts();
-    await jobWaitCommand(jobId, {
-      output: parentOpts.output as OutputFormat | undefined,
-      timeout: opts.timeout ? parseInt(opts.timeout, 10) : undefined,
-      interval: opts.interval ? parseInt(opts.interval, 10) : undefined,
-    });
-  });
-
-job
-  .command('cancel <job-id>')
-  .description('Cancel a running job (SIGTERM)')
-  .action(async (jobId: string) => {
-    const parentOpts = program.opts();
-    await jobCancelCommand(jobId, {
-      output: parentOpts.output as OutputFormat | undefined,
-    });
-  });
-
-job
-  .command('list')
-  .description('List all jobs')
-  .option('--status <status>', 'Filter by status (running, completed, failed)')
-  .action(async (opts: { status?: string }) => {
-    const parentOpts = program.opts();
-    await jobListCommand({
-      output: parentOpts.output as OutputFormat | undefined,
-      status: opts.status,
-    });
-  });
-
-// ── context subcommand group ───────────────────────────────────────────────
-
-const context = program
-  .command('context')
-  .description('Context operations for agent-to-agent handoff');
-
-context
-  .command('export <session-id>')
-  .description('Export session context for agent consumption')
+program
+  .command('context <session-id>')
+  .description('Export session context for agent handoff')
   .option('-s, --source <source>', 'Filter by source')
   .option('--tokens <n>', 'Token budget (default: 8000)')
   .option('--include-system-prompt', 'Include system messages')
@@ -313,66 +250,79 @@ context
     },
   );
 
-// ── Deprecation aliases (hidden) ───────────────────────────────────────────
+// ── Job commands ───────────────────────────────────────────────────────────
 
 program
-  .command('list [source]', { hidden: true })
-  .option('-n, --limit <n>', 'Max sessions to list', '20')
-  .option('--json', 'Output as JSON')
-  .action(async (source: string | undefined, opts: { limit?: string; json?: boolean }) => {
-    process.stderr.write(
-      'Warning: "sessionr list" is deprecated, use "sessionr session list"\n',
-    );
+  .command('jobs')
+  .description('List all async jobs')
+  .option('--status <status>', 'Filter by status (running, completed, failed)')
+  .action(async (opts: { status?: string }) => {
     const parentOpts = program.opts();
-    await listCommand(source, {
-      ...opts,
+    await jobListCommand({
+      output: parentOpts.output as OutputFormat | undefined,
+      status: opts.status,
+    });
+  });
+
+program
+  .command('job <job-id>')
+  .description('Check async job status (lazy PID finalization)')
+  .action(async (jobId: string) => {
+    const parentOpts = program.opts();
+    await jobStatusCommand(jobId, {
       output: parentOpts.output as OutputFormat | undefined,
     });
   });
 
 program
-  .command('read <session-id> [from] [to]', { hidden: true })
-  .option('-s, --source <source>', 'Filter by source')
-  .option('-p, --preset <name>', `Verbosity preset (${PRESET_NAMES.join(', ')})`, 'standard')
-  .option('--json', 'Output as JSON')
-  .action(
-    async (
-      sessionId: string,
-      from: string | undefined,
-      to: string | undefined,
-      opts: { source?: string; preset?: string; json?: boolean },
-    ) => {
-      process.stderr.write(
-        'Warning: "sessionr read" is deprecated, use "sessionr session read"\n',
-      );
-      const parentOpts = program.opts();
-      await readCommand(sessionId, from, to, {
-        ...opts,
-        output: parentOpts.output as OutputFormat | undefined,
-      });
-    },
-  );
+  .command('wait <job-id>')
+  .description('Block until an async job completes')
+  .option('--timeout <seconds>', 'Timeout in seconds', '300')
+  .option('--interval <seconds>', 'Poll interval in seconds', '2')
+  .action(async (jobId: string, opts: { timeout?: string; interval?: string }) => {
+    const parentOpts = program.opts();
+    await jobWaitCommand(jobId, {
+      output: parentOpts.output as OutputFormat | undefined,
+      timeout: opts.timeout ? parseInt(opts.timeout, 10) : undefined,
+      interval: opts.interval ? parseInt(opts.interval, 10) : undefined,
+    });
+  });
 
 program
-  .command('stats <session-id>', { hidden: true })
-  .option('-s, --source <source>', 'Filter by source')
-  .option('--json', 'Output as JSON')
-  .action(async (sessionId: string, opts: { source?: string; json?: boolean }) => {
-    process.stderr.write(
-      'Warning: "sessionr stats" is deprecated, use "sessionr session stats"\n',
-    );
+  .command('cancel <job-id>')
+  .description('Cancel a running async job (SIGTERM)')
+  .action(async (jobId: string) => {
     const parentOpts = program.opts();
-    await statsCommand(sessionId, {
-      ...opts,
+    await jobCancelCommand(jobId, {
       output: parentOpts.output as OutputFormat | undefined,
     });
   });
+
+// ── Deprecation aliases (hidden) — old nested forms ────────────────────────
+
+const sessionAlias = program.command('session', { hidden: true });
+for (const sub of ['list', 'read', 'stats', 'info', 'search', 'diff', 'tag', 'prune', 'send']) {
+  sessionAlias
+    .command(`${sub}`, { hidden: true })
+    .allowUnknownOption(true)
+    .action(() => {
+      process.stderr.write(`Warning: "sessionr session ${sub}" is deprecated, use "sessionr ${sub}"\n`);
+      // Re-parse with the flat command
+      const args = process.argv.filter((a) => a !== 'session');
+      program.parse(args);
+    });
+}
+
+const jobAlias = program.command('job-group', { hidden: true }).name('job').command('status', { hidden: true });
+// Note: the old "job status/wait/cancel/list" forms are replaced by top-level
+// "job <id>", "wait <id>", "cancel <id>", "jobs". The hidden aliases above
+// handle "session *" forwarding. For "job status X" → "job X", Commander will
+// naturally fall through since "job" is now a command taking <job-id>.
 
 // ── Machine-readable help ──────────────────────────────────────────────────
 
 program.addHelpCommand('help [command]', 'Display help (supports --output json)');
 
-// Override help display when --output json is requested
 const originalHelp = program.helpInformation.bind(program);
 program.helpInformation = function () {
   const parentOpts = program.opts();
@@ -411,9 +361,7 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
 
 function warnDeprecatedJson(json?: boolean): void {
   if (json) {
-    process.stderr.write(
-      'Warning: --json is deprecated, use --output json instead\n',
-    );
+    process.stderr.write('Warning: --json is deprecated, use --output json instead\n');
   }
 }
 

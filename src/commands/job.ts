@@ -24,7 +24,7 @@ export async function jobStatusCommand(
         code: 'JOB_NOT_FOUND',
         exitCode: EXIT.NOT_FOUND,
         detail: { job_id: jobId },
-        suggestion: 'sessionr job list',
+        suggestion: 'sessionr jobs',
       });
     }
 
@@ -33,14 +33,14 @@ export async function jobStatusCommand(
 
     if (finalized.status === 'completed' && finalized.session_id) {
       actions.push({
-        command: `sessionr session read ${finalized.session_id} --after ${finalized.message_count_before}`,
+        command: `sessionr read ${finalized.session_id} --after ${finalized.message_count_before}`,
         description: 'Read new messages',
       });
     }
     if (finalized.status === 'running') {
       actions.push(
-        { command: `sessionr job wait ${jobId}`, description: 'Wait for completion' },
-        { command: `sessionr job cancel ${jobId}`, description: 'Cancel job' },
+        { command: `sessionr wait ${jobId}`, description: 'Wait for completion' },
+        { command: `sessionr cancel ${jobId}`, description: 'Cancel job' },
       );
     }
 
@@ -74,7 +74,7 @@ export async function jobWaitCommand(
         code: 'JOB_NOT_FOUND',
         exitCode: EXIT.NOT_FOUND,
         detail: { job_id: jobId },
-        suggestion: 'sessionr job list',
+        suggestion: 'sessionr jobs',
       });
     }
 
@@ -90,7 +90,7 @@ export async function jobWaitCommand(
           code: 'JOB_TIMEOUT',
           exitCode: EXIT.ERROR,
           detail: { job_id: jobId, timeout_seconds: timeout },
-          suggestion: `sessionr job wait ${jobId} --timeout ${timeout * 2}`,
+          suggestion: `sessionr wait ${jobId} --timeout ${timeout * 2}`,
           retry: true,
         });
       }
@@ -104,7 +104,7 @@ export async function jobWaitCommand(
     const actions: Array<{ command: string; description: string }> = [];
     if (current.status === 'completed' && current.session_id) {
       actions.push({
-        command: `sessionr session read ${current.session_id} --after ${current.message_count_before}`,
+        command: `sessionr read ${current.session_id} --after ${current.message_count_before}`,
         description: 'Read new messages',
       });
     }
@@ -137,7 +137,7 @@ export async function jobCancelCommand(
         code: 'JOB_NOT_FOUND',
         exitCode: EXIT.NOT_FOUND,
         detail: { job_id: jobId },
-        suggestion: 'sessionr job list',
+        suggestion: 'sessionr jobs',
       });
     }
 

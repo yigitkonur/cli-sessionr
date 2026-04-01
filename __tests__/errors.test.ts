@@ -61,7 +61,7 @@ describe('SessionNotFoundError', () => {
     const err = new SessionNotFoundError('abc123');
     expect(err.exitCode).toBe(EXIT.NOT_FOUND);
     expect(err.code).toBe('SESSION_NOT_FOUND');
-    expect(err.suggestion).toContain('session list');
+    expect(err.suggestion).toContain('list');
     expect(err.detail.session_id).toBe('abc123');
   });
 });

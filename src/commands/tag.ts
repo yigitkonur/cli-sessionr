@@ -47,7 +47,7 @@ export async function tagCommand(
       throw new SessionReaderError('Must specify --add or --remove', {
         code: 'USAGE_ERROR',
         exitCode: EXIT.USAGE,
-        suggestion: `sessionr session tag ${sessionId} --add "my-tag"`,
+        suggestion: `sessionr tag ${sessionId} --add "my-tag"`,
       });
     }
 
