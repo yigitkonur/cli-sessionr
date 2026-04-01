@@ -13,10 +13,10 @@ function shortenPath(p: string): string {
   return p.startsWith(home) ? '~' + p.slice(home.length) : p;
 }
 
-function buildSessionSummary(session: NormalizedSession, tokenBudget: number | undefined): SessionSummary {
+function buildSessionSummary(session: NormalizedSession, tokenBudget: number | undefined, preset?: VerbosityPreset): SessionSummary {
   const totalTokens = estimateSessionTokens(session.messages);
   const budget = tokenBudget ?? 4000;
-  const pagesEst = estimatePageCount(session.messages, budget);
+  const pagesEst = estimatePageCount(session.messages, budget, preset);
   const durationMs = session.stats.durationMs;
   let duration: string | undefined;
   if (durationMs != null) {
@@ -188,11 +188,11 @@ export async function readCommand(
     const tokenBudget = Math.min(rawBudget, MAX_CHUNK_BUDGET);
 
     const outputFormat = opts?.output ?? (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
-    const summary = buildSessionSummary(session, tokenBudget);
+    const summary = buildSessionSummary(session, tokenBudget, preset);
 
     // ── Page-based pagination (--page N) ──────────────────────────────────
     if (opts?.page != null) {
-      const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source);
+      const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, preset);
       let meta = injectNextAction(result.meta);
       meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
@@ -239,6 +239,7 @@ export async function readCommand(
       session.source,
       anchor,
       opts?.search,
+      preset,
     );
 
     let meta = injectNextAction(result.meta);

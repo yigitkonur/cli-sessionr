@@ -1,5 +1,5 @@
-import type { NormalizedMessage, SessionSource, SliceMeta, CursorCommands } from './types.js';
-import { estimateMessageTokens, estimateSessionTokens } from './tokens.js';
+import type { NormalizedMessage, SessionSource, SliceMeta, CursorCommands, VerbosityPreset } from './types.js';
+import { estimateMessageTokens, estimateSessionTokens, estimateRenderedMessageTokens, estimateRenderedSessionTokens } from './tokens.js';
 
 export interface SliceResult {
   messages: NormalizedMessage[];
@@ -28,9 +28,11 @@ export function buildCursorCommands(
   };
 }
 
-export function estimatePageCount(messages: NormalizedMessage[], budget: number): number {
+export function estimatePageCount(messages: NormalizedMessage[], budget: number, preset?: VerbosityPreset): number {
   if (messages.length === 0) return 0;
-  const totalTokens = estimateSessionTokens(messages);
+  const totalTokens = preset
+    ? estimateRenderedSessionTokens(messages, preset)
+    : estimateSessionTokens(messages);
   return Math.max(1, Math.ceil(totalTokens / budget));
 }
 
@@ -41,7 +43,6 @@ function trimToAssistantLast(messages: NormalizedMessage[]): NormalizedMessage[]
   while (end >= 0 && messages[end].role !== 'assistant') {
     end--;
   }
-  // Only trim if we keep at least half the messages; otherwise keep all
   if (end >= 0 && end + 1 >= messages.length / 2) {
     return messages.slice(0, end + 1);
   }
@@ -56,6 +57,7 @@ export function sliceByPage(
   budget: number,
   sessionId: string,
   source: SessionSource,
+  preset?: VerbosityPreset,
 ): SliceResult {
   const totalMessages = allMessages.length;
   const totalTokens = estimateSessionTokens(allMessages);
@@ -67,14 +69,15 @@ export function sliceByPage(
     };
   }
 
-  // Build pages from head: page 1 starts at message 1
   const pages: Array<{ from: number; to: number }> = [];
   let i = 0;
   let pageTokens = 0;
   let pageStart = 0;
 
   while (i < allMessages.length) {
-    const msgTokens = estimateMessageTokens(allMessages[i]);
+    const msgTokens = preset
+      ? estimateRenderedMessageTokens(allMessages[i], preset)
+      : estimateMessageTokens(allMessages[i]);
     if (pageTokens + msgTokens > budget && pageTokens > 0) {
       pages.push({ from: pageStart, to: i - 1 });
       pageStart = i;
@@ -92,7 +95,9 @@ export function sliceByPage(
   const pageRange = pages[pageIdx];
   let selected = allMessages.slice(pageRange.from, pageRange.to + 1);
   selected = trimToAssistantLast(selected);
-  const returnedTokens = estimateSessionTokens(selected);
+  const returnedTokens = preset
+    ? estimateRenderedSessionTokens(selected, preset)
+    : estimateSessionTokens(selected);
 
   const firstIdx = selected[0].index;
   const lastIdx = selected[selected.length - 1].index;
@@ -119,7 +124,7 @@ export function sliceByPage(
   return { messages: selected, meta };
 }
 
-// ── Token-Budget Slicing (existing) ────────────────────────────────────────
+// ── Token-Budget Slicing ───────────────────────────────────────────────────
 
 export function sliceByTokenBudget(
   allMessages: NormalizedMessage[],
@@ -128,6 +133,7 @@ export function sliceByTokenBudget(
   source: SessionSource,
   anchor: 'head' | 'tail' | 'search' = 'tail',
   searchQuery?: string,
+  preset?: VerbosityPreset,
 ): SliceResult {
   const totalTokens = estimateSessionTokens(allMessages);
   const totalMessages = allMessages.length;
@@ -153,10 +159,12 @@ export function sliceByTokenBudget(
     centerIdx = totalMessages - 1;
   }
 
-  const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor);
+  const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor, preset);
   const trimmed = trimToAssistantLast(selected);
 
-  const returnedTokens = estimateSessionTokens(trimmed);
+  const returnedTokens = preset
+    ? estimateRenderedSessionTokens(trimmed, preset)
+    : estimateSessionTokens(trimmed);
   const firstIdx = trimmed[0].index;
   const lastIdx = trimmed[trimmed.length - 1].index;
 
@@ -209,8 +217,12 @@ function selectAroundCenter(
   centerIdx: number,
   budget: number,
   anchor: 'head' | 'tail' | 'search',
+  preset?: VerbosityPreset,
 ): NormalizedMessage[] {
-  const centerTokens = estimateMessageTokens(messages[centerIdx]);
+  const costFn = (m: NormalizedMessage) =>
+    preset ? estimateRenderedMessageTokens(m, preset) : estimateMessageTokens(m);
+
+  const centerTokens = costFn(messages[centerIdx]);
   if (centerTokens > budget) {
     return [messages[centerIdx]];
   }
@@ -221,47 +233,44 @@ function selectAroundCenter(
   let hi = centerIdx + 1;
 
   if (anchor === 'tail') {
-    // Expand backward only
     while (lo >= 0) {
-      const cost = estimateMessageTokens(messages[lo]);
+      const cost = costFn(messages[lo]);
       if (used + cost > budget) break;
       selected.unshift(messages[lo]);
       used += cost;
       lo--;
     }
   } else if (anchor === 'head') {
-    // Expand forward only
     while (hi < messages.length) {
-      const cost = estimateMessageTokens(messages[hi]);
+      const cost = costFn(messages[hi]);
       if (used + cost > budget) break;
       selected.push(messages[hi]);
       used += cost;
       hi++;
     }
   } else {
-    // Search: expand outward from center, alternating
     let expandBackward = true;
     while (lo >= 0 || hi < messages.length) {
       if (expandBackward && lo >= 0) {
-        const cost = estimateMessageTokens(messages[lo]);
+        const cost = costFn(messages[lo]);
         if (used + cost > budget) break;
         selected.unshift(messages[lo]);
         used += cost;
         lo--;
       } else if (!expandBackward && hi < messages.length) {
-        const cost = estimateMessageTokens(messages[hi]);
+        const cost = costFn(messages[hi]);
         if (used + cost > budget) break;
         selected.push(messages[hi]);
         used += cost;
         hi++;
       } else if (lo < 0 && hi < messages.length) {
-        const cost = estimateMessageTokens(messages[hi]);
+        const cost = costFn(messages[hi]);
         if (used + cost > budget) break;
         selected.push(messages[hi]);
         used += cost;
         hi++;
       } else if (hi >= messages.length && lo >= 0) {
-        const cost = estimateMessageTokens(messages[lo]);
+        const cost = costFn(messages[lo]);
         if (used + cost > budget) break;
         selected.unshift(messages[lo]);
         used += cost;
