@@ -45,14 +45,21 @@ export function createJsonFormatter(): Formatter {
         };
       }
 
-      envelope.messages = messages.map((m) => ({
-        index: m.index,
-        role: m.role,
-        timestamp: m.timestamp,
-        tokens_estimate: estimateMessageTokens(m),
-        content: m.content,
-        blocks: m.blocks,
-      }));
+      envelope.messages = messages.map((m) => {
+        const msg: Record<string, unknown> = {
+          index: m.index,
+          role: m.role,
+          timestamp: m.timestamp,
+          tokens_estimate: estimateMessageTokens(m),
+          content: m.content,
+        };
+        // Only include blocks when they carry information beyond content
+        if (m.blocks.length > 0 && m.content !== '' &&
+            !(m.blocks.length === 1 && m.blocks[0].type === 'text')) {
+          msg.blocks = m.blocks;
+        }
+        return msg;
+      });
 
       return JSON.stringify(envelope, dateReplacer, 2);
     },

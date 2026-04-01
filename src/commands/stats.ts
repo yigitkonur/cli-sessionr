@@ -7,10 +7,12 @@ export async function statsCommand(
   sessionId: string,
   opts: { source?: string; json?: boolean; output?: OutputFormat },
 ): Promise<void> {
+  const isTTY = process.stdout.isTTY ?? false;
+  const outputFormat = opts.output ?? (opts.json ? 'json' : (isTTY ? 'text' : 'json'));
   const formatter = createFormatter({
     output: opts.output,
     json: opts.json,
-    isTTY: process.stdout.isTTY ?? false,
+    isTTY,
   });
 
   try {
@@ -18,10 +20,30 @@ export async function statsCommand(
       sessionId,
       opts.source as SessionSource | undefined,
     );
-    console.log(formatter.stats(session));
+
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const { messages: _messages, ...rest } = session;
+      const result: Record<string, unknown> = {
+        api_version: 1,
+        ...rest,
+        actions: [
+          { command: `sessionr read ${session.id} --tokens 4000`, description: 'Read session messages' },
+          { command: `sessionr send ${session.id} -m "..."`, description: 'Send a follow-up message' },
+          { command: `sessionr context ${session.id}`, description: 'Export context for handoff' },
+        ],
+      };
+      console.log(JSON.stringify(result, dateReplacer, 2));
+    } else {
+      console.log(formatter.stats(session));
+    }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     console.error(formatter.error(error));
     process.exitCode = exitCodeForError(err);
   }
+}
+
+function dateReplacer(_key: string, value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  return value;
 }

@@ -1,5 +1,5 @@
 import { loadSession } from '../discovery.js';
-import { exitCodeForError } from '../errors.js';
+import { SessionReaderError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getDefaultTokenBudget } from '../config.js';
@@ -82,12 +82,20 @@ export async function contextExportCommand(
           : null,
         token_count_estimate: estimateSessionTokens(result.messages),
       },
+      actions: [
+        { command: `sessionr send --new --source ${session.source} -m "based on context from ${session.id}: ..."`, description: 'Start new session with this context' },
+        { command: `sessionr read ${session.id} --tokens 4000`, description: 'Read full session messages' },
+      ],
     };
 
     console.log(JSON.stringify(contextObj, null, 2));
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    console.error(JSON.stringify({ error: { code: 'CONTEXT_EXPORT_FAILED', message: error.message } }));
+    if (err instanceof SessionReaderError) {
+      console.error(JSON.stringify({ error: err.toJSON() }, null, 2));
+    } else {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error(JSON.stringify({ error: { code: 'CONTEXT_EXPORT_FAILED', message: error.message, retry: false } }, null, 2));
+    }
     process.exitCode = exitCodeForError(err);
   }
 }
