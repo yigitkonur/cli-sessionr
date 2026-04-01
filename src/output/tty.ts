@@ -21,89 +21,7 @@ function shortenPath(p: string): string {
 export function createTtyFormatter(): Formatter {
   return {
     stats(session: NormalizedSession): string {
-      const { id, source, metadata: m, stats: s } = session;
-      const lines: string[] = [];
-
-      lines.push(chalk.bold(`SESSION ${shortId(id)}`));
-      lines.push('');
-
-      lines.push(`${chalk.cyan('Source')}      ${colorSource(source)}`);
-      if (m.model) lines.push(`${chalk.cyan('Model')}       ${m.model}`);
-      lines.push(`${chalk.cyan('CWD')}         ${shortenPath(m.cwd)}`);
-      if (m.gitBranch) lines.push(`${chalk.cyan('Branch')}      ${m.gitBranch}`);
-      if (m.gitRepo) lines.push(`${chalk.cyan('Repo')}        ${m.gitRepo}`);
-      lines.push(`${chalk.cyan('Created')}     ${formatDate(m.createdAt)}`);
-      lines.push(`${chalk.cyan('Updated')}     ${formatDate(m.updatedAt)}`);
-      lines.push(`${chalk.cyan('File Size')}   ${formatBytes(m.fileBytes)}`);
-      lines.push(`${chalk.cyan('Raw Lines')}   ${m.rawLineCount.toLocaleString()}`);
-      if (s.durationMs != null)
-        lines.push(`${chalk.cyan('Duration')}    ${formatDuration(s.durationMs)}`);
-
-      lines.push('');
-      lines.push(chalk.bold(`Messages (${s.totalMessages} total)`));
-      lines.push('');
-
-      const roleEntries: [string, number][] = [
-        ['user', s.byRole.user],
-        ['assistant', s.byRole.assistant],
-        ['system', s.byRole.system],
-        ['tool_use', s.byRole.toolUse],
-        ['tool_result', s.byRole.toolResult],
-      ];
-
-      const maxLabel = Math.max(...roleEntries.map(([r]) => r.length));
-
-      for (const [role, count] of roleEntries) {
-        if (count > 0) {
-          const fraction = count / s.totalMessages;
-          const pct = (fraction * 100).toFixed(1).padStart(5);
-          const countStr = String(count).padStart(4);
-          lines.push(
-            `  ${role.padEnd(maxLabel)}  ${bar(fraction)}  ${countStr}  ${pct}%`,
-          );
-        }
-      }
-
-      if (Object.keys(s.byBlockType).length > 0) {
-        lines.push('');
-        lines.push(chalk.bold('Content Blocks'));
-        for (const [type, count] of Object.entries(s.byBlockType).sort((a, b) => b[1] - a[1])) {
-          lines.push(`  ${type}: ${count}`);
-        }
-      }
-
-      if (s.tokenUsage) {
-        lines.push('');
-        lines.push(chalk.bold('Token Usage'));
-        lines.push(`  ${chalk.cyan('Input')}           ${s.tokenUsage.input.toLocaleString()}`);
-        lines.push(`  ${chalk.cyan('Output')}          ${s.tokenUsage.output.toLocaleString()}`);
-        if (s.tokenUsage.cacheRead != null)
-          lines.push(`  ${chalk.cyan('Cache Read')}      ${s.tokenUsage.cacheRead.toLocaleString()}`);
-        if (s.tokenUsage.cacheCreation != null)
-          lines.push(`  ${chalk.cyan('Cache Creation')}  ${s.tokenUsage.cacheCreation.toLocaleString()}`);
-        if (s.tokenUsage.thinking != null)
-          lines.push(`  ${chalk.cyan('Thinking')}        ${s.tokenUsage.thinking.toLocaleString()}`);
-      }
-
-      if (s.toolFrequency.length > 0) {
-        lines.push('');
-        lines.push(chalk.bold('Top Tools'));
-        for (const t of s.toolFrequency) {
-          const errSuffix = t.errors > 0 ? chalk.red(` (${t.errors} errors)`) : '';
-          lines.push(`  ${t.name}: ${t.count}${errSuffix}`);
-        }
-      }
-
-      if (s.filesModified.length > 0) {
-        lines.push('');
-        lines.push(chalk.bold('Files Modified'));
-        for (const f of s.filesModified) {
-          lines.push(`  ${shortenPath(f)}`);
-        }
-      }
-
-      lines.push('');
-      return lines.join('\n');
+      return renderInfoBlock(session);
     },
 
     read(
@@ -116,20 +34,15 @@ export function createTtyFormatter(): Formatter {
     ): string {
       const lines: string[] = [];
 
-      // Info bar
-      const md = session.metadata;
-      const st = session.stats;
-      const infoParts = [chalk.bold(shortId(session.id)), colorSource(session.source)];
-      if (md.model) infoParts.push(md.model);
-      infoParts.push(shortenPath(md.cwd));
-      lines.push(infoParts.join(chalk.dim(' | ')));
-      const line2Parts: string[] = [];
-      if (md.gitBranch) line2Parts.push(md.gitBranch);
-      line2Parts.push(`${st.totalMessages} msgs`);
-      if (st.durationMs != null) line2Parts.push(formatDuration(st.durationMs));
-      if (meta?.page) line2Parts.push(`Page ${meta.page.current} of ${meta.page.total}`);
-      else line2Parts.push(`Showing ${from}-${to}`);
-      lines.push(chalk.dim(line2Parts.join(' | ')));
+      // Full info block
+      lines.push(renderInfoBlock(session));
+
+      // Page/range indicator
+      if (meta?.page) {
+        lines.push(chalk.dim(`Page ${meta.page.current} of ${meta.page.total} | Messages ${from}-${to} of ${session.stats.totalMessages}`));
+      } else {
+        lines.push(chalk.dim(`Showing ${from}-${to} of ${session.stats.totalMessages}`));
+      }
       lines.push(chalk.dim('\u2500'.repeat(60)));
 
       for (const msg of messages) {
@@ -322,4 +235,90 @@ function renderBlock(block: ContentBlock, preset: VerbosityPreset): string {
       return chalk.dim(content);
     }
   }
+}
+
+function renderInfoBlock(session: NormalizedSession): string {
+  const { id, source, metadata: m, stats: s } = session;
+  const lines: string[] = [];
+
+  lines.push(chalk.bold(`SESSION ${shortId(id)}`));
+  lines.push('');
+
+  lines.push(`${chalk.cyan('Source')}      ${colorSource(source)}`);
+  if (m.model) lines.push(`${chalk.cyan('Model')}       ${m.model}`);
+  lines.push(`${chalk.cyan('CWD')}         ${shortenPath(m.cwd)}`);
+  if (m.gitBranch) lines.push(`${chalk.cyan('Branch')}      ${m.gitBranch}`);
+  if (m.gitRepo) lines.push(`${chalk.cyan('Repo')}        ${m.gitRepo}`);
+  lines.push(`${chalk.cyan('Created')}     ${formatDate(m.createdAt)}`);
+  lines.push(`${chalk.cyan('Updated')}     ${formatDate(m.updatedAt)}`);
+  lines.push(`${chalk.cyan('File Size')}   ${formatBytes(m.fileBytes)}`);
+  lines.push(`${chalk.cyan('Raw Lines')}   ${m.rawLineCount.toLocaleString()}`);
+  if (s.durationMs != null)
+    lines.push(`${chalk.cyan('Duration')}    ${formatDuration(s.durationMs)}`);
+
+  lines.push('');
+  lines.push(chalk.bold(`Messages (${s.totalMessages} total)`));
+  lines.push('');
+
+  const roleEntries: [string, number][] = [
+    ['user', s.byRole.user],
+    ['assistant', s.byRole.assistant],
+    ['system', s.byRole.system],
+    ['tool_use', s.byRole.toolUse],
+    ['tool_result', s.byRole.toolResult],
+  ];
+
+  const maxLabel = Math.max(...roleEntries.map(([r]) => r.length));
+
+  for (const [role, count] of roleEntries) {
+    if (count > 0) {
+      const fraction = count / s.totalMessages;
+      const pct = (fraction * 100).toFixed(1).padStart(5);
+      const countStr = String(count).padStart(4);
+      lines.push(
+        `  ${role.padEnd(maxLabel)}  ${bar(fraction)}  ${countStr}  ${pct}%`,
+      );
+    }
+  }
+
+  if (Object.keys(s.byBlockType).length > 0) {
+    lines.push('');
+    lines.push(chalk.bold('Content Blocks'));
+    for (const [type, count] of Object.entries(s.byBlockType).sort((a, b) => b[1] - a[1])) {
+      lines.push(`  ${type}: ${count}`);
+    }
+  }
+
+  if (s.tokenUsage) {
+    lines.push('');
+    lines.push(chalk.bold('Token Usage'));
+    lines.push(`  ${chalk.cyan('Input')}           ${s.tokenUsage.input.toLocaleString()}`);
+    lines.push(`  ${chalk.cyan('Output')}          ${s.tokenUsage.output.toLocaleString()}`);
+    if (s.tokenUsage.cacheRead != null)
+      lines.push(`  ${chalk.cyan('Cache Read')}      ${s.tokenUsage.cacheRead.toLocaleString()}`);
+    if (s.tokenUsage.cacheCreation != null)
+      lines.push(`  ${chalk.cyan('Cache Creation')}  ${s.tokenUsage.cacheCreation.toLocaleString()}`);
+    if (s.tokenUsage.thinking != null)
+      lines.push(`  ${chalk.cyan('Thinking')}        ${s.tokenUsage.thinking.toLocaleString()}`);
+  }
+
+  if (s.toolFrequency.length > 0) {
+    lines.push('');
+    lines.push(chalk.bold('Top Tools'));
+    for (const t of s.toolFrequency) {
+      const errSuffix = t.errors > 0 ? chalk.red(` (${t.errors} errors)`) : '';
+      lines.push(`  ${t.name}: ${t.count}${errSuffix}`);
+    }
+  }
+
+  if (s.filesModified.length > 0) {
+    lines.push('');
+    lines.push(chalk.bold('Files Modified'));
+    for (const f of s.filesModified) {
+      lines.push(`  ${shortenPath(f)}`);
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
 }

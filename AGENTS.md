@@ -102,7 +102,7 @@ That's it — discovery, CLI, and formatters are registry-driven.
 
 - **ESM-only** — `"type": "module"`, all imports use `.js` extensions
 - **Node 18+** — no `node:sqlite` dependency (used optionally for Goose/Zed on Node 22+)
-- **2 runtime deps only** — `chalk` (v4, CJS+ESM) + `commander` (v14). Do not add more.
+- **3 runtime deps only** — `chalk` (v4, CJS+ESM) + `commander` (v14) + `js-tiktoken` (BPE tokenizer). Do not add more.
 - **No Zod at runtime** — use type guards, not schema validation
 - **`process.exitCode = 1`** — never call `process.exit()` directly
 - **Session data is read-only** — never modify source session files

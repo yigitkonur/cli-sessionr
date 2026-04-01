@@ -21,8 +21,8 @@ const program = new Command();
 
 program
   .name('sessionr')
-  .description('sessionr v2.4.0 — read, send, and orchestrate AI coding sessions')
-  .version('2.4.0')
+  .description('sessionr v2.5.0 — read, send, and orchestrate AI coding sessions')
+  .version('2.5.0')
   .option('--output <format>', 'Output format: json, jsonl, table, text')
   .option('--api-version <n>', 'API version for structured output', '1')
   .option('--timing', 'Include timing_ms in JSON responses');
@@ -68,7 +68,7 @@ program
   .option('-p, --preset <name>', `Verbosity preset (${PRESET_NAMES.join(', ')}) [default: verbose for agents, standard for TTY]`)
   .option('-d, --detail <level>', `Detail level (${DETAIL_LEVELS.join(', ')})`)
   .option('--tokens <n>', 'Token budget (env: SESSIONREADER_MAX_TOKENS)')
-  .option('--anchor <anchor>', 'Slice anchor: head, tail, search', 'tail')
+  .option('--anchor <anchor>', 'Slice anchor: head, tail, search', 'head')
   .option('--search <query>', 'Search query (sets anchor=search)')
   .option('--role <roles>', 'Filter by role (comma-separated: user, assistant, system, tool_use, tool_result)')
   .option('--page <n>', 'Page number (1-based, from head)')
@@ -408,7 +408,7 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
 
   return {
     api_version: 1,
-    version: '2.4.0',
+    version: '2.5.0',
     name: cmd.name(),
     description: cmd.description(),
     sources: SOURCES_LIST,

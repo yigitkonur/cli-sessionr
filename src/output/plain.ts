@@ -19,81 +19,7 @@ function shortenPath(p: string): string {
 export function createPlainFormatter(): Formatter {
   return {
     stats(session: NormalizedSession): string {
-      const { id, source, metadata: m, stats: s } = session;
-      const lines: string[] = [];
-
-      lines.push(`# Session ${shortId(id)}`);
-      lines.push('');
-      lines.push('| Field | Value |');
-      lines.push('|---|---|');
-      lines.push(`| Source | ${sourceLabel(source)} |`);
-      if (m.model) lines.push(`| Model | ${m.model} |`);
-      lines.push(`| CWD | ${shortenPath(m.cwd)} |`);
-      if (m.gitBranch) lines.push(`| Branch | ${m.gitBranch} |`);
-      if (m.gitRepo) lines.push(`| Repo | ${m.gitRepo} |`);
-      lines.push(`| Created | ${formatDate(m.createdAt)} |`);
-      lines.push(`| Updated | ${formatDate(m.updatedAt)} |`);
-      lines.push(`| File Size | ${formatBytes(m.fileBytes)} |`);
-      lines.push(`| Raw Lines | ${m.rawLineCount.toLocaleString()} |`);
-      if (s.durationMs != null) lines.push(`| Duration | ${formatDuration(s.durationMs)} |`);
-
-      lines.push('');
-      lines.push(`## Messages (${s.totalMessages} total)`);
-      lines.push('');
-      const roleEntries: [string, number][] = [
-        ['user', s.byRole.user],
-        ['assistant', s.byRole.assistant],
-        ['system', s.byRole.system],
-        ['tool_use', s.byRole.toolUse],
-        ['tool_result', s.byRole.toolResult],
-      ];
-      for (const [role, count] of roleEntries) {
-        if (count > 0) {
-          const pct = ((count / s.totalMessages) * 100).toFixed(1);
-          lines.push(`- ${role}: ${count} (${pct}%)`);
-        }
-      }
-
-      if (Object.keys(s.byBlockType).length > 0) {
-        lines.push('');
-        lines.push('## Content Blocks');
-        for (const [type, count] of Object.entries(s.byBlockType).sort((a, b) => b[1] - a[1])) {
-          lines.push(`- ${type}: ${count}`);
-        }
-      }
-
-      if (s.tokenUsage) {
-        lines.push('');
-        lines.push('## Token Usage');
-        lines.push(`- Input: ${s.tokenUsage.input.toLocaleString()}`);
-        lines.push(`- Output: ${s.tokenUsage.output.toLocaleString()}`);
-        if (s.tokenUsage.cacheRead != null)
-          lines.push(`- Cache Read: ${s.tokenUsage.cacheRead.toLocaleString()}`);
-        if (s.tokenUsage.cacheCreation != null)
-          lines.push(`- Cache Creation: ${s.tokenUsage.cacheCreation.toLocaleString()}`);
-        if (s.tokenUsage.thinking != null)
-          lines.push(`- Thinking: ${s.tokenUsage.thinking.toLocaleString()}`);
-      }
-
-      if (s.toolFrequency.length > 0) {
-        lines.push('');
-        lines.push('## Top Tools');
-        for (const t of s.toolFrequency) {
-          const errSuffix = t.errors > 0 ? ` (${t.errors} errors)` : '';
-          lines.push(`- ${t.name}: ${t.count}${errSuffix}`);
-        }
-      }
-
-      if (s.filesModified.length > 0) {
-        lines.push('');
-        lines.push('## Files Modified');
-        for (const f of s.filesModified) {
-          lines.push(`- ${shortenPath(f)}`);
-        }
-      }
-
-      lines.push('');
-      return lines.join('\n');
+      return renderInfoBlock(session);
     },
 
     read(
@@ -106,20 +32,15 @@ export function createPlainFormatter(): Formatter {
     ): string {
       const lines: string[] = [];
 
-      // Info bar
-      const m = session.metadata;
-      const s = session.stats;
-      const infoParts = [shortId(session.id), session.source];
-      if (m.model) infoParts.push(m.model);
-      infoParts.push(shortenPath(m.cwd));
-      lines.push(infoParts.join(' | '));
-      const line2Parts: string[] = [];
-      if (m.gitBranch) line2Parts.push(m.gitBranch);
-      line2Parts.push(`${s.totalMessages} msgs`);
-      if (s.durationMs != null) line2Parts.push(formatDuration(s.durationMs));
-      if (meta?.page) line2Parts.push(`Page ${meta.page.current} of ${meta.page.total}`);
-      else line2Parts.push(`Showing ${from}-${to}`);
-      lines.push(line2Parts.join(' | '));
+      // Full info block
+      lines.push(renderInfoBlock(session));
+
+      // Page/range indicator
+      if (meta?.page) {
+        lines.push(`Page ${meta.page.current} of ${meta.page.total} | Messages ${from}-${to} of ${session.stats.totalMessages}`);
+      } else {
+        lines.push(`Showing ${from}-${to} of ${session.stats.totalMessages}`);
+      }
       lines.push('---');
 
       for (const msg of messages) {
@@ -288,4 +209,82 @@ function renderBlock(block: ContentBlock, preset: VerbosityPreset): string {
       return `${prefix}${content}`;
     }
   }
+}
+
+function renderInfoBlock(session: NormalizedSession): string {
+  const { id, source, metadata: m, stats: s } = session;
+  const lines: string[] = [];
+
+  lines.push(`# Session ${shortId(id)}`);
+  lines.push('');
+  lines.push('| Field | Value |');
+  lines.push('|---|---|');
+  lines.push(`| Source | ${sourceLabel(source)} |`);
+  if (m.model) lines.push(`| Model | ${m.model} |`);
+  lines.push(`| CWD | ${shortenPath(m.cwd)} |`);
+  if (m.gitBranch) lines.push(`| Branch | ${m.gitBranch} |`);
+  if (m.gitRepo) lines.push(`| Repo | ${m.gitRepo} |`);
+  lines.push(`| Created | ${formatDate(m.createdAt)} |`);
+  lines.push(`| Updated | ${formatDate(m.updatedAt)} |`);
+  lines.push(`| File Size | ${formatBytes(m.fileBytes)} |`);
+  lines.push(`| Raw Lines | ${m.rawLineCount.toLocaleString()} |`);
+  if (s.durationMs != null) lines.push(`| Duration | ${formatDuration(s.durationMs)} |`);
+
+  lines.push('');
+  lines.push(`## Messages (${s.totalMessages} total)`);
+  lines.push('');
+  const roleEntries: [string, number][] = [
+    ['user', s.byRole.user],
+    ['assistant', s.byRole.assistant],
+    ['system', s.byRole.system],
+    ['tool_use', s.byRole.toolUse],
+    ['tool_result', s.byRole.toolResult],
+  ];
+  for (const [role, count] of roleEntries) {
+    if (count > 0) {
+      const pct = ((count / s.totalMessages) * 100).toFixed(1);
+      lines.push(`- ${role}: ${count} (${pct}%)`);
+    }
+  }
+
+  if (Object.keys(s.byBlockType).length > 0) {
+    lines.push('');
+    lines.push('## Content Blocks');
+    for (const [type, count] of Object.entries(s.byBlockType).sort((a, b) => b[1] - a[1])) {
+      lines.push(`- ${type}: ${count}`);
+    }
+  }
+
+  if (s.tokenUsage) {
+    lines.push('');
+    lines.push('## Token Usage');
+    lines.push(`- Input: ${s.tokenUsage.input.toLocaleString()}`);
+    lines.push(`- Output: ${s.tokenUsage.output.toLocaleString()}`);
+    if (s.tokenUsage.cacheRead != null)
+      lines.push(`- Cache Read: ${s.tokenUsage.cacheRead.toLocaleString()}`);
+    if (s.tokenUsage.cacheCreation != null)
+      lines.push(`- Cache Creation: ${s.tokenUsage.cacheCreation.toLocaleString()}`);
+    if (s.tokenUsage.thinking != null)
+      lines.push(`- Thinking: ${s.tokenUsage.thinking.toLocaleString()}`);
+  }
+
+  if (s.toolFrequency.length > 0) {
+    lines.push('');
+    lines.push('## Top Tools');
+    for (const t of s.toolFrequency) {
+      const errSuffix = t.errors > 0 ? ` (${t.errors} errors)` : '';
+      lines.push(`- ${t.name}: ${t.count}${errSuffix}`);
+    }
+  }
+
+  if (s.filesModified.length > 0) {
+    lines.push('');
+    lines.push('## Files Modified');
+    for (const f of s.filesModified) {
+      lines.push(`- ${shortenPath(f)}`);
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
 }

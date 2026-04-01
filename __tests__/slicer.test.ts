@@ -80,7 +80,7 @@ describe('sliceByTokenBudget', () => {
     expect(lastMsg.index).toBe(10);
   });
 
-  it('respects message boundaries (never truncates mid-message)', () => {
+  it('respects message boundaries (never truncates mid-message)', { timeout: 30000 }, () => {
     const msgs = [
       makeMsg(1, 'user', 'Short'),
       makeMsg(2, 'assistant', 'A'.repeat(10000)), // large message

@@ -35,11 +35,17 @@ export function estimatePageCount(messages: NormalizedMessage[], budget: number)
 }
 
 function trimToAssistantLast(messages: NormalizedMessage[]): NormalizedMessage[] {
+  if (messages.length === 0) return messages;
+  if (messages[messages.length - 1].role === 'assistant') return messages;
   let end = messages.length - 1;
   while (end >= 0 && messages[end].role !== 'assistant') {
     end--;
   }
-  return end >= 0 ? messages.slice(0, end + 1) : messages;
+  // Only trim if we keep at least half the messages; otherwise keep all
+  if (end >= 0 && end + 1 >= messages.length / 2) {
+    return messages.slice(0, end + 1);
+  }
+  return messages;
 }
 
 // ── Page-Based Slicing ─────────────────────────────────────────────────────

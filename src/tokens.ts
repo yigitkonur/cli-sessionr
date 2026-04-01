@@ -1,21 +1,11 @@
+import { getEncoding } from 'js-tiktoken';
 import type { NormalizedMessage } from './types.js';
 
-const CODE_INDICATORS = /[{};()=>\[\]<\/]|^\s{2,}\S/gm;
-const CODE_THRESHOLD = 0.05;
-
-function detectCodeRatio(text: string): number {
-  if (!text) return 0;
-  const matches = text.match(CODE_INDICATORS);
-  if (!matches) return 0;
-  return Math.min(matches.length / text.length, 1);
-}
+const enc = getEncoding('cl100k_base');
 
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  const codeRatio = detectCodeRatio(text);
-  const isCode = codeRatio > CODE_THRESHOLD;
-  const charsPerToken = isCode ? 3.5 : 4.0;
-  return Math.ceil(text.length / charsPerToken);
+  return enc.encode(text).length;
 }
 
 export function estimateMessageTokens(msg: NormalizedMessage): number {

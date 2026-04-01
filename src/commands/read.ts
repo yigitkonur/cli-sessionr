@@ -230,7 +230,7 @@ export async function readCommand(
     // Always apply token budget (8K max enforced)
     const anchor = opts?.search
       ? 'search' as const
-      : (opts?.anchor ?? 'tail') as 'head' | 'tail' | 'search';
+      : (opts?.anchor ?? 'head') as 'head' | 'tail' | 'search';
 
     const result = sliceByTokenBudget(
       sliced,
