@@ -60,7 +60,7 @@ export async function pruneCommand(
         {
           code: 'CONFIRMATION_REQUIRED',
           exitCode: EXIT.USAGE,
-          suggestion: `sessionr session prune --older-than ${opts.olderThan} --yes`,
+          suggestion: `sessionr prune --older-than ${opts.olderThan} --yes`,
         },
       );
     }
@@ -71,7 +71,7 @@ export async function pruneCommand(
         {
           code: 'CONFIRMATION_REQUIRED',
           exitCode: EXIT.USAGE,
-          suggestion: `sessionr session prune --older-than ${opts.olderThan} --yes`,
+          suggestion: `sessionr prune --older-than ${opts.olderThan} --yes`,
         },
       );
     }
