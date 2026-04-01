@@ -58,17 +58,27 @@ export function createPlainFormatter(): Formatter {
         }
       }
 
-      // Detail hint (upsell)
+      // Preset hint
       if (meta?.detail_hint) {
         const h = meta.detail_hint;
         const parts: string[] = [];
         if (h.hidden_tool_calls > 0) parts.push(`${h.hidden_tool_calls} tool calls hidden`);
         if (h.truncated_results > 0) parts.push(`${h.truncated_results} tool results truncated`);
         if (h.thinking_hidden) parts.push('thinking blocks hidden');
-        if (parts.length > 0 && h.upgrade_options.length > 0) {
-          const opts = h.upgrade_options.map((o) => `--preset ${o.preset} (~${(o.estimated_tokens / 1000).toFixed(0)}K tokens)`).join(' or ');
+        if (parts.length > 0) {
           lines.push('');
-          lines.push(`[${parts.join(', ')}. For more detail: ${opts}]`);
+          lines.push(`Note: ${parts.join(', ')} by the "${h.current_preset}" preset.`);
+          lines.push('Available presets:');
+          lines.push('  minimal  — 80 char content, no tool args/results, no thinking');
+          lines.push('  standard — 500 char content, 80 char tool results, no thinking');
+          lines.push('  verbose  — 2K char content, 500 char tool results, 200 char thinking');
+          lines.push('  full     — everything, no truncation');
+          if (h.upgrade_options.length > 0) {
+            lines.push('Try:');
+            for (const o of h.upgrade_options) {
+              lines.push(`  ${o.command}`);
+            }
+          }
         }
       }
 
