@@ -1,11 +1,8 @@
-import { getEncoding } from 'js-tiktoken';
 import type { NormalizedMessage, VerbosityPreset } from './types.js';
-
-const enc = getEncoding('cl100k_base');
 
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  return enc.encode(text).length;
+  return Math.ceil(text.length / 4);
 }
 
 export function estimateMessageTokens(msg: NormalizedMessage): number {
@@ -33,37 +30,37 @@ export function estimateRenderedMessageTokens(msg: NormalizedMessage, preset: Ve
   for (const block of msg.blocks) {
     switch (block.type) {
       case 'text': {
-        const text = preset.maxContentChars === Infinity
-          ? block.text
-          : block.text.slice(0, preset.maxContentChars);
-        tokens += estimateTokens(text);
+        const len = preset.maxContentChars === Infinity
+          ? block.text.length
+          : Math.min(block.text.length, preset.maxContentChars);
+        tokens += Math.ceil(len / 4);
         break;
       }
       case 'thinking': {
         if (!preset.showThinking) break;
-        const text = preset.maxThinkingChars === Infinity
-          ? block.text
-          : block.text.slice(0, preset.maxThinkingChars);
-        tokens += estimateTokens(text);
+        const len = preset.maxThinkingChars === Infinity
+          ? block.text.length
+          : Math.min(block.text.length, preset.maxThinkingChars);
+        tokens += Math.ceil(len / 4);
         break;
       }
       case 'tool_use': {
-        tokens += estimateTokens(block.name);
+        tokens += Math.ceil(block.name.length / 4);
         if (preset.showToolArgs) {
           const raw = JSON.stringify(block.input);
-          const text = preset.maxToolInputChars === Infinity
-            ? raw
-            : raw.slice(0, preset.maxToolInputChars);
-          tokens += estimateTokens(text);
+          const len = preset.maxToolInputChars === Infinity
+            ? raw.length
+            : Math.min(raw.length, preset.maxToolInputChars);
+          tokens += Math.ceil(len / 4);
         }
         break;
       }
       case 'tool_result': {
         if (!preset.showToolResults) break;
-        const text = preset.maxToolResultChars === Infinity
-          ? block.content
-          : block.content.slice(0, preset.maxToolResultChars);
-        tokens += estimateTokens(text);
+        const len = preset.maxToolResultChars === Infinity
+          ? block.content.length
+          : Math.min(block.content.length, preset.maxToolResultChars);
+        tokens += Math.ceil(len / 4);
         break;
       }
     }
