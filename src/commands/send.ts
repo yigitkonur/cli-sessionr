@@ -24,31 +24,32 @@ export async function sendCommand(
 
   try {
     const isNew = opts.new === true;
-    const source = resolveSource(sessionId, opts.source, isNew);
+    let source = resolveSource(sessionId, opts.source, isNew);
 
-    if (!canSend(source)) {
+    const cwd = opts.cwd ?? process.cwd();
+
+    // Snapshot message count before send + auto-detect source
+    let messageCountBefore = 0;
+    let resolvedSessionId = sessionId ?? null;
+
+    if (!isNew && resolvedSessionId) {
+      try {
+        const session = await loadSession(resolvedSessionId);
+        messageCountBefore = session.stats.totalMessages;
+        resolvedSessionId = session.id;
+        if (!opts.source) source = session.source;
+      } catch {
+        // session might not exist yet if prefix doesn't match
+      }
+    }
+
+    if (source && !canSend(source)) {
       throw new SessionReaderError('Zed AI threads are GUI-only — no CLI send support', {
         code: 'UNSUPPORTED_SOURCE',
         exitCode: EXIT.USAGE,
         detail: { source },
         suggestion: 'Use a CLI-based tool (claude, codex, gemini, etc.)',
       });
-    }
-
-    const cwd = opts.cwd ?? process.cwd();
-
-    // Snapshot message count before send
-    let messageCountBefore = 0;
-    let resolvedSessionId = sessionId ?? null;
-
-    if (!isNew && resolvedSessionId) {
-      try {
-        const session = await loadSession(resolvedSessionId, source);
-        messageCountBefore = session.stats.totalMessages;
-        resolvedSessionId = session.id; // resolve prefix to full ID
-      } catch {
-        // session might not exist yet if prefix doesn't match
-      }
     }
 
     // Build the command
@@ -88,8 +89,8 @@ function resolveSource(
       suggestion: 'sessionr send <session-id> --message "..." OR --new --source claude',
     });
   }
-  // Try to detect source from session ID by loading it
-  return 'claude'; // will be overridden by actual source on load
+  // Source will be auto-detected from session metadata in runSync/runAsync
+  return undefined as unknown as SessionSource;
 }
 
 async function runSync(

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 import { statsCommand } from './commands/stats.js';
 import { readCommand } from './commands/read.js';
 import { listCommand } from './commands/list.js';
@@ -14,19 +14,36 @@ import { jobStatusCommand, jobWaitCommand, jobCancelCommand, jobListCommand } fr
 import { PRESET_NAMES, DETAIL_LEVELS } from './config.js';
 import type { OutputFormat, DetailLevel, ReadOptions, SendOptions } from './types.js';
 
+const SOURCES = 'claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed';
+const SOURCES_LIST = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed'];
+
 const program = new Command();
 
 program
   .name('sessionr')
   .description('read, send, and orchestrate AI coding sessions')
-  .version('2.1.0')
+  .version('2.2.0')
   .option('--output <format>', 'Output format: json, jsonl, table, text')
-  .option('--api-version <n>', 'API version for structured output', '1');
+  .option('--api-version <n>', 'API version for structured output', '1')
+  .option('--timing', 'Include timing_ms in JSON responses');
+
+// Structured error handling for Commander errors
+program.exitOverride();
+program.configureOutput({
+  writeOut: (str) => process.stdout.write(str),
+  writeErr: (str) => {
+    // Suppress Commander's stderr — errors are handled in the catch block below
+    if (process.stdout.isTTY) {
+      process.stderr.write(str);
+    }
+  },
+});
 
 // ── Top-level commands ─────────────────────────────────────────────────────
 
 program
-  .command('list [source]')
+  .command('list')
+  .argument('[source]', `Filter by source (${SOURCES})`)
   .description('List available sessions')
   .option('-n, --limit <n>', 'Max sessions to list', '20')
   .option('--json', '[deprecated] Use --output json')
@@ -40,15 +57,18 @@ program
   });
 
 program
-  .command('read <session-id> [from] [to]')
+  .command('read')
+  .argument('<session-id>', 'Session ID or prefix (use "sessionr list" to find)')
+  .argument('[from]', 'Start message index (1-based)')
+  .argument('[to]', 'End message index (1-based)')
   .description('Read session messages with token-aware pagination')
-  .option('-s, --source <source>', 'Filter by source')
+  .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('-p, --preset <name>', `Verbosity preset (${PRESET_NAMES.join(', ')})`, 'standard')
   .option('-d, --detail <level>', `Detail level (${DETAIL_LEVELS.join(', ')})`)
   .option('--tokens <n>', 'Token budget (env: SESSIONREADER_MAX_TOKENS)')
   .option('--anchor <anchor>', 'Slice anchor: head, tail, search', 'tail')
   .option('--search <query>', 'Search query (sets anchor=search)')
-  .option('--role <roles>', 'Filter by role (comma-separated)')
+  .option('--role <roles>', 'Filter by role (comma-separated: user, assistant, system, tool_use, tool_result)')
   .option('--before <cursor>', 'Cursor: show messages before this index')
   .option('--after <cursor>', 'Cursor: show messages after this index')
   .option('--if-changed <etag>', 'Only return data if changed since ETag')
@@ -97,9 +117,10 @@ program
   );
 
 program
-  .command('stats <session-id>')
-  .description('Show session statistics')
-  .option('-s, --source <source>', 'Filter by source')
+  .command('stats')
+  .argument('<session-id>', 'Session ID or prefix')
+  .description('Show full session statistics')
+  .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('--json', '[deprecated] Use --output json')
   .action(async (sessionId: string, opts: { source?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
@@ -111,9 +132,10 @@ program
   });
 
 program
-  .command('info <session-id>')
-  .description('Show session metadata (lightweight stats)')
-  .option('-s, --source <source>', 'Filter by source')
+  .command('info')
+  .argument('<session-id>', 'Session ID or prefix')
+  .description('Show lightweight session metadata (cheaper than stats)')
+  .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('--json', '[deprecated] Use --output json')
   .action(async (sessionId: string, opts: { source?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
@@ -128,10 +150,11 @@ program
   .command('search')
   .description('Search across sessions by content')
   .requiredOption('-q, --query <text>', 'Search query')
-  .option('-s, --source <source>', 'Filter by source')
+  .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('--top <n>', 'Max results to return', '10')
+  .option('--max-sessions <n>', 'Max sessions to scan (most recent first)', '20')
   .option('--json', '[deprecated] Use --output json')
-  .action(async (opts: { query: string; source?: string; top?: string; json?: boolean }) => {
+  .action(async (opts: { query: string; source?: string; top?: string; maxSessions?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
     await searchCommand({
@@ -141,9 +164,11 @@ program
   });
 
 program
-  .command('diff <id1> <id2>')
+  .command('diff')
+  .argument('<id1>', 'First session ID or prefix')
+  .argument('<id2>', 'Second session ID or prefix')
   .description('Compare two sessions (structural diff)')
-  .option('-s, --source <source>', 'Filter by source')
+  .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('--json', '[deprecated] Use --output json')
   .action(async (id1: string, id2: string, opts: { source?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
@@ -155,11 +180,12 @@ program
   });
 
 program
-  .command('tag <session-id>')
+  .command('tag')
+  .argument('<session-id>', 'Session ID or prefix')
   .description('Add or remove session tags (idempotent)')
   .option('--add <tag>', 'Tag to add')
   .option('--remove <tag>', 'Tag to remove')
-  .option('-s, --source <source>', 'Filter by source')
+  .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .action(async (sessionId: string, opts: { add?: string; remove?: string; source?: string }) => {
     const parentOpts = program.opts();
     await tagCommand(sessionId, {
@@ -174,7 +200,7 @@ program
   .requiredOption('--older-than <duration>', 'Duration threshold (e.g., 7d, 24h)')
   .option('--dry-run', 'Preview what would be deleted')
   .option('--yes', 'Skip confirmation')
-  .option('-s, --source <source>', 'Filter by source')
+  .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .action(async (opts: { olderThan: string; dryRun?: boolean; yes?: boolean; source?: string }) => {
     const parentOpts = program.opts();
     await pruneCommand({
@@ -184,10 +210,11 @@ program
   });
 
 program
-  .command('send [session-id]')
+  .command('send')
+  .argument('[session-id]', 'Session ID to resume (omit with --new)')
   .description('Send a message to an AI session (sync by default, --async for background)')
   .requiredOption('-m, --message <text>', 'Message to send')
-  .option('-s, --source <source>', 'Tool source (required with --new)')
+  .option('-s, --source <source>', `Tool source — required with --new (${SOURCES})`)
   .option('--new', 'Create a new session instead of resuming')
   .option('--async', 'Run in background and return job ID')
   .option('--cwd <dir>', 'Working directory (default: current)')
@@ -222,9 +249,10 @@ program
   );
 
 program
-  .command('context <session-id>')
+  .command('context')
+  .argument('<session-id>', 'Session ID or prefix')
   .description('Export session context for agent handoff')
-  .option('-s, --source <source>', 'Filter by source')
+  .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('--tokens <n>', 'Token budget (default: 8000)')
   .option('--include-system-prompt', 'Include system messages')
   .option('--include-tool-results', 'Include tool results')
@@ -265,7 +293,8 @@ program
   });
 
 program
-  .command('job <job-id>')
+  .command('job')
+  .argument('<job-id>', 'Job ID (from sessionr send --async)')
   .description('Check async job status (lazy PID finalization)')
   .action(async (jobId: string) => {
     const parentOpts = program.opts();
@@ -275,7 +304,8 @@ program
   });
 
 program
-  .command('wait <job-id>')
+  .command('wait')
+  .argument('<job-id>', 'Job ID to wait for')
   .description('Block until an async job completes')
   .option('--timeout <seconds>', 'Timeout in seconds', '300')
   .option('--interval <seconds>', 'Poll interval in seconds', '2')
@@ -289,7 +319,8 @@ program
   });
 
 program
-  .command('cancel <job-id>')
+  .command('cancel')
+  .argument('<job-id>', 'Job ID to cancel')
   .description('Cancel a running async job (SIGTERM)')
   .action(async (jobId: string) => {
     const parentOpts = program.opts();
@@ -307,17 +338,10 @@ for (const sub of ['list', 'read', 'stats', 'info', 'search', 'diff', 'tag', 'pr
     .allowUnknownOption(true)
     .action(() => {
       process.stderr.write(`Warning: "sessionr session ${sub}" is deprecated, use "sessionr ${sub}"\n`);
-      // Re-parse with the flat command
       const args = process.argv.filter((a) => a !== 'session');
       program.parse(args);
     });
 }
-
-const jobAlias = program.command('job-group', { hidden: true }).name('job').command('status', { hidden: true });
-// Note: the old "job status/wait/cancel/list" forms are replaced by top-level
-// "job <id>", "wait <id>", "cancel <id>", "jobs". The hidden aliases above
-// handle "session *" forwarding. For "job status X" → "job X", Commander will
-// naturally fall through since "job" is now a command taking <job-id>.
 
 // ── Machine-readable help ──────────────────────────────────────────────────
 
@@ -337,6 +361,7 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
     api_version: 1,
     name: cmd.name(),
     description: cmd.description(),
+    sources: SOURCES_LIST,
     commands: cmd.commands
       .filter((c) => !(c as unknown as Record<string, boolean>)._hidden)
       .map((c) => ({
@@ -354,6 +379,7 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
         })),
         subcommands: c.commands.length > 0 ? buildHelpSchema(c).commands : undefined,
       })),
+    exit_codes: { 0: 'ok', 1: 'error', 2: 'bad usage', 3: 'not found', 42: 'no changes (etag)' },
   };
 }
 
@@ -365,4 +391,22 @@ function warnDeprecatedJson(json?: boolean): void {
   }
 }
 
-program.parse();
+try {
+  await program.parseAsync();
+} catch (err) {
+  if (err instanceof CommanderError) {
+    if (err.code === 'commander.helpDisplayed' || err.code === 'commander.version') {
+      process.exitCode = 0;
+    } else {
+      if (!process.stdout.isTTY) {
+        const msg = err.message.replace(/^error:\s*/i, '');
+        process.stdout.write(JSON.stringify({
+          error: { code: 'USAGE_ERROR', message: msg, retry: false },
+        }, null, 2) + '\n');
+      }
+      process.exitCode = 2;
+    }
+  } else {
+    throw err;
+  }
+}

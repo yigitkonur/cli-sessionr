@@ -178,17 +178,31 @@ export async function jobListCommand(opts: JobCommandOpts): Promise<void> {
 
     const result = {
       api_version: 1,
-      jobs: jobs.map((j) => ({
-        job_id: j.id,
-        session_id: j.session_id,
-        source: j.source,
-        status: j.status,
-        pid: j.pid,
-        started_at: j.started_at,
-        completed_at: j.completed_at,
-        exit_code: j.exit_code,
-        is_new_session: j.is_new_session,
-      })),
+      jobs: jobs.map((j) => {
+        const jobActions: Array<{ command: string; description: string }> = [];
+        if (j.status === 'running') {
+          jobActions.push(
+            { command: `sessionr wait ${j.id}`, description: 'Wait for completion' },
+            { command: `sessionr cancel ${j.id}`, description: 'Cancel job' },
+          );
+        } else if (j.status === 'completed' && j.session_id) {
+          jobActions.push(
+            { command: `sessionr read ${j.session_id} --after ${j.message_count_before}`, description: 'Read new messages' },
+          );
+        }
+        return {
+          job_id: j.id,
+          session_id: j.session_id,
+          source: j.source,
+          status: j.status,
+          pid: j.pid,
+          started_at: j.started_at,
+          completed_at: j.completed_at,
+          exit_code: j.exit_code,
+          is_new_session: j.is_new_session,
+          actions: jobActions,
+        };
+      }),
       total: jobs.length,
     };
 

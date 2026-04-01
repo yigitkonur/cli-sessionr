@@ -91,10 +91,12 @@ export async function pruneCommand(
 
     console.log(JSON.stringify(result, dateReplacer, 2));
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    console.error(
-      JSON.stringify({ error: { code: 'PRUNE_FAILED', message: error.message } }),
-    );
+    if (err instanceof SessionReaderError) {
+      console.error(JSON.stringify({ error: err.toJSON() }, null, 2));
+    } else {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error(JSON.stringify({ error: { code: 'PRUNE_FAILED', message: error.message, retry: false } }, null, 2));
+    }
     process.exitCode = exitCodeForError(err);
   }
 }
