@@ -12,6 +12,14 @@ function parseDuration(duration: string): number {
     });
   }
   const value = parseInt(match[1], 10);
+  if (value <= 0) {
+    throw new SessionReaderError('Duration must be greater than 0', {
+      code: 'INVALID_DURATION',
+      exitCode: EXIT.USAGE,
+      suggestion: 'sessionr prune --older-than 7d --dry-run',
+    });
+  }
+
   const unit = match[2];
   const multipliers: Record<string, number> = {
     s: 1000,
@@ -36,6 +44,17 @@ export async function pruneCommand(
     const durationMs = parseDuration(opts.olderThan);
     const cutoff = new Date(Date.now() - durationMs);
 
+    if (!opts.dryRun && opts.yes) {
+      throw new SessionReaderError(
+        'prune --yes is not yet implemented; use --dry-run to preview sessions that would be deleted',
+        {
+          code: 'NOT_IMPLEMENTED',
+          exitCode: EXIT.ERROR,
+          suggestion: `sessionr prune --older-than ${opts.olderThan} --dry-run`,
+        },
+      );
+    }
+
     const entries = await listSessions(opts.source as SessionSource | undefined);
     const toDelete = entries.filter((e) => e.updatedAt < cutoff);
 
@@ -55,7 +74,7 @@ export async function pruneCommand(
       return;
     }
 
-    if (!opts.yes && !process.stdout.isTTY) {
+    if (!process.stdout.isTTY) {
       throw new SessionReaderError(
         'Destructive operation requires --yes flag when not running interactively',
         {
@@ -76,30 +95,20 @@ export async function pruneCommand(
         },
       );
     }
-
-    // Note: actual deletion depends on source adapters supporting delete.
-    // For now, report what would be deleted — actual file deletion is source-specific.
-    const result = {
-      api_version: 1,
-      status: 'ok',
-      deleted: toDelete.map((e) => ({
-        id: e.id,
-        source: e.source,
-        file_path: e.filePath,
-      })),
-      count: toDelete.length,
-    };
-
-    console.log(JSON.stringify(result, dateReplacer, 2));
   } catch (err) {
+    const writeError = isStructuredOutput(opts) ? console.log : console.error;
     if (err instanceof SessionReaderError) {
-      console.error(JSON.stringify({ error: err.toJSON() }, null, 2));
+      writeError(JSON.stringify({ error: err.toJSON() }, null, 2));
     } else {
       const error = err instanceof Error ? err : new Error(String(err));
-      console.error(JSON.stringify({ error: { code: 'PRUNE_FAILED', message: error.message, retry: false } }, null, 2));
+      writeError(JSON.stringify({ error: { code: 'PRUNE_FAILED', message: error.message, retry: false } }, null, 2));
     }
     process.exitCode = exitCodeForError(err);
   }
+}
+
+function isStructuredOutput(opts: { json?: boolean; output?: OutputFormat }): boolean {
+  return opts.output === 'json' || opts.output === 'jsonl' || opts.json === true;
 }
 
 function dateReplacer(_key: string, value: unknown): unknown {
