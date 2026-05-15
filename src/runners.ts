@@ -7,10 +7,18 @@ export interface RunCommand {
 }
 
 export function buildResumeCommand(
-  source: SessionSource,
+  source: SessionSource | undefined,
   sessionId: string,
   message: string,
 ): RunCommand {
+  if (!source) {
+    throw new SessionReaderError('Source could not be determined for resume', {
+      code: 'SOURCE_UNKNOWN',
+      exitCode: EXIT.NOT_FOUND,
+      suggestion: 'Verify the session exists with: sessionr list --output json',
+    });
+  }
+
   switch (source) {
     case 'claude':
       return { bin: 'claude', args: ['-p', '-r', sessionId, message] };
@@ -39,13 +47,28 @@ export function buildResumeCommand(
     case 'factory':
       return { bin: 'droid', args: ['exec', '-s', sessionId, message] };
   }
+
+  const _exhaustive: never = source;
+  throw new SessionReaderError(`Unsupported source: ${_exhaustive}`, {
+    code: 'UNSUPPORTED_SOURCE',
+    exitCode: EXIT.USAGE,
+    detail: { source: _exhaustive },
+  });
 }
 
 export function buildNewCommand(
-  source: SessionSource,
+  source: SessionSource | undefined,
   message: string,
   cwd?: string,
 ): RunCommand {
+  if (!source) {
+    throw new SessionReaderError('Source could not be determined for new session', {
+      code: 'SOURCE_UNKNOWN',
+      exitCode: EXIT.NOT_FOUND,
+      suggestion: 'Specify a source, e.g. sessionr send --new --source claude -f prompt.md',
+    });
+  }
+
   switch (source) {
     case 'claude':
       return { bin: 'claude', args: ['-p', message] };
@@ -70,6 +93,13 @@ export function buildNewCommand(
     case 'factory':
       return { bin: 'droid', args: ['exec', message] };
   }
+
+  const _exhaustive: never = source;
+  throw new SessionReaderError(`Unsupported source: ${_exhaustive}`, {
+    code: 'UNSUPPORTED_SOURCE',
+    exitCode: EXIT.USAGE,
+    detail: { source: _exhaustive },
+  });
 }
 
 export function canSend(source: SessionSource): boolean {
