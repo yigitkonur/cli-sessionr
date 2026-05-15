@@ -1,3 +1,9 @@
+## [2.9.0](https://github.com/yigitkonur/cli-sessionr/compare/v2.8.1...v2.9.0) (2026-05-15)
+
+### Features
+
+* **skills:** bundle use-sessionr Claude skill + one-line install ([f7e8dc3](https://github.com/yigitkonur/cli-sessionr/commit/f7e8dc3c6cc6dfb2c5ddd8d4557c96e912ac4be2))
+
 ## [2.8.1](https://github.com/yigitkonur/cli-sessionr/compare/v2.8.0...v2.8.1) (2026-05-15)
 
 ### Bug Fixes
