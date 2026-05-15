@@ -22,7 +22,7 @@
         ],
         "parserOpts": {
           "noteKeywords": ["BREAKING CHANGE", "BREAKING-CHANGE", "BREAKING"],
-          "headerPattern": "^(?:[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{1F900}-\\u{1F9FF}]\\s+)?(\\w+)(?:\\(([^)]+)\\))?:\\s+(.+)$",
+          "headerPattern": "^\\W*\\s*(\\w+)(?:\\(([^)]+)\\))?:\\s+(.+)$",
           "headerCorrespondence": ["type", "scope", "subject"]
         }
       }
