@@ -2,16 +2,8 @@ import * as path from 'path';
 import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
-import { cmdPrefix } from '../util/invocation.js';
-import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
-
-const SOURCES = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed', 'factory'];
-
-function isPwdRelevant(entryCwd: string, pwd: string): boolean {
-  if (!entryCwd) return false;
-  if (entryCwd === pwd) return true;
-  return pwd.startsWith(entryCwd + path.sep);
-}
+import { parseBounded, SOURCES_LIST } from '../utils/validate.js';
+import type { SessionSource, OutputFormat } from '../types.js';
 
 export async function listCommand(
   source?: string,
@@ -26,8 +18,8 @@ export async function listCommand(
   });
 
   try {
-    const limit = opts?.limit ? parseInt(opts.limit, 10) : 20;
-    const offset = opts?.offset ? parseInt(opts.offset, 10) : 0;
+    const limit = parseBounded('--limit', opts?.limit, 20, 1, 1000);
+    const offset = parseBounded('--offset', opts?.offset, 0, 0);
     let allEntries = await listSessions(source as SessionSource | undefined);
 
     // Drop empty sessions (no user/assistant exchange) from the listing
@@ -73,7 +65,7 @@ export async function listCommand(
         limit,
         offset,
         has_more: hasMore,
-        available_sources: SOURCES,
+        available_sources: SOURCES_LIST,
       };
 
       // Cursor commands
