@@ -6,6 +6,7 @@ import { InvalidRangeError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget, sliceByPage, filterByRole, buildCursorCommands, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens, estimateMessageTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
+import { cmdPrefix } from '../util/invocation.js';
 import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary } from '../types.js';
 
 function shortenPath(p: string): string {
@@ -133,7 +134,7 @@ function computeDetailHint(
     upgradeOptions.push({
       preset: name,
       estimated_tokens: roundedEst,
-      command: `sessionr read ${sessionId} --preset ${name} --tokens ${roundedEst + 2000}`,
+      command: `${cmdPrefix()} read ${sessionId} --preset ${name} --tokens ${roundedEst + 2000}`,
     });
   }
 
@@ -189,6 +190,38 @@ export async function readCommand(
 
     const outputFormat = opts?.output ?? (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
     const summary = buildSessionSummary(session, tokenBudget, preset);
+
+    // Empty session — emit a clean envelope instead of throwing InvalidRangeError.
+    // Sessions can be opened without any user/assistant exchange (Factory "New Session",
+    // Claude blank sessions, etc.); list filters them out, but a direct ID paste can
+    // still land here.
+    if (totalMessages === 0) {
+      const emptyMeta: SliceMeta = {
+        session_id: session.id,
+        source: session.source,
+        total_messages: 0,
+        total_tokens_estimate: 0,
+        returned_tokens_estimate: 0,
+        token_budget: tokenBudget,
+        anchor: 'head',
+        range: { from: 0, to: 0 },
+        has_more_before: false,
+        has_more_after: false,
+        cursor_before: null,
+        cursor_after: null,
+        cursor: { next: null, prev: null, first: null },
+      };
+      const meta = injectNextAction(emptyMeta);
+
+      if (outputFormat === 'json' || outputFormat === 'jsonl') {
+        const envelope = buildJsonEnvelope(session, [], meta, preset, summary);
+        envelope.notice = 'session is empty (no user/assistant messages)';
+        console.log(JSON.stringify(envelope, dateReplacer, 2));
+      } else {
+        console.log(`Session ${session.id} (${session.source}) is empty — no messages.`);
+      }
+      return;
+    }
 
     // ── Page-based pagination (--page N) ──────────────────────────────────
     if (opts?.page != null) {
@@ -299,10 +332,11 @@ function buildJsonEnvelope(
 
   const sid = meta.session_id;
   const shortSid = sid.length > 8 ? sid.slice(0, 8) : sid;
+  const prefix = cmdPrefix();
   envelope.actions = [
-    { command: `sessionr stats ${shortSid}`, description: 'Full statistics (tools, tokens, files)' },
-    { command: `sessionr context ${shortSid} --tokens 8000`, description: 'Export context for agent handoff' },
-    { command: `sessionr diff ${shortSid} <other-id>`, description: 'Compare with another session' },
+    { command: `${prefix} stats ${shortSid}`, description: 'Full statistics (tools, tokens, files)' },
+    { command: `${prefix} context ${shortSid} --tokens 8000`, description: 'Export context for agent handoff' },
+    { command: `${prefix} diff ${shortSid} <other-id>`, description: 'Compare with another session' },
   ];
 
   return envelope;
