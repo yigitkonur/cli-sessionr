@@ -21,8 +21,8 @@ const program = new Command();
 
 program
   .name('sessionr')
-  .description('sessionr v2.6.0 — read, send, and orchestrate AI coding sessions')
-  .version('2.6.0')
+  .description('sessionr v2.7.0 — read, send, and orchestrate AI coding sessions')
+  .version('2.7.0')
   .option('--output <format>', 'Output format: json, jsonl, table, text')
   .option('--api-version <n>', 'API version for structured output', '1')
   .option('--timing', 'Include timing_ms in JSON responses');
@@ -408,7 +408,7 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
 
   return {
     api_version: 1,
-    version: '2.6.0',
+    version: '2.7.0',
     name: cmd.name(),
     description: cmd.description(),
     sources: SOURCES_LIST,
