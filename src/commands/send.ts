@@ -11,6 +11,7 @@ import { getPreset, getDefaultTokenBudget } from '../config.js';
 import { sliceByTokenBudget } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { SessionReaderError, EXIT, exitCodeForError } from '../errors.js';
+import { resolveSourceAlias } from '../parsers/registry.js';
 import type { SessionSource, SendOptions, OutputFormat, SliceMeta } from '../types.js';
 
 const JOBS_DIR = join(homedir(), '.sessionreader', 'jobs');
@@ -33,17 +34,21 @@ export async function sendCommand(
     let resolvedSessionId = sessionId ?? null;
 
     if (!isNew && resolvedSessionId) {
-      try {
-        const session = await loadSession(resolvedSessionId);
-        messageCountBefore = session.stats.totalMessages;
-        resolvedSessionId = session.id;
-        if (!opts.source) source = session.source;
-      } catch {
-        // session might not exist yet if prefix doesn't match
-      }
+      const session = await loadSession(resolvedSessionId, source);
+      messageCountBefore = session.stats.totalMessages;
+      resolvedSessionId = session.id;
+      if (!opts.source) source = session.source;
     }
 
-    if (source && !canSend(source)) {
+    if (!source) {
+      throw new SessionReaderError('Source could not be determined for send', {
+        code: 'SOURCE_UNKNOWN',
+        exitCode: EXIT.NOT_FOUND,
+        suggestion: 'Verify the session exists with: sessionr list --output json',
+      });
+    }
+
+    if (!canSend(source)) {
       throw new SessionReaderError('Zed AI threads are GUI-only — no CLI send support', {
         code: 'UNSUPPORTED_SOURCE',
         exitCode: EXIT.USAGE,
@@ -73,8 +78,8 @@ function resolveSource(
   sessionId: string | undefined,
   sourceOpt: string | undefined,
   isNew: boolean,
-): SessionSource {
-  if (sourceOpt) return sourceOpt as SessionSource;
+): SessionSource | undefined {
+  if (sourceOpt) return resolveSourceAlias(sourceOpt);
   if (isNew) {
     throw new SessionReaderError('--source is required when creating a new session', {
       code: 'MISSING_SOURCE',
@@ -89,8 +94,8 @@ function resolveSource(
       suggestion: 'sessionr send <session-id> -f prompt.md OR --new --source claude -f prompt.md',
     });
   }
-  // Source will be auto-detected from session metadata in runSync/runAsync
-  return undefined as unknown as SessionSource;
+  // Source will be auto-detected from session metadata before command build.
+  return undefined;
 }
 
 async function runSync(
@@ -103,18 +108,7 @@ async function runSync(
   isNew: boolean,
   formatter: ReturnType<typeof createFormatter>,
 ): Promise<void> {
-  // Detect source from existing session if not explicitly provided
-  let resolvedSource = source;
-  if (!isNew && sessionId && !opts.source) {
-    try {
-      const session = await loadSession(sessionId);
-      resolvedSource = session.source;
-      const newCmd = buildResumeCommand(resolvedSource, session.id, opts.message);
-      cmd = newCmd;
-    } catch {
-      // proceed with default
-    }
-  }
+  const resolvedSource = source;
 
   const exitCode = await spawnAndWait(cmd, cwd);
 
@@ -134,19 +128,22 @@ async function runSync(
   }
 
   if (!finalSessionId) {
-    // Could not detect session — report success without messages
-    const result = {
-      api_version: 1,
-      data: {
-        status: 'completed',
-        source: resolvedSource,
-        exit_code: 0,
-        is_new_session: isNew,
-        message: 'Tool completed but session could not be detected',
-      },
-    };
-    console.log(JSON.stringify(result, null, 2));
-    return;
+    if (isNew) {
+      throw new SessionReaderError('Tool completed but new session was not detected in cwd', {
+        code: 'NEW_SESSION_NOT_DETECTED',
+        exitCode: EXIT.PARTIAL,
+        detail: { source: resolvedSource, cwd },
+        suggestion: `sessionr list --cwd current --source ${resolvedSource} -n 5`,
+        retry: true,
+      });
+    }
+
+    throw new SessionReaderError('Session could not be determined after send', {
+      code: 'SESSION_NOT_FOUND',
+      exitCode: EXIT.NOT_FOUND,
+      detail: { source: resolvedSource },
+      suggestion: 'sessionr list --output json',
+    });
   }
 
   const session = await loadSession(finalSessionId, resolvedSource);
@@ -280,14 +277,31 @@ async function detectNewSession(
   source: SessionSource,
   cwd: string,
 ): Promise<string | null> {
-  try {
-    const entries = await listSessions(source, 5);
-    // Return the most recent session from this source in this cwd
-    const match = entries.find((e) => e.cwd === cwd);
-    return match?.id ?? entries[0]?.id ?? null;
-  } catch {
-    return null;
+  const attempts = 10;
+  const delayMs = 200;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const entries = await listSessions(source, 10);
+      const now = Date.now();
+      const match = entries.find(
+        (e) => e.cwd === cwd && now - e.updatedAt.getTime() < 30_000,
+      );
+      if (match) return match.id;
+    } catch {
+      // Keep polling; the session index can lag immediately after tool exit.
+    }
+
+    if (attempt < attempts - 1) {
+      await sleep(delayMs);
+    }
   }
+
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function spawnAndWait(
