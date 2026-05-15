@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "USAGE_ERROR",
+    "message": "required option '-q, --query <text>' not specified",
+    "retry": false
+  }
+}

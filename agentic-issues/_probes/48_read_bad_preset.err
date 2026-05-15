@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "UNKNOWN_ERROR",
+    "message": "Unknown verbosity preset \"bogus\". Valid presets: minimal, standard, verbose, full",
+    "retry": false
+  }
+}

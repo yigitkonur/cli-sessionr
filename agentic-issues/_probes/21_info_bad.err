@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "SESSION_NOT_FOUND",
+    "message": "Session not found: deadbeef",
+    "detail": {
+      "session_id": "deadbeef"
+    },
+    "suggestion": "sessionr list --output json",
+    "retry": false
+  }
+}

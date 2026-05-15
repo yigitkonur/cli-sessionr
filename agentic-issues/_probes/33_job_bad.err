@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "JOB_NOT_FOUND",
+    "message": "Job not found: deadbeef",
+    "detail": {
+      "job_id": "deadbeef"
+    },
+    "suggestion": "sessionr jobs",
+    "retry": false
+  }
+}

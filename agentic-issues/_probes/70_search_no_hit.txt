@@ -1,0 +1,14 @@
+{
+  "api_version": 1,
+  "query": "thisstringdoesnotmatchanything12345",
+  "sessions_scanned": 20,
+  "sessions_available": 3408,
+  "results": [],
+  "total_matches": 0,
+  "actions": [
+    {
+      "command": "sessionr search -q \"thisstringdoesnotmatchanything12345\" --max-sessions 40",
+      "description": "Search more sessions"
+    }
+  ]
+}

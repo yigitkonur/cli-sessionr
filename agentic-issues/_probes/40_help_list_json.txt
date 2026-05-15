@@ -1,0 +1,21 @@
+Usage: sessionr list [options] [source]
+
+List available sessions
+
+Arguments:
+  source                Filter by source (claude, codex, gemini, copilot,
+                        cursor-agent, commandcode, goose, opencode, kiro, zed)
+
+Options:
+  -n, --limit <n>       Max sessions to list (default: "20")
+  --offset <n>          Skip first N sessions (for pagination) (default: "0")
+  -q, --search <query>  Search sessions by content
+  --json                [deprecated] Use --output json
+  -h, --help            display help for command
+{
+  "error": {
+    "code": "USAGE_ERROR",
+    "message": "(outputHelp)",
+    "retry": false
+  }
+}

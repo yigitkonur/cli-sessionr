@@ -1,0 +1,576 @@
+{
+  "api_version": 1,
+  "version": "2.5.4",
+  "name": "sessionr",
+  "description": "sessionr v2.5.4 — read, send, and orchestrate AI coding sessions",
+  "sources": [
+    "claude",
+    "codex",
+    "gemini",
+    "copilot",
+    "cursor-agent",
+    "commandcode",
+    "goose",
+    "opencode",
+    "kiro",
+    "zed"
+  ],
+  "workflow": [
+    "1. sessionr list — discover sessions",
+    "2. sessionr read <id> — read last page (cursor-paginated)",
+    "3. Use cursor.prev / cursor.next to page through",
+    "4. sessionr send <id> -f prompt.md — resume session"
+  ],
+  "primary_commands": [
+    {
+      "name": "list",
+      "description": "List available sessions",
+      "arguments": [
+        {
+          "name": "source",
+          "required": false,
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        }
+      ],
+      "options": [
+        {
+          "flags": "-n, --limit <n>",
+          "description": "Max sessions to list",
+          "default": "20"
+        },
+        {
+          "flags": "--offset <n>",
+          "description": "Skip first N sessions (for pagination)",
+          "default": "0"
+        },
+        {
+          "flags": "-q, --search <query>",
+          "description": "Search sessions by content"
+        },
+        {
+          "flags": "--json",
+          "description": "[deprecated] Use --output json"
+        }
+      ]
+    },
+    {
+      "name": "read",
+      "description": "Read session messages with token-aware pagination",
+      "arguments": [
+        {
+          "name": "session-id",
+          "required": true,
+          "description": "Session ID or prefix (use \"sessionr list\" to find)"
+        },
+        {
+          "name": "from",
+          "required": false,
+          "description": "Start message index (1-based)"
+        },
+        {
+          "name": "to",
+          "required": false,
+          "description": "End message index (1-based)"
+        }
+      ],
+      "options": [
+        {
+          "flags": "-s, --source <source>",
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        },
+        {
+          "flags": "-p, --preset <name>",
+          "description": "Verbosity preset (minimal, standard, verbose, full) [default: verbose for agents, standard for TTY]"
+        },
+        {
+          "flags": "-d, --detail <level>",
+          "description": "Detail level (full, condensed, skeleton, meta)"
+        },
+        {
+          "flags": "--tokens <n>",
+          "description": "Token budget (env: SESSIONREADER_MAX_TOKENS)"
+        },
+        {
+          "flags": "--anchor <anchor>",
+          "description": "Slice anchor: head, tail, search",
+          "default": "head"
+        },
+        {
+          "flags": "--search <query>",
+          "description": "Search query (sets anchor=search)"
+        },
+        {
+          "flags": "--role <roles>",
+          "description": "Filter by role (comma-separated: user, assistant, system, tool_use, tool_result)"
+        },
+        {
+          "flags": "--page <n>",
+          "description": "Page number (1-based, from head)"
+        },
+        {
+          "flags": "--before <cursor>",
+          "description": "Cursor: show messages before this index"
+        },
+        {
+          "flags": "--after <cursor>",
+          "description": "Cursor: show messages after this index"
+        },
+        {
+          "flags": "--if-changed <etag>",
+          "description": "Only return data if changed since ETag"
+        },
+        {
+          "flags": "--json",
+          "description": "[deprecated] Use --output json"
+        }
+      ]
+    },
+    {
+      "name": "send",
+      "description": "Send a message to an AI session (sync by default, --async for background)",
+      "arguments": [
+        {
+          "name": "session-id",
+          "required": false,
+          "description": "Session ID to resume (omit with --new)"
+        }
+      ],
+      "options": [
+        {
+          "flags": "-m, --message <text>",
+          "description": "Message to send (inline)"
+        },
+        {
+          "flags": "-f, --file <path>",
+          "description": "Read message from file (e.g. prompt.md)"
+        },
+        {
+          "flags": "-s, --source <source>",
+          "description": "Tool source — required with --new (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        },
+        {
+          "flags": "--new",
+          "description": "Create a new session instead of resuming"
+        },
+        {
+          "flags": "--async",
+          "description": "Run in background and return job ID"
+        },
+        {
+          "flags": "--cwd <dir>",
+          "description": "Working directory (default: current)"
+        },
+        {
+          "flags": "--tokens <n>",
+          "description": "Token budget for response"
+        },
+        {
+          "flags": "-p, --preset <name>",
+          "description": "Verbosity preset (minimal, standard, verbose, full)",
+          "default": "standard"
+        }
+      ]
+    }
+  ],
+  "all_commands": [
+    {
+      "name": "list",
+      "description": "List available sessions",
+      "arguments": [
+        {
+          "name": "source",
+          "required": false,
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        }
+      ],
+      "options": [
+        {
+          "flags": "-n, --limit <n>",
+          "description": "Max sessions to list",
+          "default": "20"
+        },
+        {
+          "flags": "--offset <n>",
+          "description": "Skip first N sessions (for pagination)",
+          "default": "0"
+        },
+        {
+          "flags": "-q, --search <query>",
+          "description": "Search sessions by content"
+        },
+        {
+          "flags": "--json",
+          "description": "[deprecated] Use --output json"
+        }
+      ]
+    },
+    {
+      "name": "read",
+      "description": "Read session messages with token-aware pagination",
+      "arguments": [
+        {
+          "name": "session-id",
+          "required": true,
+          "description": "Session ID or prefix (use \"sessionr list\" to find)"
+        },
+        {
+          "name": "from",
+          "required": false,
+          "description": "Start message index (1-based)"
+        },
+        {
+          "name": "to",
+          "required": false,
+          "description": "End message index (1-based)"
+        }
+      ],
+      "options": [
+        {
+          "flags": "-s, --source <source>",
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        },
+        {
+          "flags": "-p, --preset <name>",
+          "description": "Verbosity preset (minimal, standard, verbose, full) [default: verbose for agents, standard for TTY]"
+        },
+        {
+          "flags": "-d, --detail <level>",
+          "description": "Detail level (full, condensed, skeleton, meta)"
+        },
+        {
+          "flags": "--tokens <n>",
+          "description": "Token budget (env: SESSIONREADER_MAX_TOKENS)"
+        },
+        {
+          "flags": "--anchor <anchor>",
+          "description": "Slice anchor: head, tail, search",
+          "default": "head"
+        },
+        {
+          "flags": "--search <query>",
+          "description": "Search query (sets anchor=search)"
+        },
+        {
+          "flags": "--role <roles>",
+          "description": "Filter by role (comma-separated: user, assistant, system, tool_use, tool_result)"
+        },
+        {
+          "flags": "--page <n>",
+          "description": "Page number (1-based, from head)"
+        },
+        {
+          "flags": "--before <cursor>",
+          "description": "Cursor: show messages before this index"
+        },
+        {
+          "flags": "--after <cursor>",
+          "description": "Cursor: show messages after this index"
+        },
+        {
+          "flags": "--if-changed <etag>",
+          "description": "Only return data if changed since ETag"
+        },
+        {
+          "flags": "--json",
+          "description": "[deprecated] Use --output json"
+        }
+      ]
+    },
+    {
+      "name": "stats",
+      "description": "Show full session statistics",
+      "arguments": [
+        {
+          "name": "session-id",
+          "required": true,
+          "description": "Session ID or prefix"
+        }
+      ],
+      "options": [
+        {
+          "flags": "-s, --source <source>",
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        },
+        {
+          "flags": "--json",
+          "description": "[deprecated] Use --output json"
+        }
+      ]
+    },
+    {
+      "name": "info",
+      "description": "Show lightweight session metadata (cheaper than stats)",
+      "arguments": [
+        {
+          "name": "session-id",
+          "required": true,
+          "description": "Session ID or prefix"
+        }
+      ],
+      "options": [
+        {
+          "flags": "-s, --source <source>",
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        },
+        {
+          "flags": "--json",
+          "description": "[deprecated] Use --output json"
+        }
+      ]
+    },
+    {
+      "name": "search",
+      "description": "Search across sessions by content",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "-q, --query <text>",
+          "description": "Search query"
+        },
+        {
+          "flags": "-s, --source <source>",
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        },
+        {
+          "flags": "--top <n>",
+          "description": "Max results to return",
+          "default": "10"
+        },
+        {
+          "flags": "--max-sessions <n>",
+          "description": "Max sessions to scan (most recent first)",
+          "default": "20"
+        },
+        {
+          "flags": "--json",
+          "description": "[deprecated] Use --output json"
+        }
+      ]
+    },
+    {
+      "name": "diff",
+      "description": "Compare two sessions (structural diff)",
+      "arguments": [
+        {
+          "name": "id1",
+          "required": true,
+          "description": "First session ID or prefix"
+        },
+        {
+          "name": "id2",
+          "required": true,
+          "description": "Second session ID or prefix"
+        }
+      ],
+      "options": [
+        {
+          "flags": "-s, --source <source>",
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        },
+        {
+          "flags": "--json",
+          "description": "[deprecated] Use --output json"
+        }
+      ]
+    },
+    {
+      "name": "tag",
+      "description": "Add or remove session tags (idempotent)",
+      "arguments": [
+        {
+          "name": "session-id",
+          "required": true,
+          "description": "Session ID or prefix"
+        }
+      ],
+      "options": [
+        {
+          "flags": "--add <tag>",
+          "description": "Tag to add"
+        },
+        {
+          "flags": "--remove <tag>",
+          "description": "Tag to remove"
+        },
+        {
+          "flags": "-s, --source <source>",
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        }
+      ]
+    },
+    {
+      "name": "prune",
+      "description": "Delete old sessions",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--older-than <duration>",
+          "description": "Duration threshold (e.g., 7d, 24h)"
+        },
+        {
+          "flags": "--dry-run",
+          "description": "Preview what would be deleted"
+        },
+        {
+          "flags": "--yes",
+          "description": "Skip confirmation"
+        },
+        {
+          "flags": "-s, --source <source>",
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        }
+      ]
+    },
+    {
+      "name": "send",
+      "description": "Send a message to an AI session (sync by default, --async for background)",
+      "arguments": [
+        {
+          "name": "session-id",
+          "required": false,
+          "description": "Session ID to resume (omit with --new)"
+        }
+      ],
+      "options": [
+        {
+          "flags": "-m, --message <text>",
+          "description": "Message to send (inline)"
+        },
+        {
+          "flags": "-f, --file <path>",
+          "description": "Read message from file (e.g. prompt.md)"
+        },
+        {
+          "flags": "-s, --source <source>",
+          "description": "Tool source — required with --new (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        },
+        {
+          "flags": "--new",
+          "description": "Create a new session instead of resuming"
+        },
+        {
+          "flags": "--async",
+          "description": "Run in background and return job ID"
+        },
+        {
+          "flags": "--cwd <dir>",
+          "description": "Working directory (default: current)"
+        },
+        {
+          "flags": "--tokens <n>",
+          "description": "Token budget for response"
+        },
+        {
+          "flags": "-p, --preset <name>",
+          "description": "Verbosity preset (minimal, standard, verbose, full)",
+          "default": "standard"
+        }
+      ]
+    },
+    {
+      "name": "context",
+      "description": "Export session context for agent handoff",
+      "arguments": [
+        {
+          "name": "session-id",
+          "required": true,
+          "description": "Session ID or prefix"
+        }
+      ],
+      "options": [
+        {
+          "flags": "-s, --source <source>",
+          "description": "Filter by source (claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed)"
+        },
+        {
+          "flags": "--tokens <n>",
+          "description": "Token budget (default: 8000)"
+        },
+        {
+          "flags": "--include-system-prompt",
+          "description": "Include system messages"
+        },
+        {
+          "flags": "--include-tool-results",
+          "description": "Include tool results"
+        },
+        {
+          "flags": "--format <fmt>",
+          "description": "Output format: messages or summary",
+          "default": "messages"
+        }
+      ]
+    },
+    {
+      "name": "jobs",
+      "description": "List all async jobs",
+      "arguments": [],
+      "options": [
+        {
+          "flags": "--status <status>",
+          "description": "Filter by status (running, completed, failed)"
+        }
+      ]
+    },
+    {
+      "name": "job",
+      "description": "Check async job status (lazy PID finalization)",
+      "arguments": [
+        {
+          "name": "job-id",
+          "required": true,
+          "description": "Job ID (from sessionr send --async)"
+        }
+      ],
+      "options": []
+    },
+    {
+      "name": "wait",
+      "description": "Block until an async job completes",
+      "arguments": [
+        {
+          "name": "job-id",
+          "required": true,
+          "description": "Job ID to wait for"
+        }
+      ],
+      "options": [
+        {
+          "flags": "--timeout <seconds>",
+          "description": "Timeout in seconds",
+          "default": "300"
+        },
+        {
+          "flags": "--interval <seconds>",
+          "description": "Poll interval in seconds",
+          "default": "2"
+        }
+      ]
+    },
+    {
+      "name": "cancel",
+      "description": "Cancel a running async job (SIGTERM)",
+      "arguments": [
+        {
+          "name": "job-id",
+          "required": true,
+          "description": "Job ID to cancel"
+        }
+      ],
+      "options": []
+    }
+  ],
+  "exit_codes": {
+    "0": "ok",
+    "1": "error",
+    "2": "bad usage",
+    "3": "not found",
+    "42": "no changes (etag)"
+  }
+}{
+  "error": {
+    "code": "USAGE_ERROR",
+    "message": "(outputHelp)",
+    "retry": false
+  }
+}

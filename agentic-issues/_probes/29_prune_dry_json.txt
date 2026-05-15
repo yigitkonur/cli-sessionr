@@ -1,0 +1,6 @@
+{
+  "api_version": 1,
+  "dry_run": true,
+  "would_delete": [],
+  "count": 0
+}
