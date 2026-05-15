@@ -230,6 +230,11 @@ export interface Job {
   id: string;
   session_id: string | null;
   source: SessionSource;
+  read_back: {
+    source: SessionSource;
+    tokens?: number;
+    preset?: string;
+  };
   cwd: string;
   message: string;
   status: JobStatus;
