@@ -3,7 +3,14 @@ import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
 import { parseBounded, SOURCES_LIST } from '../utils/validate.js';
-import type { SessionSource, OutputFormat } from '../types.js';
+import { cmdPrefix } from '../util/invocation.js';
+import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
+
+function isPwdRelevant(entryCwd: string, pwd: string): boolean {
+  if (!entryCwd) return false;
+  if (entryCwd === pwd) return true;
+  return pwd.startsWith(entryCwd + path.sep);
+}
 
 export async function listCommand(
   source?: string,
