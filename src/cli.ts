@@ -49,8 +49,8 @@ const program = new Command();
 
 program
   .name('sessionr')
-  .description('sessionr v2.7.0 — read, send, and orchestrate AI coding sessions')
-  .version('2.7.0')
+  .description(`sessionr v${PKG_VERSION} — read, send, and orchestrate AI coding sessions`)
+  .version(PKG_VERSION)
   .option('--output <format>', 'Output format: json, jsonl, table, text')
   .option('--api-version <n>', 'API version for structured output', '1')
   .option('--timing', 'Include timing_ms in JSON responses');
@@ -75,7 +75,6 @@ program
   .description('List available sessions')
   .option('-n, --limit <n>', 'Max sessions to list', '20')
   .option('--offset <n>', 'Skip first N sessions (for pagination)', '0')
-  .option('--cwd <scope>', 'Filter by cwd: current, all, or an absolute path', 'all')
   .option('-q, --search <query>', 'Search sessions by content')
   .option('--cwd <mode>', 'Filter by cwd: auto | current | all | <path>', 'auto')
   .option('--json', '[deprecated] Use --output json')
@@ -544,7 +543,7 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
 
   return {
     api_version: 1,
-    version: '2.7.0',
+    version: PKG_VERSION,
     name: cmd.name(),
     description: cmd.description(),
     sources: SOURCES_LIST,
