@@ -64,6 +64,12 @@ export async function contextExportCommand(
 
     const contextObj: Record<string, unknown> = {
       api_version: 1,
+      meta: {
+        next_action: {
+          command: `sessionr send --new --source ${session.source} -f prompt.md`,
+          description: 'Start a new session with this exported context',
+        },
+      },
       context: {
         session_id: session.id,
         source: session.source,

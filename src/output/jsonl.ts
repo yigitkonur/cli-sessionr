@@ -5,6 +5,7 @@ import type {
   VerbosityPreset,
   SessionListEntry,
   SliceMeta,
+  ListFooterMeta,
 } from '../types.js';
 import { SessionReaderError } from '../errors.js';
 import { estimateMessageTokens } from '../tokens.js';
@@ -60,7 +61,7 @@ export function createJsonlFormatter(): Formatter {
       return lines.join('\n');
     },
 
-    list(entries: SessionListEntry[]): string {
+    list(entries: SessionListEntry[], _meta?: ListFooterMeta): string {
       return entries.map((e) => line({ type: 'session', ...e })).join('\n');
     },
 

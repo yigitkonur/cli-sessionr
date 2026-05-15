@@ -7,6 +7,7 @@ import type {
   SessionListEntry,
   ContentBlock,
   SliceMeta,
+  ListFooterMeta,
 } from '../types.js';
 import { truncate } from '../parsers/common.js';
 import { getAdapter } from '../parsers/registry.js';
@@ -84,9 +85,9 @@ export function createPlainFormatter(): Formatter {
         if (meta.page) {
           lines.push(`Page ${meta.page.current} of ${meta.page.total}`);
         }
-        if (meta.cursor.prev) lines.push(`Prev: ${meta.cursor.prev}`);
-        if (meta.cursor.next) lines.push(`Next: ${meta.cursor.next}`);
-        if (meta.cursor.first && meta.cursor.prev) lines.push(`First: ${meta.cursor.first}`);
+        if (meta.cursor.prev) lines.push(`Prev: ${meta.cursor.prev.command}`);
+        if (meta.cursor.next) lines.push(`Next: ${meta.cursor.next.command}`);
+        if (meta.cursor.first && meta.cursor.prev) lines.push(`First: ${meta.cursor.first.command}`);
       }
 
       // Resume hint
@@ -99,7 +100,7 @@ export function createPlainFormatter(): Formatter {
       return lines.join('\n');
     },
 
-    list(entries: SessionListEntry[]): string {
+    list(entries: SessionListEntry[], meta?: ListFooterMeta): string {
       const lines: string[] = [];
       lines.push(`# Sessions (${entries.length} most recent)`);
       lines.push('');
@@ -113,10 +114,8 @@ export function createPlainFormatter(): Formatter {
         );
       }
 
-      if (entries.length > 0) {
-        lines.push('');
-        lines.push(`Tip: sessionr read ${shortId(entries[0].id)} to open a session`);
-      }
+      lines.push('');
+      lines.push(renderListFooter(entries, meta));
 
       lines.push('');
       return lines.join('\n');
@@ -129,6 +128,47 @@ export function createPlainFormatter(): Formatter {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+function renderListFooter(entries: SessionListEntry[], meta?: ListFooterMeta): string {
+  if (entries.length === 0) {
+    return [
+      '## No sessions matched',
+      '',
+      '- `sessionr doctor` - See which sources and data dirs are configured',
+      '- `sessionr list --cwd all` - Show sessions from every project',
+      '- `sessionr send --new -s claude -f prompt.md` - Start a new session',
+    ].join('\n');
+  }
+
+  const firstId = shortId(entries[0].id);
+  const page = meta ? Math.floor(meta.offset / meta.limit) + 1 : 1;
+  const totalPages = meta ? Math.max(1, Math.ceil(meta.totalAvailable / meta.limit)) : 1;
+  const cwd = shortenPath(entries[0].cwd);
+  const nextOffset = meta ? meta.offset + meta.limit : entries.length;
+  const nextCommand = `sessionr list${meta?.source ? ' ' + meta.source : ''} --offset ${nextOffset} --limit ${meta?.limit ?? entries.length}`;
+
+  const lines = [
+    `_${entries.length} sessions · page ${page}/${totalPages} · cwd: ${cwd}_`,
+    '',
+    '## Next steps',
+    '',
+    `- \`sessionr read ${firstId}\` - Read messages (token-budgeted)`,
+    `- \`sessionr info ${firstId}\` - Metadata only (cheap)`,
+    `- \`sessionr stats ${firstId}\` - Tools used, files modified, durations`,
+    `- \`sessionr send ${firstId} -f p.md\` - Resume the session`,
+    '',
+    '## Pagination',
+    '',
+    meta?.hasMore ? `- \`${nextCommand}\` - Next page` : '- No next page',
+    '',
+    '## Filtering',
+    '',
+    '- `sessionr list --cwd current` - Only this project',
+    '- `sessionr list -q "deploy"` - Search by content',
+  ];
+
+  return lines.join('\n');
+}
 
 function shortId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id;
