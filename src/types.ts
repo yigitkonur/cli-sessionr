@@ -234,7 +234,7 @@ export interface ReadOptions {
 
 // ── Job Types (Write Path) ─────────────────────────────────────────────────
 
-export type JobStatus = 'running' | 'completed' | 'failed';
+export type JobStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface Job {
   id: string;
@@ -256,6 +256,7 @@ export interface Job {
   stdout_file: string;
   stderr_file: string;
   is_new_session: boolean;
+  last_error?: string | null;
 }
 
 export interface SendOptions {

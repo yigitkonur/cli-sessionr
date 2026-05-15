@@ -1,18 +1,18 @@
-import { cmdPrefix } from "../util/invocation.js";
-import { spawn } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { closeSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { mkdirSync } from 'node:fs';
 import { loadSession, listSessions } from '../discovery.js';
 import { buildResumeCommand, buildNewCommand, canSend } from '../runners.js';
-import { createJob, generateJobId } from '../jobs.js';
+import { createJob, generateJobId, jobExitPath } from '../jobs.js';
 import { createFormatter } from '../output/formatter.js';
 import { getPreset, getDefaultTokenBudget } from '../config.js';
 import { sliceByTokenBudget } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { SessionReaderError, EXIT, exitCodeForError } from '../errors.js';
 import { resolveSourceAlias } from '../parsers/registry.js';
+import { cmdPrefix } from '../util/invocation.js';
 import type { SessionSource, SendOptions, OutputFormat, SliceMeta } from '../types.js';
 
 const JOBS_DIR = join(homedir(), '.sessionreader', 'jobs');
@@ -234,40 +234,102 @@ async function runAsync(
   isNew: boolean,
   formatter: ReturnType<typeof createFormatter>,
 ): Promise<void> {
-  mkdirSync(JOBS_DIR, { recursive: true });
+  try {
+    mkdirSync(JOBS_DIR, { recursive: true });
+  } catch (err) {
+    throw new SessionReaderError(`Failed to prepare async jobs directory: ${(err as Error).message}`, {
+      code: 'ASYNC_SETUP_ERROR',
+      exitCode: EXIT.ERROR,
+      detail: { jobs_dir: JOBS_DIR, error: (err as Error).message },
+      suggestion: 'Ensure the jobs directory is writable',
+      cause: err,
+    });
+  }
 
   const jobId = generateJobId();
   const stdoutFile = join(JOBS_DIR, `${jobId}.stdout`);
   const stderrFile = join(JOBS_DIR, `${jobId}.stderr`);
+  const exitFile = jobExitPath(jobId);
 
-  const stdoutStream = createWriteStream(stdoutFile);
-  const stderrStream = createWriteStream(stderrFile);
+  let stdoutFd: number | null = null;
+  let stderrFd: number | null = null;
+  let child: ChildProcess | null = null;
+  try {
+    stdoutFd = openSync(stdoutFile, 'a');
+    stderrFd = openSync(stderrFile, 'a');
+    child = spawn(
+      'bash',
+      [
+        '-c',
+        'exit_file=$1; shift; "$@"; code=$?; printf "%s\\n" "$code" > "$exit_file"; exit "$code"',
+        'sessionr-job-wrapper',
+        exitFile,
+        cmd.bin,
+        ...cmd.args,
+      ],
+      {
+        cwd,
+        detached: true,
+        stdio: ['ignore', stdoutFd, stderrFd],
+      },
+    );
+  } catch (err) {
+    throw new SessionReaderError(`Failed to start async job for ${cmd.bin}: ${(err as Error).message}`, {
+      code: 'ASYNC_SETUP_ERROR',
+      exitCode: EXIT.ERROR,
+      detail: { tool: cmd.bin, error: (err as Error).message },
+      suggestion: `Ensure ${cmd.bin} is installed and the jobs directory is writable`,
+      cause: err,
+    });
+  } finally {
+    if (stdoutFd !== null) closeSync(stdoutFd);
+    if (stderrFd !== null) closeSync(stderrFd);
+  }
 
-  const child = spawn(cmd.bin, cmd.args, {
-    cwd,
-    detached: true,
-    stdio: ['ignore', stdoutStream, stderrStream],
-  });
+  if (!child?.pid) {
+    throw new SessionReaderError(`Failed to spawn ${cmd.bin}`, {
+      code: 'SPAWN_ERROR',
+      exitCode: EXIT.ERROR,
+      detail: { tool: cmd.bin },
+      suggestion: `Ensure ${cmd.bin} is installed and in PATH`,
+    });
+  }
+
+  let job;
+  try {
+    job = createJob({
+      id: jobId,
+      sessionId,
+      source,
+      readBack: { source, tokens: opts.tokens, preset: opts.preset },
+      cwd,
+      message: opts.message,
+      pid: child.pid,
+      messageCountBefore,
+      isNewSession: isNew,
+      stdoutFile,
+      stderrFile,
+    });
+  } catch (err) {
+    try {
+      process.kill(-child.pid, 'SIGTERM');
+    } catch {
+      try {
+        process.kill(child.pid, 'SIGTERM');
+      } catch {
+        // Best effort cleanup for a job that could not be persisted.
+      }
+    }
+    throw new SessionReaderError(`Failed to persist async job: ${(err as Error).message}`, {
+      code: 'ASYNC_SETUP_ERROR',
+      exitCode: EXIT.ERROR,
+      detail: { job_id: jobId, error: (err as Error).message },
+      suggestion: 'Ensure the jobs directory is writable',
+      cause: err,
+    });
+  }
 
   child.unref();
-
-  const job = createJob({
-    id: jobId,
-    sessionId,
-    source,
-    readBack: {
-      source,
-      tokens: opts.tokens,
-      preset: opts.preset,
-    },
-    cwd,
-    message: opts.message,
-    pid: child.pid!,
-    messageCountBefore,
-    isNewSession: isNew,
-    stdoutFile,
-    stderrFile,
-  });
 
   const result = {
     api_version: 1,
@@ -289,6 +351,7 @@ async function runAsync(
   };
 
   console.log(JSON.stringify(result, dateReplacer, 2));
+  process.exitCode = EXIT.OK;
 }
 
 async function detectNewSession(

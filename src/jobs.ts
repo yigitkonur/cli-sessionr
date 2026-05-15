@@ -1,10 +1,21 @@
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Job, JobStatus, SessionSource } from './types.js';
 
 const JOBS_DIR = join(homedir(), '.sessionreader', 'jobs');
+const LOCK_STALE_MS = 30_000;
 
 function ensureDir(): void {
   mkdirSync(JOBS_DIR, { recursive: true });
@@ -12,6 +23,65 @@ function ensureDir(): void {
 
 function jobPath(id: string): string {
   return join(JOBS_DIR, `${id}.json`);
+}
+
+export function jobExitPath(id: string): string {
+  return `${jobPath(id)}.exit`;
+}
+
+function jobLockPath(id: string): string {
+  return `${jobPath(id)}.lock`;
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function withJobLock<T>(id: string, fn: () => T): T {
+  ensureDir();
+  const lockPath = jobLockPath(id);
+  let fd: number | null = null;
+
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      fd = openSync(lockPath, 'wx');
+      break;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') throw err;
+
+      try {
+        const ageMs = Date.now() - statSync(lockPath).mtimeMs;
+        if (ageMs > LOCK_STALE_MS) unlinkSync(lockPath);
+      } catch {
+        // Another process may have released the lock.
+      }
+
+      sleepSync(10);
+    }
+  }
+
+  if (fd === null) {
+    throw new Error(`Timed out acquiring job lock for ${id}`);
+  }
+
+  try {
+    return fn();
+  } finally {
+    closeSync(fd);
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      // Best effort; a stale lock is cleaned up on the next writer.
+    }
+  }
+}
+
+function writeJobAtomic(job: Job): void {
+  const path = jobPath(job.id);
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(job, null, 2));
+  renameSync(tmp, path);
 }
 
 export function generateJobId(): string {
@@ -53,7 +123,7 @@ export function createJob(opts: {
     stderr_file: opts.stderrFile,
     is_new_session: opts.isNewSession,
   };
-  writeFileSync(jobPath(job.id), JSON.stringify(job, null, 2));
+  withJobLock(job.id, () => writeJobAtomic(job));
   return job;
 }
 
@@ -67,8 +137,7 @@ export function readJob(id: string): Job | null {
 }
 
 export function updateJob(job: Job): void {
-  ensureDir();
-  writeFileSync(jobPath(job.id), JSON.stringify(job, null, 2));
+  withJobLock(job.id, () => writeJobAtomic(job));
 }
 
 export function listJobs(statusFilter?: JobStatus): Job[] {
@@ -112,39 +181,53 @@ export function finalizeJob(job: Job): Job {
   if (job.status !== 'running') return job;
   if (isPidAlive(job.pid)) return job;
 
-  // PID is dead — finalize
-  job.status = 'completed';
-  job.completed_at = new Date().toISOString();
-
-  // Try to read exit code from stderr hints, otherwise assume success
+  let exitCode = -1;
+  let lastError: string | null = null;
   try {
-    const stderr = readFileSync(job.stderr_file, 'utf-8').trim();
-    if (stderr.length > 0) {
-      job.status = 'failed';
-      job.exit_code = 1;
+    const raw = readFileSync(jobExitPath(job.id), 'utf-8').trim();
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed)) {
+      exitCode = parsed;
     } else {
-      job.exit_code = 0;
+      lastError = 'exit_code_missing';
     }
   } catch {
-    job.exit_code = 0;
+    lastError = 'exit_code_missing';
   }
 
-  updateJob(job);
-  return job;
+  const finalized: Job = {
+    ...job,
+    status: exitCode === 0 ? 'completed' : 'failed',
+    completed_at: new Date().toISOString(),
+    exit_code: exitCode,
+    last_error: lastError,
+  };
+
+  updateJob(finalized);
+  return finalized;
 }
 
 export function cancelJob(job: Job): Job {
   if (job.status !== 'running') return job;
 
   try {
-    process.kill(job.pid, 'SIGTERM');
+    process.kill(-job.pid, 'SIGTERM');
   } catch {
-    // already dead
+    try {
+      process.kill(job.pid, 'SIGTERM');
+    } catch {
+      // already dead
+    }
   }
 
-  job.status = 'failed';
-  job.exit_code = 130; // SIGTERM convention
-  job.completed_at = new Date().toISOString();
-  updateJob(job);
-  return job;
+  const cancelled: Job = {
+    ...job,
+    status: 'cancelled',
+    exit_code: 130, // SIGTERM convention
+    completed_at: new Date().toISOString(),
+    last_error: null,
+  };
+
+  updateJob(cancelled);
+  return cancelled;
 }

@@ -183,6 +183,7 @@ export function sliceByTokenBudget(
     cursor_before: firstIdx > 1 ? firstIdx - 1 : null,
     cursor_after: lastIdx < totalMessages ? lastIdx + 1 : null,
     cursor: { prev: null, next: null, first: null },
+    partial: firstIdx > 1 || lastIdx < totalMessages,
   };
 
   meta.cursor = buildCursorCommands(sessionId, meta);

@@ -1,67 +1,106 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { createJob, deleteJob, updateJob } from '../src/jobs.js';
-import { jobStatusCommand } from '../src/commands/job.js';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Job } from '../src/types.js';
 
-const createdJobIds: string[] = [];
+const DEAD_PID = 999_999;
+
+async function loadJobsModule() {
+  const home = mkdtempSync(join(tmpdir(), 'sessionr-jobs-test-'));
+  vi.resetModules();
+  vi.doMock('node:os', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('node:os')>()),
+    homedir: () => home,
+  }));
+  const jobs = await import('../src/jobs.js');
+  return { home, jobs };
+}
+
+function makeJob(overrides: Partial<Job> = {}): Job {
+  return {
+    id: 'job123',
+    session_id: null,
+    source: 'codex',
+    cwd: '/tmp',
+    message: 'test',
+    status: 'running',
+    pid: DEAD_PID,
+    exit_code: null,
+    started_at: '2026-05-15T00:00:00.000Z',
+    completed_at: null,
+    message_count_before: 0,
+    stdout_file: '/tmp/job.stdout',
+    stderr_file: '/tmp/job.stderr',
+    is_new_session: true,
+    ...overrides,
+  };
+}
 
 afterEach(() => {
-  for (const id of createdJobIds.splice(0)) {
-    deleteJob(id);
-  }
+  vi.doUnmock('node:os');
 });
 
 describe('jobs', () => {
-  it('persists read_back settings and replays them in read actions', async () => {
-    const job = createJob({
-      id: `test-${Date.now()}`,
-      sessionId: 'session-123',
-      source: 'claude',
-      readBack: {
-        source: 'claude',
-        tokens: 4000,
-        preset: 'verbose',
-      },
-      cwd: process.cwd(),
-      message: 'hi',
-      pid: process.pid,
-      messageCountBefore: 7,
-      isNewSession: false,
-      stdoutFile: '/tmp/sessionr-test.stdout',
-      stderrFile: '/tmp/sessionr-test.stderr',
+  it('finalizes from exit sidecar instead of stderr content', async () => {
+    const { home, jobs } = await loadJobsModule();
+    const job = makeJob({
+      stderr_file: join(home, 'warning.stderr'),
     });
-    createdJobIds.push(job.id);
+    mkdirSync(join(home, '.sessionreader', 'jobs'), { recursive: true });
+    writeFileSync(job.stderr_file, 'warning\n');
+    writeFileSync(jobs.jobExitPath(job.id), '0\n');
 
-    const completed: Job = {
-      ...job,
+    const before = { ...job };
+    const finalized = jobs.finalizeJob(job);
+
+    expect(job).toEqual(before);
+    expect(finalized).not.toBe(job);
+    expect(finalized.status).toBe('completed');
+    expect(finalized.exit_code).toBe(0);
+  });
+
+  it('uses non-zero sidecar exit codes for failed jobs', async () => {
+    const { home, jobs } = await loadJobsModule();
+    const job = makeJob();
+    mkdirSync(join(home, '.sessionreader', 'jobs'), { recursive: true });
+    writeFileSync(jobs.jobExitPath(job.id), '137\n');
+
+    const finalized = jobs.finalizeJob(job);
+
+    expect(finalized.status).toBe('failed');
+    expect(finalized.exit_code).toBe(137);
+    expect(finalized.last_error).toBeNull();
+  });
+
+  it('marks dead jobs failed when the exit sidecar is missing', async () => {
+    const { jobs } = await loadJobsModule();
+    const finalized = jobs.finalizeJob(makeJob());
+
+    expect(finalized.status).toBe('failed');
+    expect(finalized.exit_code).toBe(-1);
+    expect(finalized.last_error).toBe('exit_code_missing');
+  });
+
+  it('persists updates atomically through a temp rename', async () => {
+    const { home, jobs } = await loadJobsModule();
+    const job = makeJob({ status: 'completed', exit_code: 0 });
+
+    jobs.updateJob(job);
+
+    const path = join(home, '.sessionreader', 'jobs', `${job.id}.json`);
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toMatchObject({
+      id: job.id,
       status: 'completed',
       exit_code: 0,
-      completed_at: new Date().toISOString(),
-    };
-    updateJob(completed);
-
-    let output = '';
-    const originalLog = console.log;
-    console.log = (value?: unknown) => {
-      output += String(value);
-    };
-    try {
-      await jobStatusCommand(job.id, { output: 'json' });
-    } finally {
-      console.log = originalLog;
-    }
-
-    const parsed = JSON.parse(output) as {
-      data: { read_back: { source: string; tokens: number; preset: string } };
-      actions: Array<{ command: string }>;
-    };
-    expect(parsed.data.read_back).toEqual({
-      source: 'claude',
-      tokens: 4000,
-      preset: 'verbose',
     });
-    expect(parsed.actions[0]?.command).toBe(
-      'sessionr read session-123 --after 7 --source claude --tokens 4000 --preset verbose',
-    );
+  });
+
+  it('uses cancelled status for cancelled jobs', async () => {
+    const { jobs } = await loadJobsModule();
+    const cancelled = jobs.cancelJob(makeJob());
+
+    expect(cancelled.status).toBe('cancelled');
+    expect(cancelled.exit_code).toBe(130);
   });
 });

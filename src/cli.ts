@@ -315,7 +315,7 @@ program
 program
   .command('jobs', { hidden: true })
   .description('List all async jobs')
-  .option('--status <status>', 'Filter by status (running, completed, failed)')
+  .option('--status <status>', 'Filter by status (running, completed, failed, cancelled)')
   .action(async (opts: { status?: string }) => {
     const parentOpts = program.opts();
     await jobListCommand({
