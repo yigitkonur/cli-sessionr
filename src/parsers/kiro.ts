@@ -642,6 +642,7 @@ registerSource({
   name: 'kiro',
   label: 'Kiro',
   color: '#FF9900',
+  getDataDir: () => findKiroAgentDir() ?? getKiroAgentDirs()[0],
   find: findKiroSessions,
   parse: parseKiroSession,
 });

@@ -1,9 +1,9 @@
 import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
-import type { SessionSource, OutputFormat } from '../types.js';
+import type { SessionSource, OutputFormat, DiscoveryWarning } from '../types.js';
 
-const SOURCES = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed'];
+const SOURCES = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed', 'factory'];
 
 export async function listCommand(
   source?: string,
@@ -20,7 +20,12 @@ export async function listCommand(
   try {
     const limit = opts?.limit ? parseInt(opts.limit, 10) : 20;
     const offset = opts?.offset ? parseInt(opts.offset, 10) : 0;
-    let allEntries = await listSessions(source as SessionSource | undefined);
+    const warnings: DiscoveryWarning[] = [];
+    let allEntries = await listSessions(
+      source as SessionSource | undefined,
+      undefined,
+      (warning) => warnings.push(warning),
+    );
 
     // Content search across sessions
     if (opts?.search) {
@@ -53,6 +58,9 @@ export async function listCommand(
         has_more: hasMore,
         available_sources: SOURCES,
       };
+      if (warnings.length > 0) {
+        result.meta = { warnings };
+      }
 
       // Cursor commands
       const cursor: Record<string, string | null> = {

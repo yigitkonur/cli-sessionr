@@ -4,6 +4,7 @@ export interface SourceAdapter {
   name: SessionSource;
   label: string;
   color: string;
+  getDataDir(): string;
   find(): Promise<SessionListEntry[]>;
   parse(filePath: string): Promise<NormalizedSession>;
 }

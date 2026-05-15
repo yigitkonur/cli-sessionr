@@ -1,7 +1,7 @@
 import './parsers/index.js'; // triggers all parser registrations
 import { getAdapters, getAdapter } from './parsers/registry.js';
 import { SessionNotFoundError } from './errors.js';
-import type { SessionSource, SessionListEntry, NormalizedSession } from './types.js';
+import type { SessionSource, SessionListEntry, NormalizedSession, DiscoveryWarning } from './types.js';
 
 /**
  * Find a session by ID (full or prefix) and parse it.
@@ -10,8 +10,13 @@ import type { SessionSource, SessionListEntry, NormalizedSession } from './types
 export async function loadSession(
   sessionId: string,
   source?: SessionSource,
+  onWarning?: (warning: DiscoveryWarning) => void,
 ): Promise<NormalizedSession> {
-  const entries = await listSessions(source);
+  const entries = await listSessions(source, undefined, onWarning);
+  const totalSessions = async () => {
+    if (!source) return entries.length;
+    return (await listSessions(undefined, 1, onWarning)).length;
+  };
 
   // Try exact match first
   let match = entries.find((e) => e.id === sessionId);
@@ -22,18 +27,24 @@ export async function loadSession(
       .filter((e) => e.id.startsWith(sessionId))
       .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 
-    if (prefixMatches.length > 0) {
+    if (prefixMatches.length > 1) {
+      throw new SessionNotFoundError(sessionId, {
+        totalSessions: await totalSessions(),
+        prefixMatches,
+      });
+    }
+    if (prefixMatches.length === 1) {
       match = prefixMatches[0];
     }
   }
 
   if (!match) {
-    throw new SessionNotFoundError(sessionId);
+    throw new SessionNotFoundError(sessionId, { totalSessions: await totalSessions() });
   }
 
   const adapter = getAdapter(match.source);
   if (!adapter) {
-    throw new SessionNotFoundError(sessionId);
+    throw new SessionNotFoundError(sessionId, { totalSessions: await totalSessions() });
   }
 
   return adapter.parse(match.filePath);
@@ -41,18 +52,30 @@ export async function loadSession(
 
 /**
  * List sessions from one or all sources, sorted by updatedAt desc.
+ * Adapter-level discovery failures are reported through onWarning to preserve
+ * the existing array return shape for internal callers.
  */
 export async function listSessions(
   source?: SessionSource,
   limit?: number,
+  onWarning?: (warning: DiscoveryWarning) => void,
 ): Promise<SessionListEntry[]> {
   const adapters = getAdapters(source as SessionSource | undefined);
   const results = await Promise.allSettled(adapters.map((a) => a.find()));
 
   const merged: SessionListEntry[] = [];
-  for (const result of results) {
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
     if (result.status === 'fulfilled') {
       merged.push(...result.value);
+    } else {
+      onWarning?.({
+        source: adapters[i].name,
+        error: {
+          code: 'ADAPTER_FAILED',
+          message: String(result.reason instanceof Error ? result.reason.message : result.reason),
+        },
+      });
     }
   }
 

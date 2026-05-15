@@ -510,6 +510,7 @@ registerSource({
   name: 'gemini',
   label: 'Gemini CLI',
   color: '#4285F4',
+  getDataDir: () => TMP_DIR,
   find: findGeminiSessions,
   parse: parseGeminiSession,
 });

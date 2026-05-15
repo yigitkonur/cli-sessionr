@@ -758,6 +758,7 @@ registerSource({
   name: 'codex',
   label: 'Codex',
   color: '#FF8C00',
+  getDataDir: getSessionsDir,
   find: findCodexSessions,
   parse: parseCodexSession,
 });

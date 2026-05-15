@@ -417,6 +417,7 @@ registerSource({
   name: 'copilot',
   label: 'Copilot CLI',
   color: '#000000',
+  getDataDir: () => SESSION_STATE_DIR,
   find: findCopilotSessions,
   parse: parseCopilotSession,
 });

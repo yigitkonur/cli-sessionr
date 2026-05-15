@@ -491,6 +491,7 @@ registerSource({
   name: 'zed',
   label: 'Zed',
   color: '#0078FF',
+  getDataDir: getZedDataPath,
   find: findZedSessions,
   parse: parseZedSession,
 });

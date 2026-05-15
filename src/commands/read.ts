@@ -6,7 +6,7 @@ import { InvalidRangeError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget, sliceByPage, filterByRole, buildCursorCommands, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens, estimateMessageTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
-import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary } from '../types.js';
+import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning } from '../types.js';
 
 function shortenPath(p: string): string {
   const home = homedir();
@@ -160,9 +160,11 @@ export async function readCommand(
   });
 
   try {
+    const warnings: DiscoveryWarning[] = [];
     const session = await loadSession(
       sessionId,
       opts?.source as SessionSource | undefined,
+      (warning) => warnings.push(warning),
     );
 
     let messages = session.messages;
@@ -197,7 +199,7 @@ export async function readCommand(
       meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
       if (outputFormat === 'json' || outputFormat === 'jsonl') {
-        const envelope = buildJsonEnvelope(session, result.messages, meta, preset, summary);
+        const envelope = buildJsonEnvelope(session, result.messages, meta, preset, summary, warnings);
         console.log(JSON.stringify(envelope, dateReplacer, 2));
       } else {
         console.log(formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta));
@@ -261,7 +263,7 @@ export async function readCommand(
     }
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
-      const envelope = buildJsonEnvelope(session, outputMessages, meta, preset, summary);
+      const envelope = buildJsonEnvelope(session, outputMessages, meta, preset, summary, warnings);
       console.log(JSON.stringify(envelope, dateReplacer, 2));
     } else {
       console.log(
@@ -281,10 +283,11 @@ function buildJsonEnvelope(
   meta: SliceMeta,
   _preset: VerbosityPreset,
   summary?: SessionSummary,
+  warnings?: DiscoveryWarning[],
 ): Record<string, unknown> {
   const envelope: Record<string, unknown> = { api_version: 1 };
   if (summary) envelope.session = summary;
-  envelope.meta = meta;
+  envelope.meta = warnings && warnings.length > 0 ? { ...meta, warnings } : meta;
   envelope.messages = messages.map((m) => ({
     index: m.index,
     role: m.role,

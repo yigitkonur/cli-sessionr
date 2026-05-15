@@ -1,7 +1,7 @@
 import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
-import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
+import type { SessionSource, OutputFormat, SessionListEntry, DiscoveryWarning } from '../types.js';
 
 interface SearchResult extends SessionListEntry {
   matchCount: number;
@@ -27,7 +27,12 @@ export async function searchCommand(
 
   try {
     const maxSessions = opts.maxSessions ? parseInt(opts.maxSessions, 10) : 20;
-    const allEntries = await listSessions(opts.source as SessionSource | undefined);
+    const warnings: DiscoveryWarning[] = [];
+    const allEntries = await listSessions(
+      opts.source as SessionSource | undefined,
+      undefined,
+      (warning) => warnings.push(warning),
+    );
     const entries = allEntries.slice(0, maxSessions);
     const query = opts.query.toLowerCase();
     const top = opts.top ? parseInt(opts.top, 10) : 10;
@@ -66,7 +71,7 @@ export async function searchCommand(
         );
       }
 
-      const result = {
+      const result: Record<string, unknown> = {
         api_version: 1,
         query: opts.query,
         sessions_scanned: entries.length,
@@ -82,6 +87,9 @@ export async function searchCommand(
         total_matches: topResults.length,
         actions,
       };
+      if (warnings.length > 0) {
+        result.meta = { warnings };
+      }
       console.log(JSON.stringify(result, dateReplacer, 2));
     } else {
       console.log(formatter.list(topResults));

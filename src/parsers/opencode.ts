@@ -486,6 +486,7 @@ registerSource({
   name: 'opencode',
   label: 'OpenCode',
   color: '#00B4D8',
+  getDataDir: () => SESSION_DIR,
   find: findOpenCodeSessions,
   parse: parseOpenCodeSession,
 });

@@ -377,6 +377,7 @@ registerSource({
   name: 'factory',
   label: 'Factory',
   color: '#7C3AED',
+  getDataDir: getSessionsDir,
   find: findFactorySessions,
   parse: parseFactorySession,
 });

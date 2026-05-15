@@ -342,6 +342,7 @@ registerSource({
   name: 'cursor-agent',
   label: 'Cursor Agent',
   color: '#00D4AA',
+  getDataDir: () => CURSOR_PROJECTS_DIR,
   find: findCursorAgentSessions,
   parse: parseCursorAgentSession,
 });
