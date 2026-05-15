@@ -1,14 +1,8 @@
-import { cmdPrefix } from "../util/invocation.js";
-import { homedir } from 'node:os';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
+import { cmdPrefix } from '../util/invocation.js';
 import type { SessionSource, OutputFormat } from '../types.js';
-
-function shortenPath(p: string): string {
-  const home = homedir();
-  return p.startsWith(home) ? '~' + p.slice(home.length) : p;
-}
 
 export async function infoCommand(
   sessionId: string,
@@ -33,7 +27,7 @@ export async function infoCommand(
         api_version: 1,
         id: session.id,
         source: session.source,
-        cwd: shortenPath(session.metadata.cwd),
+        cwd: session.metadata.cwd,
         model: session.metadata.model,
         git_branch: session.metadata.gitBranch,
         created_at: session.metadata.createdAt,

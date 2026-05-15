@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { listSessions, loadSession } from '../discovery.js';
+import { listSessionsScoped, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
 import { cmdPrefix } from '../util/invocation.js';
@@ -15,7 +15,7 @@ function isPwdRelevant(entryCwd: string, pwd: string): boolean {
 
 export async function listCommand(
   source?: string,
-  opts?: { limit?: string; offset?: string; search?: string; maxSessions?: string; json?: boolean; output?: OutputFormat },
+  opts?: { limit?: string; offset?: string; search?: string; maxSessions?: string; cwd?: string; json?: boolean; output?: OutputFormat },
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
   const outputFormat = opts?.output ?? (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
@@ -28,14 +28,15 @@ export async function listCommand(
   try {
     const limit = opts?.limit ? parseInt(opts.limit, 10) : 20;
     const offset = opts?.offset ? parseInt(opts.offset, 10) : 0;
-    let allEntries = await listSessions(source as SessionSource | undefined);
+    const scoped = await listSessionsScoped(source as SessionSource | undefined, opts?.cwd ?? 'auto');
+    let allEntries = scoped.sessions;
     let searchMeta: Record<string, unknown> | undefined;
 
     // Drop empty sessions (no user/assistant exchange) from the listing
     allEntries = allEntries.filter((e) => !e.isEmpty);
 
-    // Rank entries whose cwd matches (or contains) the current working directory first.
-    // Within each bucket, the existing recency order is preserved.
+    // Within the scoped bucket, rank entries whose cwd matches (or contains) $PWD first.
+    // Redundant when scoped is auto/current/explicit; useful when --cwd all.
     const pwd = process.cwd();
     const pwdMatches: SessionListEntry[] = [];
     const others: SessionListEntry[] = [];
@@ -83,6 +84,7 @@ export async function listCommand(
         offset,
         has_more: hasMore,
         available_sources: SOURCES,
+        meta: scoped.meta,
       };
       if (searchMeta) {
         result.meta = { search: searchMeta };
@@ -91,10 +93,10 @@ export async function listCommand(
       // Cursor commands
       const cursor: Record<string, string | null> = {
         next: hasMore
-          ? `${prefix} list${source ? ' ' + source : ''} --offset ${offset + limit} --limit ${limit}`
+          ? `${prefix} list${source ? ' ' + source : ''} --offset ${offset + limit} --limit ${limit}${opts?.cwd ? ` --cwd ${opts.cwd}` : ''}`
           : null,
         prev: offset > 0
-          ? `${prefix} list${source ? ' ' + source : ''} --offset ${Math.max(0, offset - limit)} --limit ${limit}`
+          ? `${prefix} list${source ? ' ' + source : ''} --offset ${Math.max(0, offset - limit)} --limit ${limit}${opts?.cwd ? ` --cwd ${opts.cwd}` : ''}`
           : null,
       };
       result.cursor = cursor;

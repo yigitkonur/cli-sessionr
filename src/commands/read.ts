@@ -1,4 +1,3 @@
-import { homedir } from 'node:os';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
@@ -8,11 +7,6 @@ import { estimateSessionTokens, estimateMessageTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
 import { cmdPrefix } from '../util/invocation.js';
 import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary } from '../types.js';
-
-function shortenPath(p: string): string {
-  const home = homedir();
-  return p.startsWith(home) ? '~' + p.slice(home.length) : p;
-}
 
 function buildSessionSummary(session: NormalizedSession, tokenBudget: number | undefined, preset?: VerbosityPreset): SessionSummary {
   const totalTokens = estimateSessionTokens(session.messages);
@@ -30,7 +24,7 @@ function buildSessionSummary(session: NormalizedSession, tokenBudget: number | u
     id: session.id,
     source: session.source,
     model: session.metadata.model,
-    cwd: shortenPath(session.metadata.cwd),
+    cwd: session.metadata.cwd,
     git_branch: session.metadata.gitBranch,
     total_messages: session.stats.totalMessages,
     total_tokens_estimate: totalTokens,
