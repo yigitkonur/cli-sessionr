@@ -16,6 +16,24 @@ import type { OutputFormat, DetailLevel, ReadOptions, SendOptions } from './type
 
 const SOURCES = 'claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed, factory (alias: droid)';
 const SOURCES_LIST = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed', 'factory'];
+const PRESET_HELP = `Verbosity preset (${PRESET_NAMES.join(', ')}; minimal ~200 tokens, standard ~600 tokens, verbose ~1500 tokens, full ~3000+ tokens) [default: verbose for agents, standard for TTY]`;
+const SEND_PRESET_HELP = `Verbosity preset (${PRESET_NAMES.join(', ')}; minimal ~200 tokens, standard ~600 tokens, verbose ~1500 tokens, full ~3000+ tokens)`;
+const TOP_LEVEL_HELP_AFTER = `
+Examples:
+  $ sessionr list                               # recent sessions
+  $ sessionr read <id> --anchor tail            # read the latest messages
+  $ sessionr send <id> -f prompt.md --async     # resume in the background
+  $ sessionr --output json help | jq '.workflow'
+
+Exit codes
+  0   Success
+  1   Internal error
+  2   Bad usage / validation
+  3   Session/job/resource not found
+  4   Authentication required (reserved)
+  5   Rate-limited / transient (reserved)
+  10  Partial result (truncated by token budget)
+  42  No changes (--if-changed match)`;
 
 const program = new Command();
 
@@ -49,6 +67,12 @@ program
   .option('--offset <n>', 'Skip first N sessions (for pagination)', '0')
   .option('-q, --search <query>', 'Search sessions by content')
   .option('--json', '[deprecated] Use --output json')
+  .addHelpText('after', `
+Examples:
+  $ sessionr list                               # recent sessions
+  $ sessionr list claude -n 5                   # 5 most recent Claude sessions
+  $ sessionr list -q "deploy script"            # search across recent sessions
+  $ sessionr list --output json | jq '.sessions[].id'`)
   .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
@@ -65,7 +89,7 @@ program
   .argument('[to]', 'End message index (1-based)')
   .description('Read session messages with token-aware pagination')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
-  .option('-p, --preset <name>', `Verbosity preset (${PRESET_NAMES.join(', ')}) [default: verbose for agents, standard for TTY]`)
+  .option('-p, --preset <name>', PRESET_HELP)
   .option('-d, --detail <level>', `Detail level (${DETAIL_LEVELS.join(', ')})`)
   .option('--tokens <n>', 'Token budget (env: SESSIONREADER_MAX_TOKENS)')
   .option('--anchor <anchor>', 'Slice anchor: head, tail, search', 'head')
@@ -76,6 +100,13 @@ program
   .option('--after <cursor>', 'Cursor: show messages after this index')
   .option('--if-changed <etag>', 'Only return data if changed since ETag')
   .option('--json', '[deprecated] Use --output json')
+  .addHelpText('after', `
+Examples:
+  $ sessionr read 8e46722b                      # head of session, default token budget
+  $ sessionr read 8e46722b --anchor tail        # latest messages
+  $ sessionr read 8e46722b --search "error"     # window around first match
+  $ sessionr read 8e46722b --page 2 --tokens 4000
+  $ sessionr read 8e46722b --if-changed <etag>  # 304-style polling`)
   .action(
     async (
       sessionId: string,
@@ -126,6 +157,11 @@ program
   .description('Show full session statistics')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('--json', '[deprecated] Use --output json')
+  .addHelpText('after', `
+Examples:
+  $ sessionr stats 8e46722b                     # tools, files, duration
+  $ sessionr stats 8e46722b -s codex            # disambiguate by source
+  $ sessionr stats 8e46722b --output json       # structured stats`)
   .action(async (sessionId: string, opts: { source?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
@@ -141,6 +177,11 @@ program
   .description('Show lightweight session metadata (cheaper than stats)')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('--json', '[deprecated] Use --output json')
+  .addHelpText('after', `
+Examples:
+  $ sessionr info 8e46722b                      # cheap session metadata
+  $ sessionr info 8e46722b -s claude            # disambiguate by source
+  $ sessionr info 8e46722b --output json        # structured metadata`)
   .action(async (sessionId: string, opts: { source?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
@@ -158,6 +199,12 @@ program
   .option('--top <n>', 'Max results to return', '10')
   .option('--max-sessions <n>', 'Max sessions to scan (most recent first)', '20')
   .option('--json', '[deprecated] Use --output json')
+  .addHelpText('after', `
+Examples:
+  $ sessionr search -q "deploy failed"          # search recent sessions
+  $ sessionr search -q "etag" --top 5           # limit matches
+  $ sessionr search -q "auth" -s codex          # search one source
+  $ sessionr search -q "build" --output json`)
   .action(async (opts: { query: string; source?: string; top?: string; maxSessions?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
@@ -174,6 +221,11 @@ program
   .description('Compare two sessions (structural diff)')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('--json', '[deprecated] Use --output json')
+  .addHelpText('after', `
+Examples:
+  $ sessionr diff 8e46722b 9f8123aa             # compare two sessions
+  $ sessionr diff old new -s claude             # disambiguate by source
+  $ sessionr diff old new --output json         # structured diff`)
   .action(async (id1: string, id2: string, opts: { source?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
@@ -190,6 +242,11 @@ program
   .option('--add <tag>', 'Tag to add')
   .option('--remove <tag>', 'Tag to remove')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
+  .addHelpText('after', `
+Examples:
+  $ sessionr tag 8e46722b --add review          # add a tag
+  $ sessionr tag 8e46722b --remove stale        # remove a tag
+  $ sessionr tag 8e46722b --add rescue -s codex # disambiguate by source`)
   .action(async (sessionId: string, opts: { add?: string; remove?: string; source?: string }) => {
     const parentOpts = program.opts();
     await tagCommand(sessionId, {
@@ -205,6 +262,11 @@ program
   .option('--dry-run', 'Preview what would be deleted')
   .option('--yes', 'Skip confirmation')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
+  .addHelpText('after', `
+Examples:
+  $ sessionr prune --older-than 30d --dry-run   # preview deletions
+  $ sessionr prune --older-than 7d -s codex     # prune one source
+  $ sessionr prune --older-than 90d --yes       # delete without prompt`)
   .action(async (opts: { olderThan: string; dryRun?: boolean; yes?: boolean; source?: string }) => {
     const parentOpts = program.opts();
     await pruneCommand({
@@ -224,7 +286,13 @@ program
   .option('--async', 'Run in background and return job ID')
   .option('--cwd <dir>', 'Working directory (default: current)')
   .option('--tokens <n>', 'Token budget for response')
-  .option('-p, --preset <name>', `Verbosity preset (${PRESET_NAMES.join(', ')})`, 'standard')
+  .option('-p, --preset <name>', SEND_PRESET_HELP, 'standard')
+  .addHelpText('after', `
+Examples:
+  $ sessionr send 8e46722b -m "follow up"       # resume sync
+  $ sessionr send 8e46722b -f prompt.md         # resume from file
+  $ sessionr send --new -s claude -f prompt.md  # new session
+  $ sessionr send 8e46722b -m "go" --async      # background job`)
   .action(
     async (
       sessionId: string | undefined,
@@ -286,6 +354,11 @@ program
   .option('--include-system-prompt', 'Include system messages')
   .option('--include-tool-results', 'Include tool results')
   .option('--format <fmt>', 'Output format: messages or summary', 'messages')
+  .addHelpText('after', `
+Examples:
+  $ sessionr context 8e46722b --tokens 8000     # export handoff context
+  $ sessionr context 8e46722b --format summary  # compact summary
+  $ sessionr context 8e46722b --include-tool-results`)
   .action(
     async (
       sessionId: string,
@@ -313,6 +386,11 @@ program
   .command('jobs', { hidden: true })
   .description('List all async jobs')
   .option('--status <status>', 'Filter by status (running, completed, failed)')
+  .addHelpText('after', `
+Examples:
+  $ sessionr jobs                               # list all jobs
+  $ sessionr jobs --status running              # running jobs only
+  $ sessionr jobs --output json                 # structured job list`)
   .action(async (opts: { status?: string }) => {
     const parentOpts = program.opts();
     await jobListCommand({
@@ -325,6 +403,11 @@ program
   .command('job', { hidden: true })
   .argument('<job-id>', 'Job ID (from sessionr send --async)')
   .description('Check async job status (lazy PID finalization)')
+  .addHelpText('after', `
+Examples:
+  $ sessionr job job_abc123                     # check status
+  $ sessionr job job_abc123 --output json       # structured status
+  $ sessionr wait job_abc123                    # wait until done`)
   .action(async (jobId: string) => {
     const parentOpts = program.opts();
     await jobStatusCommand(jobId, {
@@ -338,6 +421,11 @@ program
   .description('Block until an async job completes')
   .option('--timeout <seconds>', 'Timeout in seconds', '300')
   .option('--interval <seconds>', 'Poll interval in seconds', '2')
+  .addHelpText('after', `
+Examples:
+  $ sessionr wait job_abc123                    # wait up to 5 minutes
+  $ sessionr wait job_abc123 --timeout 60       # shorter timeout
+  $ sessionr wait job_abc123 --interval 5       # slower polling`)
   .action(async (jobId: string, opts: { timeout?: string; interval?: string }) => {
     const parentOpts = program.opts();
     await jobWaitCommand(jobId, {
@@ -351,6 +439,11 @@ program
   .command('cancel', { hidden: true })
   .argument('<job-id>', 'Job ID to cancel')
   .description('Cancel a running async job (SIGTERM)')
+  .addHelpText('after', `
+Examples:
+  $ sessionr cancel job_abc123                  # cancel a running job
+  $ sessionr job job_abc123                     # confirm final status
+  $ sessionr jobs --status failed               # inspect failed jobs`)
   .action(async (jobId: string) => {
     const parentOpts = program.opts();
     await jobCancelCommand(jobId, {
@@ -382,7 +475,7 @@ program.helpInformation = function () {
   if (parentOpts.output === 'json') {
     return JSON.stringify(buildHelpSchema(program), null, 2);
   }
-  return originalHelp();
+  return originalHelp() + TOP_LEVEL_HELP_AFTER;
 };
 
 function buildHelpSchema(cmd: Command): Record<string, unknown> {
@@ -413,14 +506,28 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
     description: cmd.description(),
     sources: SOURCES_LIST,
     workflow: [
-      '1. sessionr list — discover sessions',
-      '2. sessionr read <id> — read last page (cursor-paginated)',
-      '3. Use cursor.prev / cursor.next to page through',
-      '4. sessionr send <id> -f prompt.md — resume session',
+      '1. sessionr list — discover recent sessions',
+      '2. sessionr info <id> — cheap metadata (size, message counts, model)',
+      '3. sessionr read <id> --tokens 4000 — first page (head); use --anchor tail for the most recent turn',
+      '4. Page with cursor.next / cursor.prev or --page N',
+      '5. sessionr stats <id> — full stats: tools, files modified, durations',
+      '6. sessionr search -q "<text>" — find sessions by content',
+      '7. sessionr send <id> -f prompt.md — resume the session synchronously',
+      '8. sessionr send <id> -f prompt.md --async → sessionr wait <job-id> → sessionr read <id> --after N — long-running flows',
+      '9. sessionr context <id> --tokens 8000 — export for cross-tool handoff',
     ],
     primary_commands: primary,
     all_commands: all,
-    exit_codes: { 0: 'ok', 1: 'error', 2: 'bad usage', 3: 'not found', 42: 'no changes (etag)' },
+    exit_codes: {
+      0: 'ok',
+      1: 'internal error',
+      2: 'bad usage / validation',
+      3: 'session/job/resource not found',
+      4: 'authentication required (reserved)',
+      5: 'rate-limited / transient (reserved)',
+      10: 'partial result (truncated by token budget)',
+      42: 'no changes (--if-changed match)',
+    },
   };
 }
 
