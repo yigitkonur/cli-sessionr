@@ -86,6 +86,8 @@ export interface SessionListEntry {
   updatedAt: Date;
   summary?: string;
   filePath: string;
+  /** True when the session contains no user/assistant messages (e.g. Factory "New Session"). */
+  isEmpty?: boolean;
 }
 
 // ── Verbosity Preset ───────────────────────────────────────────────────────

@@ -484,6 +484,10 @@ export async function findGeminiSessions(): Promise<SessionListEntry[]> {
             ? new Date(record.startTime)
             : new Date(0);
 
+        const hasConversation = messages.some(
+          (m) => m.type === 'user' || m.type === 'gemini',
+        );
+
         entries.push({
           id: sessionId,
           source: 'gemini',
@@ -491,6 +495,7 @@ export async function findGeminiSessions(): Promise<SessionListEntry[]> {
           updatedAt,
           summary: cleanPrompt(firstPrompt) ?? undefined,
           filePath: fullPath,
+          isEmpty: !hasConversation,
         });
       } catch {
         // Skip malformed files

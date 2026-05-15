@@ -616,6 +616,7 @@ export async function findGooseSessions(): Promise<SessionListEntry[]> {
         updatedAt: parseTimestamp(row.updated_at),
         summary: cleanTitle((row.name as string) || (row.description as string)),
         filePath: DB_PATH,
+        isEmpty: ((row.msg_count as number) ?? 0) === 0,
       });
     }
   }
@@ -638,6 +639,7 @@ export async function findGooseSessions(): Promise<SessionListEntry[]> {
       let cwd = '';
       let updatedAt = new Date(0);
       let summary: string | undefined;
+      let sawConversation = false;
 
       // Get file mtime as fallback
       try {
@@ -655,6 +657,10 @@ export async function findGooseSessions(): Promise<SessionListEntry[]> {
         if (obj.created) {
           const ts = parseTimestamp(obj.created);
           if (ts.getTime() > updatedAt.getTime()) updatedAt = ts;
+        }
+
+        if (!sawConversation && (obj.role === 'user' || obj.role === 'assistant')) {
+          sawConversation = true;
         }
 
         // First user text message as summary
@@ -677,7 +683,6 @@ export async function findGooseSessions(): Promise<SessionListEntry[]> {
           }
         }
 
-        if (cwd && summary) return 'stop';
         return 'continue';
       });
 
@@ -688,6 +693,7 @@ export async function findGooseSessions(): Promise<SessionListEntry[]> {
         updatedAt,
         summary,
         filePath: fullPath,
+        isEmpty: !sawConversation,
       });
     }
   }

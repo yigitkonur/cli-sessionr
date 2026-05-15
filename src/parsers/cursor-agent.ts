@@ -289,7 +289,6 @@ export async function findCursorAgentSessions(): Promise<SessionListEntry[]> {
         try {
           const stat = fs.statSync(entryPath);
           const rawLines = await readJsonlFile<RawLine>(entryPath);
-          if (rawLines.length === 0) continue;
 
           entries.push({
             id: sessionId,
@@ -298,6 +297,7 @@ export async function findCursorAgentSessions(): Promise<SessionListEntry[]> {
             updatedAt: stat.mtime,
             summary: extractFirstUserText(rawLines) ?? undefined,
             filePath: entryPath,
+            isEmpty: rawLines.length === 0,
           });
         } catch {
           // skip
@@ -312,7 +312,6 @@ export async function findCursorAgentSessions(): Promise<SessionListEntry[]> {
           if (fs.existsSync(nestedJsonl)) {
             const stat = fs.statSync(nestedJsonl);
             const rawLines = await readJsonlFile<RawLine>(nestedJsonl);
-            if (rawLines.length === 0) continue;
 
             entries.push({
               id: entry,
@@ -321,6 +320,7 @@ export async function findCursorAgentSessions(): Promise<SessionListEntry[]> {
               updatedAt: stat.mtime,
               summary: extractFirstUserText(rawLines) ?? undefined,
               filePath: nestedJsonl,
+              isEmpty: rawLines.length === 0,
             });
           }
         }

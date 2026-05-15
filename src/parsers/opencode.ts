@@ -463,6 +463,19 @@ export async function findOpenCodeSessions(): Promise<SessionListEntry[]> {
         summary = cleaned ? truncate(cleaned.trim(), 120) || undefined : undefined;
       }
 
+      // OpenCode stores messages at MESSAGE_DIR/<sessionId>/msg_*.json — if that
+      // dir has zero msg_ files, the session is empty.
+      let hasMessages = false;
+      try {
+        const sessionMsgDir = path.join(MESSAGE_DIR, data.id);
+        const msgFiles = fs.readdirSync(sessionMsgDir).filter(
+          (f) => f.startsWith('msg_') && f.endsWith('.json'),
+        );
+        hasMessages = msgFiles.length > 0;
+      } catch {
+        hasMessages = false;
+      }
+
       entries.push({
         id: data.id,
         source: 'opencode',
@@ -470,6 +483,7 @@ export async function findOpenCodeSessions(): Promise<SessionListEntry[]> {
         updatedAt: data.time?.updated ? new Date(data.time.updated) : new Date(0),
         summary,
         filePath,
+        isEmpty: !hasMessages,
       });
     }
   }

@@ -363,6 +363,7 @@ export async function findFactorySessions(): Promise<SessionListEntry[]> {
         updatedAt,
         summary,
         filePath,
+        isEmpty: !foundFirstUser,
       });
     }
   }

@@ -702,12 +702,14 @@ export async function findClaudeSessions(): Promise<SessionListEntry[]> {
           updatedAt,
           summary: cleanPrompt(indexEntry.firstPrompt),
           filePath,
+          isEmpty: (indexEntry.messageCount ?? 0) === 0,
         });
       } else {
         // Orphan .jsonl not in index — fall back to head scanning
         let cwd = '';
         let updatedAt = new Date(0);
         let summary: string | undefined;
+        let sawConversation = false;
 
         await scanJsonlHead(filePath, 30, (parsed) => {
           const line = parsed as RawLine;
@@ -717,6 +719,12 @@ export async function findClaudeSessions(): Promise<SessionListEntry[]> {
           const ts = line.timestamp ? new Date(line.timestamp) : null;
           if (ts && !isNaN(ts.getTime()) && ts.getTime() > updatedAt.getTime()) {
             updatedAt = ts;
+          }
+
+          // Track whether we ever saw a non-system user/assistant exchange
+          if (!sawConversation && !shouldSkipLine(line) &&
+              (line.type === 'user' || line.type === 'assistant')) {
+            sawConversation = true;
           }
 
           // Try to get a summary from the first user message
@@ -734,8 +742,6 @@ export async function findClaudeSessions(): Promise<SessionListEntry[]> {
             }
           }
 
-          // Once we have all needed info, stop early
-          if (cwd && summary) return 'stop';
           return 'continue';
         });
 
@@ -756,6 +762,7 @@ export async function findClaudeSessions(): Promise<SessionListEntry[]> {
           updatedAt,
           summary,
           filePath,
+          isEmpty: !sawConversation,
         });
       }
 

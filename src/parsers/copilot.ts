@@ -383,7 +383,6 @@ export async function findCopilotSessions(): Promise<SessionListEntry[]> {
     const userMessages = events.filter((e) => e.type === 'user.message');
     const assistantMessages = events.filter((e) => e.type === 'assistant.message');
     const bubbleCount = userMessages.length + assistantMessages.length;
-    if (bubbleCount === 0) continue;
 
     // Extract first user message for summary
     const firstUser = userMessages[0];
@@ -402,6 +401,7 @@ export async function findCopilotSessions(): Promise<SessionListEntry[]> {
       updatedAt,
       summary: summary ?? undefined,
       filePath: sessionDir,
+      isEmpty: bubbleCount === 0,
     });
   }
 

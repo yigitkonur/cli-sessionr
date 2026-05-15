@@ -679,6 +679,7 @@ export async function findCodexSessions(): Promise<SessionListEntry[]> {
       let updatedAt: Date | undefined;
       let id = extractIdFromFilename(filePath);
       let isValidSession = false;
+      let sawConversation = false;
 
       // Get file mtime as fallback for updatedAt
       try {
@@ -704,6 +705,26 @@ export async function findCodexSessions(): Promise<SessionListEntry[]> {
         if (event.timestamp) {
           const ts = new Date(event.timestamp);
           if (!updatedAt || ts > updatedAt) updatedAt = ts;
+        }
+
+        // Track any non-bootstrap user or assistant message as "real conversation"
+        if (!sawConversation) {
+          if (event.type === 'response_item' && event.payload) {
+            const p = event.payload as Record<string, unknown>;
+            if (p.type === 'message' && (p.role === 'user' || p.role === 'assistant')) {
+              const text = extractUserText(p.content);
+              if (text && (p.role === 'assistant' || !isBootstrapMessage(text))) {
+                sawConversation = true;
+              }
+            }
+          } else if (event.type === 'event_msg' && event.payload) {
+            const p = event.payload as Record<string, unknown>;
+            if (p.type === 'user_message' && typeof p.message === 'string') {
+              if (!isBootstrapMessage(p.message)) sawConversation = true;
+            } else if (p.type === 'agent_message') {
+              sawConversation = true;
+            }
+          }
         }
 
         // Capture first non-bootstrap user message as summary
@@ -742,6 +763,7 @@ export async function findCodexSessions(): Promise<SessionListEntry[]> {
         updatedAt: updatedAt ?? new Date(),
         summary,
         filePath,
+        isEmpty: !sawConversation,
       });
     }
   }

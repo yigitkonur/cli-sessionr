@@ -377,6 +377,7 @@ export async function findCommandCodeSessions(): Promise<SessionListEntry[]> {
         let lastTimestamp: Date | undefined;
         let summary: string | undefined;
         let gitBranchVal: string | undefined;
+        let sawConversation = false;
 
         await scanJsonlHead(fullPath, 30, (parsed, lineIndex) => {
           const line = parsed as RawLine;
@@ -388,6 +389,10 @@ export async function findCommandCodeSessions(): Promise<SessionListEntry[]> {
           }
 
           if (!gitBranchVal && line.gitBranch) gitBranchVal = line.gitBranch;
+
+          if (!sawConversation && (line.type === 'user' || line.type === 'assistant')) {
+            sawConversation = true;
+          }
 
           if (!summary && lineIndex === 0) {
             const prompt = extractFirstPrompt(line);
@@ -409,6 +414,7 @@ export async function findCommandCodeSessions(): Promise<SessionListEntry[]> {
           updatedAt: lastTimestamp || stat.mtime,
           summary: displaySummary ?? undefined,
           filePath: fullPath,
+          isEmpty: !sawConversation,
         });
       } catch {
         // skip

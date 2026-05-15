@@ -600,6 +600,7 @@ export async function findKiroSessions(): Promise<SessionListEntry[]> {
             updatedAt: new Date(meta.endTime || stat.mtime.getTime()),
             summary: meta.title ?? undefined,
             filePath: fullPath,
+            isEmpty: (meta.messageCount ?? 0) === 0,
             _messageCount: meta.messageCount,
           };
 
