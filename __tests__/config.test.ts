@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { getPreset, PRESET_NAMES } from '../src/config.js';
+import { getPreset, getPresetForDetail, PRESET_NAMES } from '../src/config.js';
+import { EXIT, SessionReaderError } from '../src/errors.js';
 
 describe('config', () => {
   it('exports 4 preset names', () => {
@@ -14,7 +15,33 @@ describe('config', () => {
   });
 
   it('throws on unknown preset name', () => {
-    expect(() => getPreset('unknown')).toThrow(/Unknown verbosity preset/);
+    expect(() => getPreset('unknown')).toThrow(SessionReaderError);
+    try {
+      getPreset('unknown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(SessionReaderError);
+      expect((err as SessionReaderError).code).toBe('INVALID_PRESET');
+      expect((err as SessionReaderError).exitCode).toBe(EXIT.USAGE);
+      expect((err as SessionReaderError).detail).toEqual({
+        provided: 'unknown',
+        valid: PRESET_NAMES,
+      });
+    }
+  });
+
+  it('throws structured errors on unknown detail level', () => {
+    expect(() => getPresetForDetail('dense' as never)).toThrow(SessionReaderError);
+    try {
+      getPresetForDetail('dense' as never);
+    } catch (err) {
+      expect(err).toBeInstanceOf(SessionReaderError);
+      expect((err as SessionReaderError).code).toBe('INVALID_DETAIL');
+      expect((err as SessionReaderError).exitCode).toBe(EXIT.USAGE);
+      expect((err as SessionReaderError).detail).toEqual({
+        provided: 'dense',
+        valid: ['full', 'condensed', 'skeleton', 'meta'],
+      });
+    }
   });
 
   it('minimal has lowest limits', () => {

@@ -179,6 +179,7 @@ export interface SliceMeta {
   range: { from: number; to: number };
   has_more_before: boolean;
   has_more_after: boolean;
+  partial?: boolean;
   cursor_before: number | null;
   cursor_after: number | null;
   cursor: CursorCommands;
@@ -221,7 +222,7 @@ export interface ReadOptions {
   json?: boolean;
   output?: OutputFormat;
   tokens?: number;
-  anchor?: 'head' | 'tail' | 'search';
+  anchor?: string;
   search?: string;
   role?: string;
   before?: number;

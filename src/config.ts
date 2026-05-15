@@ -1,4 +1,5 @@
 import type { PresetName, VerbosityPreset, OutputFormat, DetailLevel } from './types.js';
+import { EXIT, SessionReaderError } from './errors.js';
 
 const MINIMAL: VerbosityPreset = {
   name: 'minimal',
@@ -54,9 +55,12 @@ const PRESETS: Record<PresetName, VerbosityPreset> = {
 export function getPreset(name: string): VerbosityPreset {
   const preset = PRESETS[name as PresetName];
   if (!preset) {
-    throw new Error(
-      `Unknown verbosity preset "${name}". Valid presets: ${Object.keys(PRESETS).join(', ')}`,
-    );
+    throw new SessionReaderError(`Unknown verbosity preset "${name}"`, {
+      code: 'INVALID_PRESET',
+      exitCode: EXIT.USAGE,
+      detail: { provided: name, valid: Object.keys(PRESETS) },
+      suggestion: 'sessionr read <id> --preset standard',
+    });
   }
   return preset;
 }
@@ -73,7 +77,16 @@ const DETAIL_TO_PRESET: Record<DetailLevel, PresetName> = {
 };
 
 export function getPresetForDetail(detail: DetailLevel): VerbosityPreset {
-  return PRESETS[DETAIL_TO_PRESET[detail]];
+  const presetName = DETAIL_TO_PRESET[detail];
+  if (!presetName) {
+    throw new SessionReaderError(`Unknown detail level "${detail}"`, {
+      code: 'INVALID_DETAIL',
+      exitCode: EXIT.USAGE,
+      detail: { provided: detail, valid: DETAIL_LEVELS },
+      suggestion: 'sessionr read <id> --detail condensed',
+    });
+  }
+  return PRESETS[presetName];
 }
 
 export const DETAIL_LEVELS: DetailLevel[] = ['full', 'condensed', 'skeleton', 'meta'];
