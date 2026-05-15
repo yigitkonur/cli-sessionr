@@ -101,21 +101,6 @@ program
         ifChanged: opts.ifChanged as string | undefined,
       };
 
-      if (readOpts.ifChanged) {
-        const { loadSession } = await import('./discovery.js');
-        const { computeETag } = await import('./etag.js');
-        try {
-          const s = await loadSession(sessionId, readOpts.source as import('./types.js').SessionSource | undefined);
-          const etag = computeETag(s);
-          if (etag === readOpts.ifChanged) {
-            process.exitCode = 42;
-            return;
-          }
-        } catch {
-          // proceed normally if session load fails
-        }
-      }
-
       await readCommand(sessionId, from, to, readOpts);
     },
   );

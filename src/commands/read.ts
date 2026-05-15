@@ -2,7 +2,8 @@ import { homedir } from 'node:os';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
-import { InvalidRangeError, exitCodeForError } from '../errors.js';
+import { computeETag } from '../etag.js';
+import { EXIT, InvalidRangeError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget, sliceByPage, filterByRole, buildCursorCommands, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens, estimateMessageTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
@@ -57,6 +58,26 @@ function injectNextAction(meta: SliceMeta): SliceMeta {
       tip: hint.tip,
     },
   };
+}
+
+function emitUnchanged(session: NormalizedSession, etag: string): void {
+  const shortSid = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
+  console.log(JSON.stringify({
+    api_version: 1,
+    unchanged: true,
+    etag,
+    meta: {
+      session_id: session.id,
+      source: session.source,
+      total_messages: session.stats.totalMessages,
+      updated_at: session.metadata.updatedAt,
+    },
+    actions: [
+      { command: `sessionr read ${shortSid} --if-changed ${etag}`, description: 'Poll again' },
+      { command: `sessionr read ${shortSid}`, description: 'Bypass etag and fetch' },
+    ],
+  }, dateReplacer, 2));
+  process.exitCode = EXIT.NO_CHANGES;
 }
 
 function computeDetailHint(
@@ -193,12 +214,29 @@ export async function readCommand(
     // ── Page-based pagination (--page N) ──────────────────────────────────
     if (opts?.page != null) {
       const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, preset);
-      let meta = injectNextAction(result.meta);
+      const etag = computeETag(session, {
+        preset: preset.name,
+        tokenBudget,
+        from: result.meta.range.from,
+        to: result.meta.range.to,
+        anchor: result.meta.anchor ?? undefined,
+        search: opts?.search,
+        page: opts.page,
+        format: outputFormat,
+      });
+      if (opts?.ifChanged === etag) {
+        emitUnchanged(session, etag);
+        return;
+      }
+
+      let meta = { ...injectNextAction(result.meta), etag };
       meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
-      if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      if (outputFormat === 'json') {
         const envelope = buildJsonEnvelope(session, result.messages, meta, preset, summary);
         console.log(JSON.stringify(envelope, dateReplacer, 2));
+      } else if (outputFormat === 'jsonl') {
+        console.log(formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta));
       } else {
         console.log(formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta));
       }
@@ -242,7 +280,21 @@ export async function readCommand(
       preset,
     );
 
-    let meta = injectNextAction(result.meta);
+    const etag = computeETag(session, {
+      preset: preset.name,
+      tokenBudget,
+      from,
+      to,
+      anchor,
+      search: opts?.search,
+      format: outputFormat,
+    });
+    if (opts?.ifChanged === etag) {
+      emitUnchanged(session, etag);
+      return;
+    }
+
+    let meta = { ...injectNextAction(result.meta), etag };
     meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
     let outputMessages = result.messages;
@@ -260,9 +312,13 @@ export async function readCommand(
       }));
     }
 
-    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+    if (outputFormat === 'json') {
       const envelope = buildJsonEnvelope(session, outputMessages, meta, preset, summary);
       console.log(JSON.stringify(envelope, dateReplacer, 2));
+    } else if (outputFormat === 'jsonl') {
+      console.log(
+        formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta),
+      );
     } else {
       console.log(
         formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta),
