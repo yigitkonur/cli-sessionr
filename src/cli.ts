@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { Command, CommanderError } from 'commander';
 import { statsCommand } from './commands/stats.js';
 import { readCommand } from './commands/read.js';
@@ -14,6 +17,11 @@ import { jobStatusCommand, jobWaitCommand, jobCancelCommand, jobListCommand } fr
 import { PRESET_NAMES, DETAIL_LEVELS } from './config.js';
 import type { OutputFormat, DetailLevel, ReadOptions, SendOptions } from './types.js';
 
+// Read version from package.json at module init so semantic-release bumps propagate
+// without code changes. dist/cli.js lives at <pkg>/dist/cli.js so ../package.json resolves.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PKG_VERSION = (JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')) as { version: string }).version;
+
 const SOURCES = 'claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed, factory (alias: droid)';
 const SOURCES_LIST = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed', 'factory'];
 
@@ -21,8 +29,8 @@ const program = new Command();
 
 program
   .name('sessionr')
-  .description('sessionr v2.6.0 — read, send, and orchestrate AI coding sessions')
-  .version('2.6.0')
+  .description(`sessionr v${PKG_VERSION} — read, send, and orchestrate AI coding sessions`)
+  .version(PKG_VERSION)
   .option('--output <format>', 'Output format: json, jsonl, table, text')
   .option('--api-version <n>', 'API version for structured output', '1')
   .option('--timing', 'Include timing_ms in JSON responses');
@@ -408,7 +416,7 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
 
   return {
     api_version: 1,
-    version: '2.6.0',
+    version: PKG_VERSION,
     name: cmd.name(),
     description: cmd.description(),
     sources: SOURCES_LIST,
