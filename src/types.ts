@@ -98,6 +98,14 @@ export interface CwdScopeMeta {
   reason?: string;
 }
 
+export interface DiscoveryWarning {
+  source: SessionSource;
+  error: {
+    code: string;
+    message: string;
+  };
+}
+
 // ── Verbosity Preset ───────────────────────────────────────────────────────
 
 export type PresetName = 'minimal' | 'standard' | 'verbose' | 'full';

@@ -1,4 +1,5 @@
-import { cmdPrefix } from "./util/invocation.js";
+import type { SessionListEntry } from './types.js';
+
 export const EXIT = {
   OK: 0,
   ERROR: 1,
@@ -52,16 +53,49 @@ export class SessionReaderError extends Error {
 }
 
 export class SessionNotFoundError extends SessionReaderError {
-  constructor(sessionId: string) {
+  constructor(
+    sessionId: string,
+    context?: {
+      totalSessions?: number;
+      prefixMatches?: SessionListEntry[];
+    },
+  ) {
+    const prefixMatches = context?.prefixMatches ?? [];
+    const detail: Record<string, unknown> = {
+      session_id: sessionId,
+      cwd: process.cwd(),
+    };
+    if (prefixMatches.length > 1) {
+      detail.prefix_matches = prefixMatches.slice(0, 5).map((e) => ({
+        id: e.id,
+        cwd: e.cwd,
+        source: e.source,
+      }));
+    }
+
     super(`Session not found: ${sessionId}`, {
       code: 'SESSION_NOT_FOUND',
       exitCode: EXIT.NOT_FOUND,
-      detail: { session_id: sessionId },
-      suggestion: 'sessionr list --output json',
+      detail,
+      suggestion: buildSessionNotFoundSuggestion(sessionId, context?.totalSessions, prefixMatches.length),
       retry: false,
     });
     this.name = 'SessionNotFoundError';
   }
+}
+
+function buildSessionNotFoundSuggestion(
+  sessionId: string,
+  totalSessions: number | undefined,
+  prefixMatchCount: number,
+): string {
+  if (totalSessions === 0) {
+    return 'No sessions found anywhere. Run `sessionr doctor` to verify your data dirs.';
+  }
+  if (prefixMatchCount > 1) {
+    return `Prefix "${sessionId}" matches ${prefixMatchCount} sessions; pass a longer prefix.`;
+  }
+  return 'sessionr list --cwd current  (or --cwd all)';
 }
 
 export class ParseError extends SessionReaderError {

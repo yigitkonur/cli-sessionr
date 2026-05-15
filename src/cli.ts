@@ -13,6 +13,7 @@ import { diffCommand } from './commands/diff.js';
 import { tagCommand } from './commands/tag.js';
 import { pruneCommand } from './commands/prune.js';
 import { sendCommand } from './commands/send.js';
+import { doctorCommand } from './commands/doctor.js';
 import { jobStatusCommand, jobWaitCommand, jobCancelCommand, jobListCommand } from './commands/job.js';
 import { PRESET_NAMES, DETAIL_LEVELS } from './config.js';
 import { SessionReaderError, exitCodeForError } from './errors.js';
@@ -64,6 +65,19 @@ program
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
     await listCommand(resolveSource(source), {
+      ...opts,
+      output: parentOpts.output as OutputFormat | undefined,
+    });
+  });
+
+program
+  .command('doctor')
+  .description('Diagnose session source setup')
+  .option('--json', '[deprecated] Use --output json')
+  .action(async (opts: { json?: boolean }) => {
+    warnDeprecatedJson(opts.json);
+    const parentOpts = program.opts();
+    await doctorCommand({
       ...opts,
       output: parentOpts.output as OutputFormat | undefined,
     });
@@ -390,7 +404,7 @@ program.helpInformation = function () {
 };
 
 function buildHelpSchema(cmd: Command): Record<string, unknown> {
-  const PRIMARY = new Set(['list', 'read', 'send']);
+  const PRIMARY = new Set(['list', 'read', 'send', 'doctor']);
   const mapCmd = (c: Command) => ({
     name: c.name(),
     description: c.description(),

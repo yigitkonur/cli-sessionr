@@ -7,8 +7,7 @@ import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '.
 import { sliceByTokenBudget, sliceByPage, filterByRole, buildCursorCommands, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens, estimateMessageTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
-import { cmdPrefix } from '../util/invocation.js';
-import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary } from '../types.js';
+import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning } from '../types.js';
 
 const VALID_ROLES = ['user', 'assistant', 'system', 'tool_use', 'tool_result'] as const;
 const VALID_ANCHORS = ['head', 'tail', 'search'] as const;
@@ -210,9 +209,11 @@ export async function readCommand(
   });
 
   try {
+    const warnings: DiscoveryWarning[] = [];
     const session = await loadSession(
       sessionId,
       opts?.source as SessionSource | undefined,
+      (warning) => warnings.push(warning),
     );
 
     let messages = session.messages;
@@ -310,8 +311,8 @@ export async function readCommand(
       let meta = { ...injectNextAction(result.meta), etag };
       meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
-      if (outputFormat === 'json') {
-        const envelope = buildJsonEnvelope(session, result.messages, meta, preset, summary);
+      if (outputFormat === 'json' || outputFormat === 'jsonl') {
+        const envelope = buildJsonEnvelope(session, result.messages, meta, preset, summary, warnings);
         console.log(JSON.stringify(envelope, dateReplacer, 2));
       } else if (outputFormat === 'jsonl') {
         console.log(formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta));
@@ -390,8 +391,8 @@ export async function readCommand(
       }));
     }
 
-    if (outputFormat === 'json') {
-      const envelope = buildJsonEnvelope(session, outputMessages, meta, preset, summary);
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const envelope = buildJsonEnvelope(session, outputMessages, meta, preset, summary, warnings);
       console.log(JSON.stringify(envelope, dateReplacer, 2));
     } else if (outputFormat === 'jsonl') {
       console.log(
@@ -420,10 +421,11 @@ function buildJsonEnvelope(
   meta: SliceMeta,
   _preset: VerbosityPreset,
   summary?: SessionSummary,
+  warnings?: DiscoveryWarning[],
 ): Record<string, unknown> {
   const envelope: Record<string, unknown> = { api_version: 1 };
   if (summary) envelope.session = summary;
-  envelope.meta = meta;
+  envelope.meta = warnings && warnings.length > 0 ? { ...meta, warnings } : meta;
   envelope.messages = messages.map((m) => ({
     index: m.index,
     role: m.role,

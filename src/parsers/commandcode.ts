@@ -434,6 +434,7 @@ registerSource({
   name: 'commandcode',
   label: 'Command Code',
   color: '#FF6B35',
+  getDataDir: () => PROJECTS_DIR,
   find: findCommandCodeSessions,
   parse: parseCommandCodeSession,
 });

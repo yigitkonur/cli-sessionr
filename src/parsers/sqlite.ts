@@ -3,6 +3,10 @@
  * Uses node:sqlite (Node 22+) with graceful degradation.
  */
 
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+
 let sqliteAvailable: boolean | null = null;
 let warnedOnce = false;
 

@@ -783,6 +783,7 @@ registerSource({
   name: 'claude',
   label: 'Claude Code',
   color: '#4A90D9',
+  getDataDir: getProjectsDir,
   find: findClaudeSessions,
   parse: parseClaudeSession,
 });

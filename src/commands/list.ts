@@ -2,15 +2,9 @@ import * as path from 'path';
 import { listSessionsScoped, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
-import { SOURCES_LIST } from '../utils/validate.js';
-import { cmdPrefix } from '../util/invocation.js';
-import type { CursorCommands, SessionSource, OutputFormat, SessionListEntry } from '../types.js';
+import type { SessionSource, OutputFormat, DiscoveryWarning } from '../types.js';
 
-function isPwdRelevant(entryCwd: string, pwd: string): boolean {
-  if (!entryCwd) return false;
-  if (entryCwd === pwd) return true;
-  return pwd.startsWith(entryCwd + path.sep);
-}
+const SOURCES = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed', 'factory'];
 
 export async function listCommand(
   source?: string,
@@ -27,27 +21,12 @@ export async function listCommand(
   try {
     const limit = opts?.limit ? parseInt(opts.limit, 10) : 20;
     const offset = opts?.offset ? parseInt(opts.offset, 10) : 0;
-    const scoped = await listSessionsScoped(source as SessionSource | undefined, opts?.cwd ?? 'auto');
-    let allEntries = scoped.sessions;
-    let searchMeta: Record<string, unknown> | undefined;
-
-    // Drop empty sessions (no user/assistant exchange) from the listing
-    allEntries = allEntries.filter((e) => !e.isEmpty);
-
-    // Within the scoped bucket, rank entries whose cwd matches (or contains) $PWD first.
-    // Redundant when scoped is auto/current/explicit; useful when --cwd all.
-    const pwd = process.cwd();
-    const pwdMatches: SessionListEntry[] = [];
-    const others: SessionListEntry[] = [];
-    for (const e of allEntries) {
-      (isPwdRelevant(e.cwd, pwd) ? pwdMatches : others).push(e);
-    }
-    allEntries = [...pwdMatches, ...others];
-
-    if (opts?.cwd && opts.cwd !== 'all') {
-      const cwd = opts.cwd === 'current' ? process.cwd() : opts.cwd;
-      allEntries = allEntries.filter((entry) => entry.cwd === cwd);
-    }
+    const warnings: DiscoveryWarning[] = [];
+    let allEntries = await listSessions(
+      source as SessionSource | undefined,
+      undefined,
+      (warning) => warnings.push(warning),
+    );
 
     // Content search across sessions
     if (opts?.search) {
@@ -110,6 +89,9 @@ export async function listCommand(
         has_more: hasMore,
         available_sources: SOURCES_LIST,
       };
+      if (warnings.length > 0) {
+        result.meta = { warnings };
+      }
 
       // Cursor commands
       const cursor: CursorCommands = {

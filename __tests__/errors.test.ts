@@ -64,6 +64,26 @@ describe('SessionNotFoundError', () => {
     expect(err.suggestion).toContain('list');
     expect(err.detail.session_id).toBe('abc123');
   });
+
+  it('suggests doctor when no sessions exist anywhere', () => {
+    const err = new SessionNotFoundError('abc123', { totalSessions: 0 });
+    expect(err.suggestion).toContain('doctor');
+  });
+
+  it('includes prefix matches when a prefix is ambiguous', () => {
+    const err = new SessionNotFoundError('abc', {
+      totalSessions: 2,
+      prefixMatches: [
+        { id: 'abc1', source: 'codex', cwd: '/repo/a', updatedAt: new Date(), filePath: '/tmp/a.jsonl' },
+        { id: 'abc2', source: 'claude', cwd: '/repo/b', updatedAt: new Date(), filePath: '/tmp/b.jsonl' },
+      ],
+    });
+    expect(err.suggestion).toContain('longer prefix');
+    expect(err.detail.prefix_matches).toEqual([
+      { id: 'abc1', source: 'codex', cwd: '/repo/a' },
+      { id: 'abc2', source: 'claude', cwd: '/repo/b' },
+    ]);
+  });
 });
 
 describe('ParseError', () => {

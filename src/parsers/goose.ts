@@ -710,6 +710,7 @@ registerSource({
   name: 'goose',
   label: 'Goose',
   color: '#7B2D8B',
+  getDataDir: () => GOOSE_DIR,
   find: findGooseSessions,
   parse: parseGooseSession,
 });
