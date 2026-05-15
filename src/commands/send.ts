@@ -7,6 +7,7 @@ import { loadSession, listSessions } from '../discovery.js';
 import { buildResumeCommand, buildNewCommand, canSend } from '../runners.js';
 import { createJob, generateJobId, jobExitPath } from '../jobs.js';
 import { createFormatter } from '../output/formatter.js';
+import { serializeMessage } from '../output/serialize.js';
 import { getPreset, getDefaultTokenBudget } from '../config.js';
 import { sliceByTokenBudget } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
@@ -206,13 +207,7 @@ async function runSync(
     (envelope.meta as Record<string, unknown>).is_new_session = isNew;
   }
 
-  envelope.messages = outputMessages.map((m) => ({
-    index: m.index,
-    role: m.role,
-    timestamp: m.timestamp,
-    content: m.content,
-    blocks: m.blocks,
-  }));
+  envelope.messages = outputMessages.map(serializeMessage);
 
   envelope.actions = [
     {

@@ -87,11 +87,12 @@ export async function jobWaitCommand(
 
     while (current.status === 'running') {
       if (Date.now() - started > timeoutMs) {
+        const nextTimeout = Math.min(timeout * 2, 3600);
         throw new SessionReaderError(`Job ${jobId} did not complete within ${timeout}s`, {
           code: 'JOB_TIMEOUT',
           exitCode: EXIT.ERROR,
           detail: { job_id: jobId, timeout_seconds: timeout },
-          suggestion: `${cmdPrefix()} wait ${jobId} --timeout ${timeout * 2}`,
+          suggestion: `sessionr wait ${jobId} --timeout ${nextTimeout}`,
           retry: true,
         });
       }

@@ -8,7 +8,7 @@ import type {
   ListFooterMeta,
 } from '../types.js';
 import { SessionReaderError } from '../errors.js';
-import { estimateMessageTokens } from '../tokens.js';
+import { serializeMessage } from './serialize.js';
 
 function line(obj: unknown): string {
   return JSON.stringify(obj, dateReplacer);
@@ -48,12 +48,7 @@ export function createJsonlFormatter(): Formatter {
         lines.push(
           line({
             type: 'message',
-            index: m.index,
-            role: m.role,
-            timestamp: m.timestamp,
-            tokens_estimate: estimateMessageTokens(m),
-            content: m.content,
-            blocks: m.blocks,
+            ...serializeMessage(m),
           }),
         );
       }

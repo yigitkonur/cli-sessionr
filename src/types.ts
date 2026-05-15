@@ -209,6 +209,8 @@ export interface SliceMeta {
   cursor_after: number | null;
   cursor: CursorCommands;
   page?: { current: number; total: number };
+  budget?: number | null;
+  preset?: string;
   next_action?: {
     resume: string;
     resume_async: string;
@@ -224,6 +226,8 @@ export interface SliceMeta {
     upgrade_options: Array<{
       preset: string;
       estimated_tokens: number;
+      will_fit_in_current_budget: boolean;
+      delta_vs_current_tokens: number;
       command: string;
     }>;
   };
@@ -254,6 +258,8 @@ export interface ReadOptions {
   after?: number;
   ifChanged?: string;
   page?: number;
+  includeSummary?: boolean;
+  batch?: string;
 }
 
 // ── Job Types (Write Path) ─────────────────────────────────────────────────

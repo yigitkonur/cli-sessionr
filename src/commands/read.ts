@@ -1,11 +1,12 @@
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
+import { serializeMessage } from '../output/serialize.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
-import { computeETag } from '../etag.js';
-import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '../errors.js';
-import { sliceByTokenBudget, sliceByPage, filterByRole, buildCursorCommands, estimatePageCount } from '../slicer.js';
-import { estimateSessionTokens, estimateMessageTokens } from '../tokens.js';
+import { InvalidRangeError, exitCodeForError } from '../errors.js';
+import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount } from '../slicer.js';
+import { estimateSessionTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
 import { cmdPrefix } from '../util/invocation.js';
 import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning } from '../types.js';
@@ -43,10 +44,10 @@ function shortenPath(p: string): string {
   return p.startsWith(home) ? '~' + p.slice(home.length) : p;
 }
 
-function buildSessionSummary(session: NormalizedSession, tokenBudget: number | undefined, preset?: VerbosityPreset): SessionSummary {
+function buildSessionSummary(session: NormalizedSession, tokenBudget: number | undefined, _preset?: VerbosityPreset): SessionSummary {
   const totalTokens = estimateSessionTokens(session.messages);
   const budget = tokenBudget ?? 4000;
-  const pagesEst = estimatePageCount(session.messages, budget, preset);
+  const pagesEst = estimatePageCount(session.messages, budget);
   const durationMs = session.stats.durationMs;
   let duration: string | undefined;
   if (durationMs != null) {
@@ -113,6 +114,8 @@ function computeDetailHint(
   messages: NormalizedMessage[],
   sessionId: string,
   currentPreset: VerbosityPreset,
+  currentBudget: number,
+  currentReturnedTokens: number,
 ): SliceMeta['detail_hint'] {
   if (currentPreset.name === 'full') return undefined;
 
@@ -138,7 +141,13 @@ function computeDetailHint(
 
   if (hiddenToolCalls === 0 && truncatedResults === 0 && !thinkingHidden) return undefined;
 
-  const upgradeOptions: Array<{ preset: string; estimated_tokens: number; command: string }> = [];
+  const upgradeOptions: Array<{
+    preset: string;
+    estimated_tokens: number;
+    will_fit_in_current_budget: boolean;
+    delta_vs_current_tokens: number;
+    command: string;
+  }> = [];
   const presetNames = ['verbose', 'full'] as const;
   for (const name of presetNames) {
     if (name === currentPreset.name) continue;
@@ -183,7 +192,9 @@ function computeDetailHint(
     upgradeOptions.push({
       preset: name,
       estimated_tokens: roundedEst,
-      command: `${cmdPrefix()} read ${sessionId} --preset ${name} --tokens ${roundedEst + 2000}`,
+      will_fit_in_current_budget: roundedEst <= currentBudget,
+      delta_vs_current_tokens: roundedEst - currentReturnedTokens,
+      command: `sessionr read ${sessionId} --preset ${name} --tokens ${Math.max(roundedEst + 2000, currentBudget)}`,
     });
   }
 
@@ -210,7 +221,11 @@ export async function readCommand(
   });
 
   try {
-    const warnings: DiscoveryWarning[] = [];
+    if (opts?.batch) {
+      await readBatchCommand(opts, isTTY);
+      return;
+    }
+
     const session = await loadSession(
       sessionId,
       opts?.source as SessionSource | undefined,
@@ -294,27 +309,15 @@ export async function readCommand(
     // ── Page-based pagination (--page N) ──────────────────────────────────
     if (opts?.page != null) {
       const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, preset);
-      const etag = computeETag(session, {
-        preset: preset.name,
-        tokenBudget,
-        from: result.meta.range.from,
-        to: result.meta.range.to,
-        anchor: result.meta.anchor ?? undefined,
-        search: opts?.search,
-        page: opts.page,
-        format: outputFormat,
-      });
-      if (opts?.ifChanged === etag) {
-        emitUnchanged(session, etag);
-        return;
-      }
+      let meta = injectNextAction(result.meta);
+      meta = annotateMeta(meta, tokenBudget, preset);
+      meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
 
-      let meta = { ...injectNextAction(result.meta), etag };
-      meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
-
-      if (outputFormat === 'json' || outputFormat === 'jsonl') {
-        const envelope = buildJsonEnvelope(session, result.messages, meta, preset, summary, warnings);
+      if (outputFormat === 'json') {
+        const envelope = buildJsonEnvelope(session, result.messages, meta, summary, shouldIncludeSummary(opts));
         console.log(JSON.stringify(envelope, dateReplacer, 2));
+      } else if (outputFormat === 'jsonl') {
+        console.log(buildJsonlRead(session, result.messages, meta, summary, shouldIncludeSummary(opts)));
       } else {
         console.log(formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta));
       }
@@ -358,22 +361,9 @@ export async function readCommand(
       preset,
     );
 
-    const etag = computeETag(session, {
-      preset: preset.name,
-      tokenBudget,
-      from,
-      to,
-      anchor,
-      search: opts?.search,
-      format: outputFormat,
-    });
-    if (opts?.ifChanged === etag) {
-      emitUnchanged(session, etag);
-      return;
-    }
-
-    let meta = { ...injectNextAction(result.meta), etag };
-    meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
+    let meta = injectNextAction(result.meta);
+    meta = annotateMeta(meta, tokenBudget, preset);
+    meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
 
     let outputMessages = result.messages;
     if (detail === 'meta') {
@@ -390,9 +380,11 @@ export async function readCommand(
       }));
     }
 
-    if (outputFormat === 'json' || outputFormat === 'jsonl') {
-      const envelope = buildJsonEnvelope(session, outputMessages, meta, preset, summary, warnings);
+    if (outputFormat === 'json') {
+      const envelope = buildJsonEnvelope(session, outputMessages, meta, summary, shouldIncludeSummary(opts));
       console.log(JSON.stringify(envelope, dateReplacer, 2));
+    } else if (outputFormat === 'jsonl') {
+      console.log(buildJsonlRead(session, outputMessages, meta, summary, shouldIncludeSummary(opts)));
     } else {
       console.log(
         formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta),
@@ -410,39 +402,113 @@ export async function readCommand(
   }
 }
 
+async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void> {
+  const rawIds = await readFile(opts.batch!, 'utf-8');
+  const ids = rawIds.split(/\r?\n/).map((id) => id.trim()).filter(Boolean);
+  const detail = opts.detail as DetailLevel | undefined;
+  const presetName = detail
+    ? undefined
+    : (opts.preset ?? getDefaultPresetName(isTTY));
+  const preset = detail
+    ? getPresetForDetail(detail)
+    : getPreset(presetName!);
+  const rawBudget = opts.tokens ?? getDefaultTokenBudget();
+  const tokenBudget = Math.min(rawBudget, MAX_CHUNK_BUDGET);
+  const lines: string[] = [
+    jsonlLine({ type: 'meta', api_version: 1, count: ids.length, budget: tokenBudget, preset: preset.name }),
+  ];
+
+  for (const id of ids) {
+    const session = await loadSession(id, opts.source as SessionSource | undefined);
+    let messages = session.messages;
+    if (opts.role) {
+      const roles = opts.role.split(',').map((r) => r.trim());
+      messages = filterByRole(messages, roles);
+    }
+
+    const result = sliceByTokenBudget(
+      messages,
+      tokenBudget,
+      session.id,
+      session.source,
+      opts.search ? 'search' : (opts.anchor ?? 'head'),
+      opts.search,
+      preset,
+    );
+    let meta = injectNextAction(result.meta);
+    meta = annotateMeta(meta, tokenBudget, preset);
+    meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
+
+    lines.push(jsonlLine({ type: 'session', ...buildSessionSummary(session, tokenBudget, preset) }));
+    lines.push(jsonlLine({ type: 'meta', ...meta }));
+    for (const message of result.messages) {
+      lines.push(jsonlLine({ type: 'message', session_id: session.id, ...serializeMessage(message) }));
+    }
+  }
+
+  console.log(lines.join('\n'));
+}
+
+function annotateMeta(meta: SliceMeta, tokenBudget: number, preset: VerbosityPreset): SliceMeta {
+  return {
+    ...meta,
+    budget: tokenBudget,
+    preset: preset.name,
+  };
+}
+
+function shouldIncludeSummary(opts?: ReadOptions): boolean {
+  return opts?.includeSummary === true || opts?.page == null || opts.page === 1;
+}
+
 function buildJsonEnvelope(
   session: NormalizedSession,
   messages: NormalizedMessage[],
   meta: SliceMeta,
-  _preset: VerbosityPreset,
   summary?: SessionSummary,
-  warnings?: DiscoveryWarning[],
+  includeSummary = true,
 ): Record<string, unknown> {
-  const envelope: Record<string, unknown> = { api_version: 1 };
-  if (summary) envelope.session = summary;
-  envelope.meta = warnings && warnings.length > 0 ? { ...meta, warnings } : meta;
-  envelope.messages = messages.map((m) => ({
-    index: m.index,
-    role: m.role,
-    timestamp: m.timestamp,
-    tokens_estimate: estimateMessageTokens(m),
-    content: m.content,
-    ...(m.blocks.length > 0 && m.content !== '' &&
-        !(m.blocks.length === 1 && m.blocks[0].type === 'text')
-      ? { blocks: m.blocks }
-      : {}),
-  }));
-
-  const sid = meta.session_id;
-  const shortSid = sid.length > 8 ? sid.slice(0, 8) : sid;
-  const prefix = cmdPrefix();
-  envelope.actions = [
-    { command: `${prefix} stats ${shortSid}`, description: 'Full statistics (tools, tokens, files)' },
-    { command: `${prefix} context ${shortSid} --tokens 8000`, description: 'Export context for agent handoff' },
-    { command: `${prefix} diff ${shortSid} <other-id>`, description: 'Compare with another session' },
-  ];
+  const envelope: Record<string, unknown> = {
+    api_version: 1,
+    meta,
+  };
+  if (meta.next_action) envelope.next_action = meta.next_action;
+  envelope.actions = buildActions(meta);
+  if (summary && includeSummary) envelope.session = summary;
+  envelope.messages = messages.map(serializeMessage);
 
   return envelope;
+}
+
+function buildJsonlRead(
+  session: NormalizedSession,
+  messages: NormalizedMessage[],
+  meta: SliceMeta,
+  summary?: SessionSummary,
+  includeSummary = true,
+): string {
+  const lines: string[] = [jsonlLine({ type: 'meta', api_version: 1, ...meta })];
+  if (meta.next_action) lines.push(jsonlLine({ type: 'next_action', ...meta.next_action }));
+  lines.push(jsonlLine({ type: 'actions', actions: buildActions(meta) }));
+  if (summary && includeSummary) lines.push(jsonlLine({ type: 'session', ...summary }));
+  for (const message of messages) {
+    lines.push(jsonlLine({ type: 'message', session_id: session.id, ...serializeMessage(message) }));
+  }
+  return lines.join('\n');
+}
+
+function buildActions(meta: SliceMeta): Array<{ command: string; description: string }> {
+  const sid = meta.session_id;
+  const shortSid = sid.length > 8 ? sid.slice(0, 8) : sid;
+  return [
+    { command: `sessionr stats ${shortSid}`, description: 'Full statistics (tools, tokens, files)' },
+    { command: `sessionr context ${shortSid} --tokens 8000`, description: 'Export context for agent handoff' },
+    { command: `sessionr diff ${shortSid} <other-id>`, description: 'Compare with another session' },
+  ];
+}
+
+function jsonlLine(obj: unknown): string {
+  return JSON.stringify(obj, dateReplacer);
 }
 
 function dateReplacer(_key: string, value: unknown): unknown {
