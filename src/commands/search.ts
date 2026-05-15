@@ -2,10 +2,12 @@ import { cmdPrefix } from "../util/invocation.js";
 import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
+import { findSearchMatches, type SearchMatch } from '../search-snippets.js';
 import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
 
 interface SearchResult extends SessionListEntry {
   matchCount: number;
+  matches: SearchMatch[];
 }
 
 export async function searchCommand(
@@ -37,14 +39,14 @@ export async function searchCommand(
     for (const entry of entries) {
       try {
         const session = await loadSession(entry.id, entry.source);
-        let matchCount = 0;
-        for (const msg of session.messages) {
-          if (msg.content.toLowerCase().includes(query)) {
-            matchCount++;
-          }
-        }
+        const matchingMessages = session.messages.filter((msg) => msg.content.toLowerCase().includes(query));
+        const matchCount = matchingMessages.length;
         if (matchCount > 0) {
-          results.push({ ...entry, matchCount });
+          results.push({
+            ...entry,
+            matchCount,
+            matches: findSearchMatches(session.messages, opts.query),
+          });
         }
       } catch {
         // skip sessions that fail to parse
@@ -79,6 +81,11 @@ export async function searchCommand(
           updatedAt: r.updatedAt,
           summary: r.summary,
           match_count: r.matchCount,
+          matches: r.matches.map((match) => ({
+            message_index: match.messageIndex,
+            snippet: match.snippet,
+            char_offset: match.charOffset,
+          })),
         })),
         total_matches: topResults.length,
         actions,

@@ -48,8 +48,9 @@ program
   .option('-n, --limit <n>', 'Max sessions to list', '20')
   .option('--offset <n>', 'Skip first N sessions (for pagination)', '0')
   .option('-q, --search <query>', 'Search sessions by content')
+  .option('--max-sessions <n>', 'Max sessions to scan with --search (1-200)', '50')
   .option('--json', '[deprecated] Use --output json')
-  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; json?: boolean }) => {
+  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; maxSessions?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
     await listCommand(source, {
