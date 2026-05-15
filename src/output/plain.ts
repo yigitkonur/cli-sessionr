@@ -45,12 +45,17 @@ export function createPlainFormatter(): Formatter {
       }
       lines.push('---');
 
+      const totalMessages = session.stats.totalMessages;
       for (const msg of messages) {
         lines.push('');
         lines.push(`## #${msg.index} ${msg.role}`);
 
+        // First and last messages of the session are never char-truncated.
+        const isAnchor = msg.index === 1 || msg.index === totalMessages;
+        const effectivePreset = isAnchor ? expandPresetCaps(preset) : preset;
+
         const rendered = msg.blocks
-          .map((block) => renderBlock(block, preset))
+          .map((block) => renderBlock(block, effectivePreset))
           .filter((s) => s.trim());
 
         if (rendered.length === 0) {
@@ -231,6 +236,19 @@ function formatToolInput(input: Record<string, unknown>, maxChars: number): stri
   }
   const joined = `{ ${parts.join(', ')} }`;
   return truncate(joined, maxChars);
+}
+
+// Returns a copy of the preset with all char caps lifted to Infinity.
+// Used for the first + last message of a session so the most important
+// turns are never truncated. show* visibility flags are preserved.
+function expandPresetCaps(preset: VerbosityPreset): VerbosityPreset {
+  return {
+    ...preset,
+    maxContentChars: Infinity,
+    maxThinkingChars: Infinity,
+    maxToolInputChars: Infinity,
+    maxToolResultChars: Infinity,
+  };
 }
 
 function renderBlock(block: ContentBlock, preset: VerbosityPreset): string {
