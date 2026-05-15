@@ -71,10 +71,10 @@ export function createTtyFormatter(): Formatter {
           const sid = shortId(session.id);
           lines.push('');
           lines.push(chalk.yellow(`${parts.join(', ')} truncated.`) + chalk.dim(' Presets control how much detail is shown:'));
-          lines.push(chalk.dim(`  minimal  — headlines only    `) + chalk.cyan(`sessionr read ${sid} -p minimal`));
-          lines.push(chalk.dim(`  standard — short summaries   `) + chalk.cyan(`sessionr read ${sid} -p standard`));
-          lines.push(chalk.dim(`  verbose  — expanded detail   `) + chalk.cyan(`sessionr read ${sid} -p verbose`));
-          lines.push(chalk.dim(`  full     — complete output   `) + chalk.cyan(`sessionr read ${sid} -p full`));
+          lines.push(chalk.dim(`  minimal  — headlines only    `) + chalk.cyan(`${cmdPrefix()} read ${sid} -p minimal`));
+          lines.push(chalk.dim(`  standard — short summaries   `) + chalk.cyan(`${cmdPrefix()} read ${sid} -p standard`));
+          lines.push(chalk.dim(`  verbose  — expanded detail   `) + chalk.cyan(`${cmdPrefix()} read ${sid} -p verbose`));
+          lines.push(chalk.dim(`  full     — complete output   `) + chalk.cyan(`${cmdPrefix()} read ${sid} -p full`));
           lines.push(chalk.dim(`Currently using "${h.current_preset}".`));
         }
       }

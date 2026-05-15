@@ -42,12 +42,12 @@ export async function infoCommand(
         token_usage: session.stats.tokenUsage,
         duration_ms: session.stats.durationMs,
         actions: [
-          { command: `sessionr read ${session.id}`, description: 'Read session messages' },
-          { command: `sessionr stats ${session.id}`, description: 'Full statistics (tools, tokens, files)' },
-          { command: `sessionr send ${session.id} -f prompt.md --source ${session.source}`, description: 'Resume session' },
-          { command: `sessionr context ${session.id} --tokens 8000`, description: 'Export context for agent handoff' },
-          { command: `sessionr tag ${session.id} --add important`, description: 'Tag this session' },
-          { command: `sessionr prune --older-than 7d --dry-run`, description: 'Preview cleanup of old sessions' },
+          { command: `${cmdPrefix()} read ${session.id}`, description: 'Read session messages' },
+          { command: `${cmdPrefix()} stats ${session.id}`, description: 'Full statistics (tools, tokens, files)' },
+          { command: `${cmdPrefix()} send ${session.id} -f prompt.md --source ${session.source}`, description: 'Resume session' },
+          { command: `${cmdPrefix()} context ${session.id} --tokens 8000`, description: 'Export context for agent handoff' },
+          { command: `${cmdPrefix()} tag ${session.id} --add important`, description: 'Tag this session' },
+          { command: `${cmdPrefix()} prune --older-than 7d --dry-run`, description: 'Preview cleanup of old sessions' },
         ],
       };
       console.log(JSON.stringify(result, dateReplacer, 2));

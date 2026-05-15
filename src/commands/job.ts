@@ -33,14 +33,14 @@ export async function jobStatusCommand(
 
     if (finalized.status === 'completed' && finalized.session_id) {
       actions.push({
-        command: `sessionr read ${finalized.session_id} --after ${finalized.message_count_before}`,
+        command: `${cmdPrefix()} read ${finalized.session_id} --after ${finalized.message_count_before}`,
         description: 'Read new messages',
       });
     }
     if (finalized.status === 'running') {
       actions.push(
-        { command: `sessionr wait ${jobId}`, description: 'Wait for completion' },
-        { command: `sessionr cancel ${jobId}`, description: 'Cancel job' },
+        { command: `${cmdPrefix()} wait ${jobId}`, description: 'Wait for completion' },
+        { command: `${cmdPrefix()} cancel ${jobId}`, description: 'Cancel job' },
       );
     }
 
@@ -90,7 +90,7 @@ export async function jobWaitCommand(
           code: 'JOB_TIMEOUT',
           exitCode: EXIT.ERROR,
           detail: { job_id: jobId, timeout_seconds: timeout },
-          suggestion: `sessionr wait ${jobId} --timeout ${timeout * 2}`,
+          suggestion: `${cmdPrefix()} wait ${jobId} --timeout ${timeout * 2}`,
           retry: true,
         });
       }
@@ -104,7 +104,7 @@ export async function jobWaitCommand(
     const actions: Array<{ command: string; description: string }> = [];
     if (current.status === 'completed' && current.session_id) {
       actions.push({
-        command: `sessionr read ${current.session_id} --after ${current.message_count_before}`,
+        command: `${cmdPrefix()} read ${current.session_id} --after ${current.message_count_before}`,
         description: 'Read new messages',
       });
     }
@@ -182,12 +182,12 @@ export async function jobListCommand(opts: JobCommandOpts): Promise<void> {
         const jobActions: Array<{ command: string; description: string }> = [];
         if (j.status === 'running') {
           jobActions.push(
-            { command: `sessionr wait ${j.id}`, description: 'Wait for completion' },
-            { command: `sessionr cancel ${j.id}`, description: 'Cancel job' },
+            { command: `${cmdPrefix()} wait ${j.id}`, description: 'Wait for completion' },
+            { command: `${cmdPrefix()} cancel ${j.id}`, description: 'Cancel job' },
           );
         } else if (j.status === 'completed' && j.session_id) {
           jobActions.push(
-            { command: `sessionr read ${j.session_id} --after ${j.message_count_before}`, description: 'Read new messages' },
+            { command: `${cmdPrefix()} read ${j.session_id} --after ${j.message_count_before}`, description: 'Read new messages' },
           );
         }
         return {

@@ -206,7 +206,7 @@ async function runSync(
 
   envelope.actions = [
     {
-      command: `sessionr read ${session.id} --after ${messageCountBefore}`,
+      command: `${cmdPrefix()} read ${session.id} --after ${messageCountBefore}`,
       description: 'Re-read new messages',
     },
   ];
@@ -267,9 +267,9 @@ async function runAsync(
       message_count_before: messageCountBefore,
     },
     actions: [
-      { command: `sessionr job ${jobId}`, description: 'Check job status' },
-      { command: `sessionr wait ${jobId}`, description: 'Wait for completion' },
-      { command: `sessionr cancel ${jobId}`, description: 'Cancel job' },
+      { command: `${cmdPrefix()} job ${jobId}`, description: 'Check job status' },
+      { command: `${cmdPrefix()} wait ${jobId}`, description: 'Wait for completion' },
+      { command: `${cmdPrefix()} cancel ${jobId}`, description: 'Cancel job' },
     ],
   };
 

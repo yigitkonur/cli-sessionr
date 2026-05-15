@@ -83,8 +83,8 @@ export async function contextExportCommand(
         token_count_estimate: estimateSessionTokens(result.messages),
       },
       actions: [
-        { command: `sessionr send --new --source ${session.source} -f prompt.md`, description: 'Start new session with this context' },
-        { command: `sessionr read ${session.id} --tokens 4000`, description: 'Read full session messages' },
+        { command: `${cmdPrefix()} send --new --source ${session.source} -f prompt.md`, description: 'Start new session with this context' },
+        { command: `${cmdPrefix()} read ${session.id} --tokens 4000`, description: 'Read full session messages' },
       ],
     };
 

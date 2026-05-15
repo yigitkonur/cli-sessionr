@@ -57,12 +57,12 @@ export async function searchCommand(
       const actions: Array<{ command: string; description: string }> = [];
       if (topResults.length > 0) {
         actions.push(
-          { command: `sessionr read ${topResults[0].id} --search "${opts.query}" --tokens 4000`, description: 'Read top match with context' },
+          { command: `${cmdPrefix()} read ${topResults[0].id} --search "${opts.query}" --tokens 4000`, description: 'Read top match with context' },
         );
       }
       if (allEntries.length > maxSessions) {
         actions.push(
-          { command: `sessionr search -q "${opts.query}" --max-sessions ${maxSessions + 20}`, description: 'Search more sessions' },
+          { command: `${cmdPrefix()} search -q "${opts.query}" --max-sessions ${maxSessions + 20}`, description: 'Search more sessions' },
         );
       }
 

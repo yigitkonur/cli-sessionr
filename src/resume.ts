@@ -61,7 +61,7 @@ const TOOL_DIRECTS: Record<SessionSource, ToolDirect | null> = {
 };
 
 export function getResumeHint(source: SessionSource, sessionId: string): ResumeHint {
-  const base = `sessionr send ${sessionId} -f prompt.md --source ${source}`;
+  const base = `${cmdPrefix()} send ${sessionId} -f prompt.md --source ${source}`;
   const tool = TOOL_DIRECTS[source];
 
   const defaultTip = 'Write your prompt to prompt.md, then run resume. ' +

@@ -69,10 +69,10 @@ export function createPlainFormatter(): Formatter {
           const sid = shortId(session.id);
           lines.push('');
           lines.push(`${parts.join(', ')} truncated. Presets control how much detail is shown:`);
-          lines.push(`  minimal  — headlines only    sessionr read ${sid} -p minimal`);
-          lines.push(`  standard — short summaries   sessionr read ${sid} -p standard`);
-          lines.push(`  verbose  — expanded detail   sessionr read ${sid} -p verbose`);
-          lines.push(`  full     — complete output   sessionr read ${sid} -p full`);
+          lines.push(`  minimal  — headlines only    ${cmdPrefix()} read ${sid} -p minimal`);
+          lines.push(`  standard — short summaries   ${cmdPrefix()} read ${sid} -p standard`);
+          lines.push(`  verbose  — expanded detail   ${cmdPrefix()} read ${sid} -p verbose`);
+          lines.push(`  full     — complete output   ${cmdPrefix()} read ${sid} -p full`);
           lines.push(`Currently using "${h.current_preset}".`);
         }
       }
@@ -115,7 +115,7 @@ export function createPlainFormatter(): Formatter {
 
       if (entries.length > 0) {
         lines.push('');
-        lines.push(`Tip: sessionr read ${shortId(entries[0].id)} to open a session`);
+        lines.push(`Tip: ${cmdPrefix()} read ${shortId(entries[0].id)} to open a session`);
       }
 
       lines.push('');

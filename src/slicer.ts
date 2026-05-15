@@ -17,13 +17,13 @@ export function buildCursorCommands(
 
   return {
     prev: meta.has_more_before
-      ? `sessionr read ${shortId} --before ${meta.range.from} --tokens ${budget}`
+      ? `${cmdPrefix()} read ${shortId} --before ${meta.range.from} --tokens ${budget}`
       : null,
     next: meta.has_more_after
-      ? `sessionr read ${shortId} --after ${meta.range.to} --tokens ${budget}`
+      ? `${cmdPrefix()} read ${shortId} --after ${meta.range.to} --tokens ${budget}`
       : null,
     first: meta.range.from > 1
-      ? `sessionr read ${shortId} --page 1 --tokens ${budget}`
+      ? `${cmdPrefix()} read ${shortId} --page 1 --tokens ${budget}`
       : null,
   };
 }
