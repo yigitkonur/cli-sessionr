@@ -58,7 +58,7 @@ export async function sendCommand(
       : buildResumeCommand(source, resolvedSessionId!, opts.message);
 
     if (opts.async) {
-      await runAsync(cmd, resolvedSessionId, source, cwd, opts.message, messageCountBefore, isNew, formatter);
+      await runAsync(cmd, resolvedSessionId, source, cwd, opts, messageCountBefore, isNew, formatter);
     } else {
       await runSync(cmd, resolvedSessionId, source, cwd, opts, messageCountBefore, isNew, formatter);
     }
@@ -219,7 +219,7 @@ async function runAsync(
   sessionId: string | null,
   source: SessionSource,
   cwd: string,
-  message: string,
+  opts: SendOptions,
   messageCountBefore: number,
   isNew: boolean,
   formatter: ReturnType<typeof createFormatter>,
@@ -245,8 +245,13 @@ async function runAsync(
     id: jobId,
     sessionId,
     source,
+    readBack: {
+      source,
+      tokens: opts.tokens,
+      preset: opts.preset,
+    },
     cwd,
-    message,
+    message: opts.message,
     pid: child.pid!,
     messageCountBefore,
     isNewSession: isNew,

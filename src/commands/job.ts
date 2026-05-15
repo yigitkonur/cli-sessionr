@@ -1,7 +1,7 @@
 import { readJob, listJobs, finalizeJob, cancelJob } from '../jobs.js';
 import { createFormatter } from '../output/formatter.js';
 import { SessionReaderError, EXIT, exitCodeForError } from '../errors.js';
-import type { JobStatus, OutputFormat } from '../types.js';
+import type { Job, JobStatus, OutputFormat } from '../types.js';
 
 interface JobCommandOpts {
   output?: OutputFormat;
@@ -33,7 +33,7 @@ export async function jobStatusCommand(
 
     if (finalized.status === 'completed' && finalized.session_id) {
       actions.push({
-        command: `sessionr read ${finalized.session_id} --after ${finalized.message_count_before}`,
+        command: buildReadBackCommand(finalized),
         description: 'Read new messages',
       });
     }
@@ -104,7 +104,7 @@ export async function jobWaitCommand(
     const actions: Array<{ command: string; description: string }> = [];
     if (current.status === 'completed' && current.session_id) {
       actions.push({
-        command: `sessionr read ${current.session_id} --after ${current.message_count_before}`,
+        command: buildReadBackCommand(current),
         description: 'Read new messages',
       });
     }
@@ -142,19 +142,35 @@ export async function jobCancelCommand(
     }
 
     if (job.status !== 'running') {
+      const actions: Array<{ command: string; description: string }> = [];
+      if (job.status === 'completed' && job.session_id) {
+        actions.push({
+          command: buildReadBackCommand(job),
+          description: 'Read new messages',
+        });
+      }
       const result = {
         api_version: 1,
         data: { ...job, message: `Job already ${job.status}` },
+        actions,
       };
       console.log(JSON.stringify(result, null, 2));
       return;
     }
 
     const cancelled = cancelJob(job);
+    const actions: Array<{ command: string; description: string }> = [];
+    if (cancelled.session_id) {
+      actions.push({
+        command: buildReadBackCommand(cancelled),
+        description: 'Read new messages',
+      });
+    }
 
     const result = {
       api_version: 1,
       data: { ...cancelled },
+      actions,
     };
 
     console.log(JSON.stringify(result, null, 2));
@@ -187,7 +203,7 @@ export async function jobListCommand(opts: JobCommandOpts): Promise<void> {
           );
         } else if (j.status === 'completed' && j.session_id) {
           jobActions.push(
-            { command: `sessionr read ${j.session_id} --after ${j.message_count_before}`, description: 'Read new messages' },
+            { command: buildReadBackCommand(j), description: 'Read new messages' },
           );
         }
         return {
@@ -195,6 +211,7 @@ export async function jobListCommand(opts: JobCommandOpts): Promise<void> {
           session_id: j.session_id,
           source: j.source,
           status: j.status,
+          read_back: j.read_back,
           pid: j.pid,
           started_at: j.started_at,
           completed_at: j.completed_at,
@@ -216,4 +233,12 @@ export async function jobListCommand(opts: JobCommandOpts): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildReadBackCommand(job: Job): string {
+  const readBack = job.read_back ?? { source: job.source };
+  let command = `sessionr read ${job.session_id} --after ${job.message_count_before} --source ${readBack.source}`;
+  if (readBack.tokens !== undefined) command += ` --tokens ${readBack.tokens}`;
+  if (readBack.preset) command += ` --preset ${readBack.preset}`;
+  return command;
 }
