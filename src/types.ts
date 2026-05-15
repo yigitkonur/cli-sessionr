@@ -171,6 +171,7 @@ export interface CursorCommands {
 export interface SliceMeta {
   session_id: string;
   source: SessionSource;
+  etag?: string;
   total_messages: number;
   total_tokens_estimate: number;
   returned_tokens_estimate: number;

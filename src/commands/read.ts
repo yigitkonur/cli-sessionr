@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
+import { computeETag } from '../etag.js';
 import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget, sliceByPage, filterByRole, buildCursorCommands, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens, estimateMessageTokens } from '../tokens.js';
@@ -11,6 +12,31 @@ import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, 
 
 const VALID_ROLES = ['user', 'assistant', 'system', 'tool_use', 'tool_result'] as const;
 const VALID_ANCHORS = ['head', 'tail', 'search'] as const;
+
+function validateRoles(raw: string): string[] {
+  const roles = raw.split(',').map((r) => r.trim()).filter(Boolean);
+  const unknown = roles.filter((r) => !(VALID_ROLES as readonly string[]).includes(r));
+  if (unknown.length > 0) {
+    throw new SessionReaderError(`Unknown role(s): ${unknown.join(', ')}`, {
+      code: 'INVALID_ROLE', exitCode: EXIT.USAGE,
+      detail: { provided: roles, unknown, valid: [...VALID_ROLES] },
+      suggestion: `sessionr read <id> --role user,assistant`,
+    });
+  }
+  return roles;
+}
+
+function validateAnchor(raw: string | undefined): 'head' | 'tail' | 'search' {
+  if (!raw) return 'head';
+  if (!(VALID_ANCHORS as readonly string[]).includes(raw)) {
+    throw new SessionReaderError(`Invalid --anchor "${raw}"`, {
+      code: 'INVALID_ANCHOR', exitCode: EXIT.USAGE,
+      detail: { provided: raw, valid: [...VALID_ANCHORS] },
+      suggestion: `sessionr read <id> --anchor head|tail|search`,
+    });
+  }
+  return raw as 'head' | 'tail' | 'search';
+}
 
 function shortenPath(p: string): string {
   const home = homedir();
@@ -63,39 +89,24 @@ function injectNextAction(meta: SliceMeta): SliceMeta {
   };
 }
 
-function markPartial(meta: SliceMeta): SliceMeta {
-  if (!meta.has_more_before && !meta.has_more_after) return meta;
-  process.exitCode = EXIT.PARTIAL;
-  return { ...meta, partial: true };
-}
-
-function validateRoles(roleList: string): string[] {
-  const roles = roleList.split(',').map((r) => r.trim()).filter(Boolean);
-  const valid = [...VALID_ROLES];
-  const unknown = roles.filter((role) => !valid.includes(role as (typeof VALID_ROLES)[number]));
-  if (unknown.length > 0) {
-    throw new SessionReaderError(`Unknown role(s): ${unknown.join(', ')}`, {
-      code: 'INVALID_ROLE',
-      exitCode: EXIT.USAGE,
-      detail: { unknown, valid },
-      suggestion: 'sessionr read <id> --role user,assistant',
-    });
-  }
-  return roles;
-}
-
-function validateAnchor(anchor: string | undefined): 'head' | 'tail' | 'search' | undefined {
-  if (anchor == null) return undefined;
-  const valid = [...VALID_ANCHORS];
-  if (!valid.includes(anchor as (typeof VALID_ANCHORS)[number])) {
-    throw new SessionReaderError(`Unknown anchor "${anchor}"`, {
-      code: 'INVALID_ANCHOR',
-      exitCode: EXIT.USAGE,
-      detail: { provided: anchor, valid },
-      suggestion: 'sessionr read <id> --anchor head',
-    });
-  }
-  return anchor as 'head' | 'tail' | 'search';
+function emitUnchanged(session: NormalizedSession, etag: string): void {
+  const shortSid = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
+  console.log(JSON.stringify({
+    api_version: 1,
+    unchanged: true,
+    etag,
+    meta: {
+      session_id: session.id,
+      source: session.source,
+      total_messages: session.stats.totalMessages,
+      updated_at: session.metadata.updatedAt,
+    },
+    actions: [
+      { command: `sessionr read ${shortSid} --if-changed ${etag}`, description: 'Poll again' },
+      { command: `sessionr read ${shortSid}`, description: 'Bypass etag and fetch' },
+    ],
+  }, dateReplacer, 2));
+  process.exitCode = EXIT.NO_CHANGES;
 }
 
 function computeDetailHint(
@@ -281,12 +292,29 @@ export async function readCommand(
     // ── Page-based pagination (--page N) ──────────────────────────────────
     if (opts?.page != null) {
       const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, preset);
-      let meta = markPartial(injectNextAction(result.meta));
+      const etag = computeETag(session, {
+        preset: preset.name,
+        tokenBudget,
+        from: result.meta.range.from,
+        to: result.meta.range.to,
+        anchor: result.meta.anchor ?? undefined,
+        search: opts?.search,
+        page: opts.page,
+        format: outputFormat,
+      });
+      if (opts?.ifChanged === etag) {
+        emitUnchanged(session, etag);
+        return;
+      }
+
+      let meta = { ...injectNextAction(result.meta), etag };
       meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
-      if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      if (outputFormat === 'json') {
         const envelope = buildJsonEnvelope(session, result.messages, meta, preset, summary);
         console.log(JSON.stringify(envelope, dateReplacer, 2));
+      } else if (outputFormat === 'jsonl') {
+        console.log(formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta));
       } else {
         console.log(formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta));
       }
@@ -330,7 +358,21 @@ export async function readCommand(
       preset,
     );
 
-    let meta = markPartial(injectNextAction(result.meta));
+    const etag = computeETag(session, {
+      preset: preset.name,
+      tokenBudget,
+      from,
+      to,
+      anchor,
+      search: opts?.search,
+      format: outputFormat,
+    });
+    if (opts?.ifChanged === etag) {
+      emitUnchanged(session, etag);
+      return;
+    }
+
+    let meta = { ...injectNextAction(result.meta), etag };
     meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
     let outputMessages = result.messages;
@@ -348,9 +390,13 @@ export async function readCommand(
       }));
     }
 
-    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+    if (outputFormat === 'json') {
       const envelope = buildJsonEnvelope(session, outputMessages, meta, preset, summary);
       console.log(JSON.stringify(envelope, dateReplacer, 2));
+    } else if (outputFormat === 'jsonl') {
+      console.log(
+        formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta),
+      );
     } else {
       console.log(
         formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta),
