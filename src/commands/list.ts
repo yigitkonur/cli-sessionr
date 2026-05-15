@@ -2,7 +2,9 @@ import * as path from 'path';
 import { listSessionsScoped, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
-import type { CursorCommands, SessionSource, OutputFormat } from '../types.js';
+import { SOURCES_LIST } from '../utils/validate.js';
+import { cmdPrefix } from '../util/invocation.js';
+import type { CursorCommands, SessionSource, OutputFormat, SessionListEntry } from '../types.js';
 
 function isPwdRelevant(entryCwd: string, pwd: string): boolean {
   if (!entryCwd) return false;
@@ -12,7 +14,7 @@ function isPwdRelevant(entryCwd: string, pwd: string): boolean {
 
 export async function listCommand(
   source?: string,
-  opts?: { limit?: string; offset?: string; search?: string; cwd?: string; json?: boolean; output?: OutputFormat },
+  opts?: { limit?: string; offset?: string; search?: string; maxSessions?: string; cwd?: string; json?: boolean; output?: OutputFormat },
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
   const outputFormat = opts?.output ?? (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
@@ -84,30 +86,30 @@ export async function listCommand(
     };
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const prefix = cmdPrefix();
+      const combinedMeta: Record<string, unknown> = {
+        ...(scoped.meta as unknown as Record<string, unknown>),
+        next_action: entries.length > 0
+          ? {
+              command: `${prefix} read ${entries[0].id}`,
+              description: 'Read the most recent matching session',
+            }
+          : {
+              command: `${prefix} doctor`,
+              description: 'Check which sources and session data directories are configured',
+            },
+      };
+      if (searchMeta) combinedMeta.search = searchMeta;
       const result: Record<string, unknown> = {
         api_version: 1,
-        meta: {
-          next_action: entries.length > 0
-            ? {
-                command: `sessionr read ${entries[0].id}`,
-                description: 'Read the most recent matching session',
-              }
-            : {
-                command: 'sessionr doctor',
-                description: 'Check which sources and session data directories are configured',
-              },
-        },
+        meta: combinedMeta,
         sessions: entries,
         total_available: allEntries.length,
         limit,
         offset,
         has_more: hasMore,
         available_sources: SOURCES_LIST,
-        meta: scoped.meta,
       };
-      if (searchMeta) {
-        result.meta = { search: searchMeta };
-      }
 
       // Cursor commands
       const cursor: CursorCommands = {
