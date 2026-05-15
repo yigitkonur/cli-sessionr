@@ -436,7 +436,12 @@ try {
   await program.parseAsync();
 } catch (err) {
   if (err instanceof CommanderError) {
-    if (err.code === 'commander.helpDisplayed' || err.code === 'commander.version') {
+    const successfulCommanderExits = new Set([
+      'commander.help',
+      'commander.helpDisplayed',
+      'commander.version',
+    ]);
+    if (successfulCommanderExits.has(err.code)) {
       process.exitCode = 0;
     } else {
       if (!process.stdout.isTTY) {
