@@ -7,6 +7,7 @@ import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '.
 import { sliceByTokenBudget, sliceByPage, filterByRole, buildCursorCommands, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens, estimateMessageTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
+import { cmdPrefix } from '../util/invocation.js';
 import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning } from '../types.js';
 
 const VALID_ROLES = ['user', 'assistant', 'system', 'tool_use', 'tool_result'] as const;
@@ -314,8 +315,6 @@ export async function readCommand(
       if (outputFormat === 'json' || outputFormat === 'jsonl') {
         const envelope = buildJsonEnvelope(session, result.messages, meta, preset, summary, warnings);
         console.log(JSON.stringify(envelope, dateReplacer, 2));
-      } else if (outputFormat === 'jsonl') {
-        console.log(formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta));
       } else {
         console.log(formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta));
       }
@@ -394,10 +393,6 @@ export async function readCommand(
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
       const envelope = buildJsonEnvelope(session, outputMessages, meta, preset, summary, warnings);
       console.log(JSON.stringify(envelope, dateReplacer, 2));
-    } else if (outputFormat === 'jsonl') {
-      console.log(
-        formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta),
-      );
     } else {
       console.log(
         formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta),

@@ -99,6 +99,8 @@ export async function listSessions(
   return deduped;
 }
 
+import type { CwdScopeMeta } from './types.js';
+
 export interface ScopedListSessionsResult {
   sessions: SessionListEntry[];
   meta: CwdScopeMeta;

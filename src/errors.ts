@@ -1,4 +1,5 @@
 import type { SessionListEntry } from './types.js';
+import { cmdPrefix } from './util/invocation.js';
 
 export const EXIT = {
   OK: 0,

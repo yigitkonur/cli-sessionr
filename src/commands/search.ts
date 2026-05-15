@@ -1,11 +1,48 @@
-import { listSessionsScoped, loadSession } from '../discovery.js';
+import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
-import type { SessionSource, OutputFormat, SessionListEntry, DiscoveryWarning } from '../types.js';
+import { cmdPrefix } from '../util/invocation.js';
+import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
+
+interface SearchMatch {
+  messageIndex: number;
+  snippet: string;
+  charOffset: number;
+}
 
 interface SearchResult extends SessionListEntry {
   matchCount: number;
   matches: SearchMatch[];
+}
+
+function findSearchMatches(
+  messages: { index: number; content: string }[],
+  query: string,
+  maxMatches = 5,
+  snippetRadius = 60,
+): SearchMatch[] {
+  const lowerQuery = query.toLowerCase();
+  const found: SearchMatch[] = [];
+  for (const msg of messages) {
+    const idx = msg.content.toLowerCase().indexOf(lowerQuery);
+    if (idx === -1) continue;
+    const from = Math.max(0, idx - snippetRadius);
+    const to = Math.min(msg.content.length, idx + query.length + snippetRadius);
+    const snippet =
+      (from > 0 ? '…' : '') +
+      msg.content.slice(from, to).replace(/\s+/g, ' ').trim() +
+      (to < msg.content.length ? '…' : '');
+    found.push({ messageIndex: msg.index, snippet, charOffset: idx });
+    if (found.length >= maxMatches) break;
+  }
+  return found;
+}
+
+function parseBoundedInt(value: string | undefined, fallback: number, min: number, max: number): number {
+  if (!value) return fallback;
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 export async function searchCommand(
@@ -28,16 +65,11 @@ export async function searchCommand(
   });
 
   try {
-    const maxSessions = opts.maxSessions ? parseInt(opts.maxSessions, 10) : 20;
-    const warnings: DiscoveryWarning[] = [];
-    const allEntries = await listSessions(
-      opts.source as SessionSource | undefined,
-      undefined,
-      (warning) => warnings.push(warning),
-    );
+    const maxSessions = parseBoundedInt(opts.maxSessions, 20, 1, 200);
+    const top = parseBoundedInt(opts.top, 10, 1, 200);
+    const allEntries = await listSessions(opts.source as SessionSource | undefined);
     const entries = allEntries.slice(0, maxSessions);
     const query = opts.query.toLowerCase();
-    const top = parseBounded('--top', opts.top, 10, 1);
     const results: SearchResult[] = [];
 
     for (const entry of entries) {
@@ -61,15 +93,16 @@ export async function searchCommand(
     const topResults = results.slice(0, top);
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const prefix = cmdPrefix();
       const actions: Array<{ command: string; description: string }> = [];
       if (topResults.length > 0) {
         actions.push(
-          { command: `${cmdPrefix()} read ${topResults[0].id} --search "${opts.query}" --tokens 4000`, description: 'Read top match with context' },
+          { command: `${prefix} read ${topResults[0].id} --search "${opts.query}" --tokens 4000`, description: 'Read top match with context' },
         );
       }
       if (allEntries.length > maxSessions) {
         actions.push(
-          { command: `sessionr search -q "${opts.query}" --max-sessions ${maxSessions + 20}${opts.cwd ? ` --cwd ${opts.cwd}` : ''}`, description: 'Search more sessions' },
+          { command: `${prefix} search -q "${opts.query}" --max-sessions ${maxSessions + 20}`, description: 'Search more sessions' },
         );
       }
 
@@ -78,7 +111,6 @@ export async function searchCommand(
         query: opts.query,
         sessions_scanned: entries.length,
         sessions_available: allEntries.length,
-        meta: scoped.meta,
         results: topResults.map((r) => ({
           id: r.id,
           source: r.source,
@@ -95,9 +127,6 @@ export async function searchCommand(
         total_matches: topResults.length,
         actions,
       };
-      if (warnings.length > 0) {
-        result.meta = { warnings };
-      }
       console.log(JSON.stringify(result, dateReplacer, 2));
     } else {
       console.log(formatter.list(topResults));
