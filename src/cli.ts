@@ -12,10 +12,11 @@ import { pruneCommand } from './commands/prune.js';
 import { sendCommand } from './commands/send.js';
 import { jobStatusCommand, jobWaitCommand, jobCancelCommand, jobListCommand } from './commands/job.js';
 import { PRESET_NAMES, DETAIL_LEVELS } from './config.js';
+import { SessionReaderError, exitCodeForError } from './errors.js';
+import { parseBounded, resolveSource, SOURCES_LIST } from './utils/validate.js';
 import type { OutputFormat, DetailLevel, ReadOptions, SendOptions } from './types.js';
 
 const SOURCES = 'claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed, factory (alias: droid)';
-const SOURCES_LIST = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed', 'factory'];
 
 const program = new Command();
 
@@ -52,7 +53,7 @@ program
   .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
-    await listCommand(source, {
+    await listCommand(resolveSource(source), {
       ...opts,
       output: parentOpts.output as OutputFormat | undefined,
     });
@@ -85,19 +86,20 @@ program
     ) => {
       warnDeprecatedJson(opts.json as boolean | undefined);
       const parentOpts = program.opts();
+      const source = resolveSource(opts.source as string | undefined);
       const readOpts: ReadOptions = {
-        source: opts.source as string | undefined,
+        source,
         preset: opts.preset as string | undefined,
         detail: opts.detail as DetailLevel | undefined,
         json: opts.json as boolean | undefined,
         output: parentOpts.output as OutputFormat | undefined,
-        tokens: opts.tokens ? parseInt(opts.tokens as string, 10) : undefined,
+        tokens: parseOptionalBounded('--tokens', opts.tokens, 1),
         anchor: opts.anchor as 'head' | 'tail' | 'search' | undefined,
         search: opts.search as string | undefined,
         role: opts.role as string | undefined,
-        page: opts.page ? parseInt(opts.page as string, 10) : undefined,
-        before: opts.before ? parseInt(opts.before as string, 10) : undefined,
-        after: opts.after ? parseInt(opts.after as string, 10) : undefined,
+        page: parseOptionalBounded('--page', opts.page, 1),
+        before: parseOptionalBounded('--before', opts.before, 1),
+        after: parseOptionalBounded('--after', opts.after, 1),
         ifChanged: opts.ifChanged as string | undefined,
       };
 
@@ -105,7 +107,7 @@ program
         const { loadSession } = await import('./discovery.js');
         const { computeETag } = await import('./etag.js');
         try {
-          const s = await loadSession(sessionId, readOpts.source as import('./types.js').SessionSource | undefined);
+          const s = await loadSession(sessionId, source);
           const etag = computeETag(s);
           if (etag === readOpts.ifChanged) {
             process.exitCode = 42;
@@ -131,6 +133,7 @@ program
     const parentOpts = program.opts();
     await statsCommand(sessionId, {
       ...opts,
+      source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
     });
   });
@@ -146,6 +149,7 @@ program
     const parentOpts = program.opts();
     await infoCommand(sessionId, {
       ...opts,
+      source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
     });
   });
@@ -163,6 +167,7 @@ program
     const parentOpts = program.opts();
     await searchCommand({
       ...opts,
+      source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
     });
   });
@@ -179,6 +184,7 @@ program
     const parentOpts = program.opts();
     await diffCommand(id1, id2, {
       ...opts,
+      source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
     });
   });
@@ -194,6 +200,7 @@ program
     const parentOpts = program.opts();
     await tagCommand(sessionId, {
       ...opts,
+      source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
     });
   });
@@ -209,6 +216,7 @@ program
     const parentOpts = program.opts();
     await pruneCommand({
       ...opts,
+      source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
     });
   });
@@ -265,11 +273,11 @@ program
       const parentOpts = program.opts();
       const sendOpts: SendOptions = {
         message,
-        source: opts.source,
+        source: resolveSource(opts.source),
         new: opts.new,
         async: opts.async,
         cwd: opts.cwd,
-        tokens: opts.tokens ? parseInt(opts.tokens, 10) : undefined,
+        tokens: parseOptionalBounded('--tokens', opts.tokens, 1),
         preset: opts.preset,
         output: parentOpts.output as OutputFormat | undefined,
       };
@@ -298,8 +306,8 @@ program
       },
     ) => {
       await contextExportCommand(sessionId, {
-        source: opts.source,
-        tokens: opts.tokens ? parseInt(opts.tokens, 10) : undefined,
+        source: resolveSource(opts.source),
+        tokens: parseOptionalBounded('--tokens', opts.tokens, 1),
         includeSystemPrompt: opts.includeSystemPrompt,
         includeToolResults: opts.includeToolResults,
         format: opts.format as 'messages' | 'summary' | undefined,
@@ -342,8 +350,8 @@ program
     const parentOpts = program.opts();
     await jobWaitCommand(jobId, {
       output: parentOpts.output as OutputFormat | undefined,
-      timeout: opts.timeout ? parseInt(opts.timeout, 10) : undefined,
-      interval: opts.interval ? parseInt(opts.interval, 10) : undefined,
+      timeout: parseOptionalBounded('--timeout', opts.timeout, 1),
+      interval: parseOptionalBounded('--interval', opts.interval, 1),
     });
   });
 
@@ -432,6 +440,11 @@ function warnDeprecatedJson(json?: boolean): void {
   }
 }
 
+function parseOptionalBounded(name: string, raw: unknown, min: number, max?: number): number | undefined {
+  if (raw == null) return undefined;
+  return parseBounded(name, raw as string, 0, min, max);
+}
+
 try {
   await program.parseAsync();
 } catch (err) {
@@ -447,6 +460,9 @@ try {
       }
       process.exitCode = 2;
     }
+  } else if (err instanceof SessionReaderError) {
+    console.error(JSON.stringify({ error: err.toJSON() }, null, 2));
+    process.exitCode = exitCodeForError(err);
   } else {
     throw err;
   }

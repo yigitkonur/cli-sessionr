@@ -1,6 +1,7 @@
 import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
+import { parseBounded } from '../utils/validate.js';
 import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
 
 interface SearchResult extends SessionListEntry {
@@ -26,11 +27,11 @@ export async function searchCommand(
   });
 
   try {
-    const maxSessions = opts.maxSessions ? parseInt(opts.maxSessions, 10) : 20;
+    const maxSessions = parseBounded('--max-sessions', opts.maxSessions, 20, 1);
     const allEntries = await listSessions(opts.source as SessionSource | undefined);
     const entries = allEntries.slice(0, maxSessions);
     const query = opts.query.toLowerCase();
-    const top = opts.top ? parseInt(opts.top, 10) : 10;
+    const top = parseBounded('--top', opts.top, 10, 1);
     const results: SearchResult[] = [];
 
     for (const entry of entries) {

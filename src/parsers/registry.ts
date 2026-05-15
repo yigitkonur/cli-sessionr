@@ -1,4 +1,5 @@
 import type { SessionSource, SessionListEntry, NormalizedSession } from '../types.js';
+import { resolveSource } from '../utils/validate.js';
 
 export interface SourceAdapter {
   name: SessionSource;
@@ -10,15 +11,8 @@ export interface SourceAdapter {
 
 const registry: SourceAdapter[] = [];
 
-// User-facing source-name aliases. Resolved on input only — the canonical
-// SessionSource value is what gets stored on sessions and emitted in output.
-const SOURCE_ALIASES: Record<string, SessionSource> = {
-  droid: 'factory',
-};
-
 export function resolveSourceAlias(input: string | undefined): SessionSource | undefined {
-  if (!input) return undefined;
-  return (SOURCE_ALIASES[input] ?? input) as SessionSource;
+  return resolveSource(input);
 }
 
 export function registerSource(adapter: SourceAdapter): void {
