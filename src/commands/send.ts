@@ -111,13 +111,25 @@ async function runSync(
 ): Promise<void> {
   const resolvedSource = source;
 
-  const exitCode = await spawnAndWait(cmd, cwd);
+  const result = await spawnAndWait(cmd, cwd);
 
-  if (exitCode !== 0) {
-    throw new SessionReaderError(`Tool exited with code ${exitCode}`, {
+  if (result.exitCode !== 0) {
+    const detail: Record<string, unknown> = {
+      tool: cmd.bin,
+      exit_code: result.exitCode,
+      source: resolvedSource,
+    };
+    if (result.stderrTail.length > 0) {
+      detail.stderr_tail = result.stderrTail.join('\n');
+    }
+    if (result.stdoutTail.length > 0) {
+      detail.stdout_tail = result.stdoutTail.join('\n');
+    }
+
+    throw new SessionReaderError(`Tool exited with code ${result.exitCode}`, {
       code: 'TOOL_ERROR',
       exitCode: EXIT.ERROR,
-      detail: { tool: cmd.bin, exit_code: exitCode, source: resolvedSource },
+      detail,
       suggestion: `Check ${cmd.bin} output for errors`,
     });
   }
@@ -310,18 +322,34 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function spawnAndWait(
+export interface SpawnResult {
+  exitCode: number;
+  stdoutTail: string[];
+  stderrTail: string[];
+}
+
+export function spawnAndWait(
   cmd: { bin: string; args: string[] },
   cwd: string,
-): Promise<number> {
+): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd.bin, cmd.args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const stdoutTail = tapOutput(child.stdout);
+    const stderrTail = tapOutput(child.stderr);
+    let settled = false;
 
-    child.on('error', (err) => {
-      reject(
+    const settle = <T>(fn: (value: T) => void, value: T): void => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+
+    child.once('error', (err) => {
+      settle(
+        reject,
         new SessionReaderError(`Failed to spawn ${cmd.bin}: ${err.message}`, {
           code: 'SPAWN_ERROR',
           exitCode: EXIT.ERROR,
@@ -331,10 +359,43 @@ function spawnAndWait(
       );
     });
 
-    child.on('close', (code) => {
-      resolve(code ?? 1);
+    child.once('close', (code) => {
+      stdoutTail.flush();
+      stderrTail.flush();
+      settle(resolve, {
+        exitCode: code ?? 1,
+        stdoutTail: stdoutTail.lines,
+        stderrTail: stderrTail.lines,
+      });
     });
   });
+}
+
+function tapOutput(stream: NodeJS.ReadableStream): { lines: string[]; flush: () => void } {
+  const lines: string[] = [];
+  let buffered = '';
+
+  const pushLine = (line: string): void => {
+    lines.push(line.endsWith('\r') ? line.slice(0, -1) : line);
+    if (lines.length > 50) lines.shift();
+  };
+
+  stream.on('data', (chunk: Buffer | string) => {
+    process.stderr.write(chunk);
+    buffered += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk;
+    const parts = buffered.split('\n');
+    buffered = parts.pop() ?? '';
+    for (const line of parts) pushLine(line);
+  });
+
+  return {
+    lines,
+    flush() {
+      if (buffered.length === 0) return;
+      pushLine(buffered);
+      buffered = '';
+    },
+  };
 }
 
 function dateReplacer(_key: string, value: unknown): unknown {
