@@ -1,7 +1,7 @@
 {
   "name": "sessionr",
-  "version": "2.5.4",
-  "description": "read, search, paginate, resume, and orchestrate AI coding sessions from 10 tools. npx sessionr — zero install, zero config.",
+  "version": "2.6.0",
+  "description": "read, search, paginate, resume, and orchestrate AI coding sessions from 11 tools. npx sessionr — zero install, zero config.",
   "type": "module",
   "bin": {
     "sessionr": "dist/cli.js"
@@ -52,6 +52,8 @@
     "opencode",
     "kiro",
     "zed",
+    "factory",
+    "droid",
     "cli",
     "mcp",
     "multi-agent",

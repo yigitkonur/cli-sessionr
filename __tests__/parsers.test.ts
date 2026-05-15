@@ -3,10 +3,14 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { parseCodexSession } from '../src/parsers/codex.js';
 import { parseClaudeSession } from '../src/parsers/claude.js';
+import { parseFactorySession } from '../src/parsers/factory.js';
+import { getAdapter, resolveSourceAlias } from '../src/parsers/registry.js';
+import '../src/parsers/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_FIXTURE = path.join(__dirname, 'fixtures', 'codex-session.jsonl');
 const CLAUDE_FIXTURE = path.join(__dirname, 'fixtures', 'claude-session.jsonl');
+const FACTORY_FIXTURE = path.join(__dirname, 'fixtures', 'factory-session.jsonl');
 
 describe('Codex parser', () => {
   it('parses a session file', async () => {
@@ -182,5 +186,117 @@ describe('Claude parser', () => {
     // First raw line is the isMeta system event at 10:00:00, which gets skipped
     // as a message but should still anchor createdAt
     expect(session.metadata.createdAt).toEqual(new Date('2026-01-15T10:00:00.000Z'));
+  });
+});
+
+describe('Factory parser', () => {
+  it('parses a session file with metadata from session_start + sidecar', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    expect(session.source).toBe('factory');
+    expect(session.id).toBe('test-factory-uuid-9999');
+    expect(session.metadata.cwd).toBe('/home/user/project');
+    expect(session.metadata.model).toBe('custom:GPT-5.5-(low)');
+  });
+
+  it('extracts normalized messages with correct roles', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    expect(session.stats.totalMessages).toBeGreaterThan(0);
+    expect(session.stats.byRole.user).toBeGreaterThanOrEqual(2);
+    expect(session.stats.byRole.assistant).toBeGreaterThanOrEqual(3);
+    expect(session.stats.byRole.toolUse).toBeGreaterThanOrEqual(3);
+    expect(session.stats.byRole.toolResult).toBeGreaterThanOrEqual(3);
+  });
+
+  it('explodes tool_use blocks into separate messages', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    const toolUses = session.messages.filter((m) => m.role === 'tool_use');
+    expect(toolUses.length).toBeGreaterThanOrEqual(3);
+    for (const tu of toolUses) {
+      expect(tu.blocks.length).toBe(1);
+      expect(tu.blocks[0].type).toBe('tool_use');
+    }
+  });
+
+  it('extracts tool frequency including Read, ApplyPatch, Execute', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    expect(session.stats.toolFrequency.find((t) => t.name === 'Read')).toBeDefined();
+    expect(session.stats.toolFrequency.find((t) => t.name === 'ApplyPatch')).toBeDefined();
+    expect(session.stats.toolFrequency.find((t) => t.name === 'Execute')).toBeDefined();
+  });
+
+  it('extracts files modified from ApplyPatch input.input', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    expect(session.stats.filesModified).toContain('src/auth.ts');
+  });
+
+  it('aggregates token usage from sidecar .settings.json', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    expect(session.stats.tokenUsage).toBeDefined();
+    expect(session.stats.tokenUsage!.input).toBe(1200);
+    expect(session.stats.tokenUsage!.output).toBe(250);
+    expect(session.stats.tokenUsage!.cacheRead).toBe(800);
+    expect(session.stats.tokenUsage!.cacheCreation).toBe(500);
+  });
+
+  it('skips todo_state and compaction_state events from message stream', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    for (const msg of session.messages) {
+      expect(msg.content).not.toMatch(/Patch auth\.ts/);
+      expect(msg.content).not.toMatch(/User asked to fix login bug/);
+    }
+  });
+
+  it('skips user messages with visibility: hidden', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    for (const msg of session.messages) {
+      expect(msg.content).not.toMatch(/<system-reminder>/);
+      expect(msg.content).not.toMatch(/Available tools:/);
+    }
+  });
+
+  it('spans createdAt and updatedAt across all events including skipped ones', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    // First message event timestamp is 09:00:00 (hidden user); first visible is 09:00:01.
+    // The metadata window should reflect the raw event span, not just visible messages.
+    expect(session.metadata.createdAt).toEqual(new Date('2026-02-10T09:00:00.000Z'));
+    expect(session.metadata.updatedAt).toEqual(new Date('2026-02-10T09:00:11.000Z'));
+  });
+
+  it('assigns sequential 1-based indices', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    for (let i = 0; i < session.messages.length; i++) {
+      expect(session.messages[i].index).toBe(i + 1);
+    }
+  });
+
+  it('computes session duration', async () => {
+    const session = await parseFactorySession(FACTORY_FIXTURE);
+    expect(session.stats.durationMs).toBeGreaterThan(0);
+  });
+});
+
+describe('Source aliases', () => {
+  it("resolves 'droid' to 'factory'", () => {
+    expect(resolveSourceAlias('droid')).toBe('factory');
+  });
+
+  it("passes 'factory' through unchanged", () => {
+    expect(resolveSourceAlias('factory')).toBe('factory');
+  });
+
+  it('returns undefined for empty input', () => {
+    expect(resolveSourceAlias(undefined)).toBeUndefined();
+  });
+
+  it("getAdapter('droid') returns the Factory adapter", () => {
+    const adapter = getAdapter('droid');
+    expect(adapter).toBeDefined();
+    expect(adapter!.name).toBe('factory');
+  });
+
+  it("getAdapter('factory') returns the Factory adapter", () => {
+    const adapter = getAdapter('factory');
+    expect(adapter).toBeDefined();
+    expect(adapter!.name).toBe('factory');
   });
 });

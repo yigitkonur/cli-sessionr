@@ -14,15 +14,15 @@ import { jobStatusCommand, jobWaitCommand, jobCancelCommand, jobListCommand } fr
 import { PRESET_NAMES, DETAIL_LEVELS } from './config.js';
 import type { OutputFormat, DetailLevel, ReadOptions, SendOptions } from './types.js';
 
-const SOURCES = 'claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed';
-const SOURCES_LIST = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed'];
+const SOURCES = 'claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed, factory (alias: droid)';
+const SOURCES_LIST = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed', 'factory'];
 
 const program = new Command();
 
 program
   .name('sessionr')
-  .description('sessionr v2.5.4 — read, send, and orchestrate AI coding sessions')
-  .version('2.5.4')
+  .description('sessionr v2.6.0 — read, send, and orchestrate AI coding sessions')
+  .version('2.6.0')
   .option('--output <format>', 'Output format: json, jsonl, table, text')
   .option('--api-version <n>', 'API version for structured output', '1')
   .option('--timing', 'Include timing_ms in JSON responses');
@@ -408,7 +408,7 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
 
   return {
     api_version: 1,
-    version: '2.5.4',
+    version: '2.6.0',
     name: cmd.name(),
     description: cmd.description(),
     sources: SOURCES_LIST,

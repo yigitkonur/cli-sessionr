@@ -31,6 +31,8 @@ export function buildResumeCommand(
       return { bin: 'kiro-cli', args: ['chat', '--no-interactive', '--resume', message] };
     case 'zed':
       throw new Error('Zed AI threads are GUI-only — no CLI send support');
+    case 'factory':
+      return { bin: 'droid', args: ['exec', '-s', sessionId, message] };
   }
 }
 
@@ -60,6 +62,8 @@ export function buildNewCommand(
       return { bin: 'kiro-cli', args: ['chat', '--no-interactive', message] };
     case 'zed':
       throw new Error('Zed AI threads are GUI-only — no CLI send support');
+    case 'factory':
+      return { bin: 'droid', args: ['exec', message] };
   }
 }
 

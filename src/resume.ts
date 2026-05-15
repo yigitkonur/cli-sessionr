@@ -54,6 +54,10 @@ const TOOL_DIRECTS: Record<SessionSource, ToolDirect | null> = {
     tip: 'Kiro resumes most recent session in cwd (cannot target by ID)',
   },
   zed: null,
+  factory: {
+    cmd: (id) => `droid exec -s ${id} "$(cat prompt.md)"`,
+    verified: true,
+  },
 };
 
 export function getResumeHint(source: SessionSource, sessionId: string): ResumeHint {

@@ -18,3 +18,6 @@ import './goose.js';
 import './opencode.js';
 import './kiro.js';
 import './zed.js';
+
+// Tier 3: Anthropic-block compatible parsers
+import './factory.js';

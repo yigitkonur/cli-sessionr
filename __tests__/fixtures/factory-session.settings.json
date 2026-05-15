@@ -1,0 +1,22 @@
+{
+  "model": "custom:GPT-5.5-(low)",
+  "reasoningEffort": "medium",
+  "interactionMode": "interactive",
+  "autonomyLevel": "balanced",
+  "tokenUsage": {
+    "inputTokens": 1200,
+    "outputTokens": 250,
+    "cacheCreationTokens": 500,
+    "cacheReadTokens": 800,
+    "thinkingTokens": 0,
+    "factoryCredits": 0
+  },
+  "inclusiveTokenUsage": {
+    "inputTokens": 1200,
+    "outputTokens": 250,
+    "cacheCreationTokens": 500,
+    "cacheReadTokens": 800,
+    "thinkingTokens": 0,
+    "factoryCredits": 0
+  }
+}
