@@ -1,3 +1,9 @@
+## [2.7.1](https://github.com/yigitkonur/cli-sessionr/compare/v2.7.0...v2.7.1) (2026-05-15)
+
+### Bug Fixes
+
+* **cli:** runtime crash from duplicate --cwd + thread package version ([33dc2a2](https://github.com/yigitkonur/cli-sessionr/commit/33dc2a2066cc8998858bd5f5f30e39336de60a6e))
+
 ## [2.7.0](https://github.com/yigitkonur/cli-sessionr/compare/v2.6.0...v2.7.0) (2026-05-15)
 
 ### Features
