@@ -125,7 +125,7 @@ export interface Formatter {
     preset: VerbosityPreset,
     meta?: SliceMeta,
   ): string;
-  list(entries: SessionListEntry[]): string;
+  list(entries: SessionListEntry[], meta?: ListFooterMeta): string;
   error(err: Error): string;
 }
 
@@ -158,12 +158,28 @@ export interface SessionSummary {
   };
 }
 
-// ── Cursor Commands (copy-paste ready) ─────────────────────────────────────
+// ── Cursor Commands (copy-paste ready + machine-readable tokens) ──────────
+
+export interface CursorCommand {
+  command: string;
+  offset: number;
+  limit: number;
+}
 
 export interface CursorCommands {
-  next: string | null;
-  prev: string | null;
-  first: string | null;
+  next: CursorCommand | null;
+  prev: CursorCommand | null;
+  first: CursorCommand | null;
+}
+
+// ── List Footer Metadata ──────────────────────────────────────────────────
+
+export interface ListFooterMeta {
+  totalAvailable: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  source?: string;
 }
 
 // ── Slice Metadata (pagination envelope) ───────────────────────────────────

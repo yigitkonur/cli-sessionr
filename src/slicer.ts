@@ -18,13 +18,25 @@ export function buildCursorCommands(
 
   return {
     prev: meta.has_more_before
-      ? `${cmdPrefix()} read ${shortId} --before ${meta.range.from} --tokens ${budget}`
+      ? {
+          command: `sessionr read ${shortId} --before ${meta.range.from} --tokens ${budget}`,
+          offset: meta.range.from,
+          limit: budget,
+        }
       : null,
     next: meta.has_more_after
-      ? `${cmdPrefix()} read ${shortId} --after ${meta.range.to} --tokens ${budget}`
+      ? {
+          command: `sessionr read ${shortId} --after ${meta.range.to} --tokens ${budget}`,
+          offset: meta.range.to,
+          limit: budget,
+        }
       : null,
     first: meta.range.from > 1
-      ? `${cmdPrefix()} read ${shortId} --page 1 --tokens ${budget}`
+      ? {
+          command: `sessionr read ${shortId} --page 1 --tokens ${budget}`,
+          offset: 0,
+          limit: budget,
+        }
       : null,
   };
 }

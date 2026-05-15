@@ -25,6 +25,12 @@ export async function infoCommand(
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
       const result = {
         api_version: 1,
+        meta: {
+          next_action: {
+            command: `sessionr read ${session.id}`,
+            description: 'Read session messages',
+          },
+        },
         id: session.id,
         source: session.source,
         cwd: session.metadata.cwd,

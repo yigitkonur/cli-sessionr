@@ -56,10 +56,11 @@ program
   .description('List available sessions')
   .option('-n, --limit <n>', 'Max sessions to list', '20')
   .option('--offset <n>', 'Skip first N sessions (for pagination)', '0')
+  .option('--cwd <scope>', 'Filter by cwd: current, all, or an absolute path', 'all')
   .option('-q, --search <query>', 'Search sessions by content')
   .option('--cwd <mode>', 'Filter by cwd: auto | current | all | <path>', 'auto')
   .option('--json', '[deprecated] Use --output json')
-  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; cwd?: string; json?: boolean }) => {
+  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; cwd?: string; search?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
     await listCommand(resolveSource(source), {
@@ -117,7 +118,7 @@ program
   );
 
 program
-  .command('stats', { hidden: true })
+  .command('stats')
   .argument('<session-id>', 'Session ID or prefix')
   .description('Show full session statistics')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
@@ -133,7 +134,7 @@ program
   });
 
 program
-  .command('info', { hidden: true })
+  .command('info')
   .argument('<session-id>', 'Session ID or prefix')
   .description('Show lightweight session metadata (cheaper than stats)')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
@@ -149,7 +150,7 @@ program
   });
 
 program
-  .command('search', { hidden: true })
+  .command('search')
   .description('Search across sessions by content')
   .requiredOption('-q, --query <text>', 'Search query')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
@@ -168,7 +169,7 @@ program
   });
 
 program
-  .command('diff', { hidden: true })
+  .command('diff')
   .argument('<id1>', 'First session ID or prefix')
   .argument('<id2>', 'Second session ID or prefix')
   .description('Compare two sessions (structural diff)')
@@ -185,7 +186,7 @@ program
   });
 
 program
-  .command('tag', { hidden: true })
+  .command('tag')
   .argument('<session-id>', 'Session ID or prefix')
   .description('Add or remove session tags (idempotent)')
   .option('--add <tag>', 'Tag to add')
@@ -201,7 +202,7 @@ program
   });
 
 program
-  .command('prune', { hidden: true })
+  .command('prune')
   .description('Delete old sessions')
   .requiredOption('--older-than <duration>', 'Duration threshold (e.g., 7d, 24h)')
   .option('--dry-run', 'Preview what would be deleted')
@@ -281,7 +282,7 @@ program
   );
 
 program
-  .command('context', { hidden: true })
+  .command('context')
   .argument('<session-id>', 'Session ID or prefix')
   .description('Export session context for agent handoff')
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
@@ -313,7 +314,7 @@ program
 // ── Job commands ───────────────────────────────────────────────────────────
 
 program
-  .command('jobs', { hidden: true })
+  .command('jobs')
   .description('List all async jobs')
   .option('--status <status>', 'Filter by status (running, completed, failed, cancelled)')
   .action(async (opts: { status?: string }) => {
@@ -325,7 +326,7 @@ program
   });
 
 program
-  .command('job', { hidden: true })
+  .command('job')
   .argument('<job-id>', 'Job ID (from sessionr send --async)')
   .description('Check async job status (lazy PID finalization)')
   .action(async (jobId: string) => {
@@ -336,7 +337,7 @@ program
   });
 
 program
-  .command('wait', { hidden: true })
+  .command('wait')
   .argument('<job-id>', 'Job ID to wait for')
   .description('Block until an async job completes')
   .option('--timeout <seconds>', 'Timeout in seconds', '300')
@@ -351,7 +352,7 @@ program
   });
 
 program
-  .command('cancel', { hidden: true })
+  .command('cancel')
   .argument('<job-id>', 'Job ID to cancel')
   .description('Cancel a running async job (SIGTERM)')
   .action(async (jobId: string) => {

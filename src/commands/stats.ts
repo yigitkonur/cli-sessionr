@@ -26,6 +26,12 @@ export async function statsCommand(
       const { messages: _messages, ...rest } = session;
       const result: Record<string, unknown> = {
         api_version: 1,
+        meta: {
+          next_action: {
+            command: `sessionr read ${session.id}`,
+            description: 'Read session messages',
+          },
+        },
         ...rest,
         actions: [
           { command: `${cmdPrefix()} read ${session.id}`, description: 'Read session messages' },

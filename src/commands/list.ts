@@ -2,9 +2,7 @@ import * as path from 'path';
 import { listSessionsScoped, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
-import { parseBounded, SOURCES_LIST } from '../utils/validate.js';
-import { cmdPrefix } from '../util/invocation.js';
-import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
+import type { CursorCommands, SessionSource, OutputFormat } from '../types.js';
 
 function isPwdRelevant(entryCwd: string, pwd: string): boolean {
   if (!entryCwd) return false;
@@ -14,7 +12,7 @@ function isPwdRelevant(entryCwd: string, pwd: string): boolean {
 
 export async function listCommand(
   source?: string,
-  opts?: { limit?: string; offset?: string; search?: string; maxSessions?: string; cwd?: string; json?: boolean; output?: OutputFormat },
+  opts?: { limit?: string; offset?: string; search?: string; cwd?: string; json?: boolean; output?: OutputFormat },
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
   const outputFormat = opts?.output ?? (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
@@ -44,6 +42,11 @@ export async function listCommand(
     }
     allEntries = [...pwdMatches, ...others];
 
+    if (opts?.cwd && opts.cwd !== 'all') {
+      const cwd = opts.cwd === 'current' ? process.cwd() : opts.cwd;
+      allEntries = allEntries.filter((entry) => entry.cwd === cwd);
+    }
+
     // Content search across sessions
     if (opts?.search) {
       const query = opts.search.toLowerCase();
@@ -71,12 +74,29 @@ export async function listCommand(
     }
 
     const entries = allEntries.slice(offset, offset + limit);
+    const hasMore = offset + limit < allEntries.length;
+    const listMeta = {
+      totalAvailable: allEntries.length,
+      limit,
+      offset,
+      hasMore,
+      source,
+    };
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
-      const prefix = cmdPrefix();
-      const hasMore = offset + limit < allEntries.length;
       const result: Record<string, unknown> = {
         api_version: 1,
+        meta: {
+          next_action: entries.length > 0
+            ? {
+                command: `sessionr read ${entries[0].id}`,
+                description: 'Read the most recent matching session',
+              }
+            : {
+                command: 'sessionr doctor',
+                description: 'Check which sources and session data directories are configured',
+              },
+        },
         sessions: entries,
         total_available: allEntries.length,
         limit,
@@ -90,12 +110,27 @@ export async function listCommand(
       }
 
       // Cursor commands
-      const cursor: Record<string, string | null> = {
+      const cursor: CursorCommands = {
         next: hasMore
-          ? `${prefix} list${source ? ' ' + source : ''} --offset ${offset + limit} --limit ${limit}${opts?.cwd ? ` --cwd ${opts.cwd}` : ''}`
+          ? {
+              command: `sessionr list${source ? ' ' + source : ''} --offset ${offset + limit} --limit ${limit}`,
+              offset: offset + limit,
+              limit,
+            }
           : null,
         prev: offset > 0
-          ? `${prefix} list${source ? ' ' + source : ''} --offset ${Math.max(0, offset - limit)} --limit ${limit}${opts?.cwd ? ` --cwd ${opts.cwd}` : ''}`
+          ? {
+              command: `sessionr list${source ? ' ' + source : ''} --offset ${Math.max(0, offset - limit)} --limit ${limit}`,
+              offset: Math.max(0, offset - limit),
+              limit,
+            }
+          : null,
+        first: offset > 0
+          ? {
+              command: `sessionr list${source ? ' ' + source : ''} --offset 0 --limit ${limit}`,
+              offset: 0,
+              limit,
+            }
           : null,
       };
       result.cursor = cursor;
@@ -116,7 +151,7 @@ export async function listCommand(
 
       console.log(JSON.stringify(result, dateReplacer, 2));
     } else {
-      console.log(formatter.list(entries));
+      console.log(formatter.list(entries, listMeta));
     }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));

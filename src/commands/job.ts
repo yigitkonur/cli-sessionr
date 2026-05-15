@@ -192,9 +192,27 @@ export async function jobListCommand(opts: JobCommandOpts): Promise<void> {
 
     // Lazy-finalize running jobs
     jobs = jobs.map((j) => (j.status === 'running' ? finalizeJob(j) : j));
+    const firstRunning = jobs.find((j) => j.status === 'running');
+    const firstCompleted = jobs.find((j) => j.status === 'completed' && j.session_id);
 
     const result = {
       api_version: 1,
+      meta: {
+        next_action: firstRunning
+          ? {
+              command: `sessionr wait ${firstRunning.id}`,
+              description: 'Wait for the first running job to complete',
+            }
+          : firstCompleted
+            ? {
+                command: `sessionr read ${firstCompleted.session_id} --after ${firstCompleted.message_count_before}`,
+                description: 'Read new messages from the most recent completed job',
+              }
+            : {
+                command: 'sessionr send --new -s claude -f prompt.md',
+                description: 'Start a new async-capable session',
+              },
+      },
       jobs: jobs.map((j) => {
         const jobActions: Array<{ command: string; description: string }> = [];
         if (j.status === 'running') {

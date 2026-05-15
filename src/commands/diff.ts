@@ -19,8 +19,15 @@ export async function diffCommand(
     const files1 = new Set(session1.stats.filesModified);
     const files2 = new Set(session2.stats.filesModified);
 
+    const largerSession = session1.stats.totalMessages >= session2.stats.totalMessages ? session1 : session2;
     const diff = {
       api_version: 1,
+      meta: {
+        next_action: {
+          command: `sessionr read ${largerSession.id}`,
+          description: 'Read the larger session in this comparison',
+        },
+      },
       sessions: {
         a: {
           id: session1.id,
