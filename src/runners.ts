@@ -1,3 +1,4 @@
+import { EXIT, SessionReaderError } from './errors.js';
 import type { SessionSource } from './types.js';
 
 export interface RunCommand {
@@ -28,7 +29,11 @@ export function buildResumeCommand(
     case 'goose':
       return { bin: 'goose', args: ['run', '--resume', '--session-id', sessionId, '-t', message] };
     case 'kiro':
-      return { bin: 'kiro-cli', args: ['chat', '--no-interactive', '--resume', message] };
+      throw new SessionReaderError('Kiro CLI cannot resume a specific session', {
+        code: 'UNSUPPORTED_OPERATION',
+        exitCode: EXIT.USAGE,
+        suggestion: "sessionr send --new --source kiro -m '...'",
+      });
     case 'zed':
       throw new Error('Zed AI threads are GUI-only — no CLI send support');
     case 'factory':
