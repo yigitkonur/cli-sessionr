@@ -1,3 +1,4 @@
+import { cmdPrefix } from "./util/invocation.js";
 import type { SessionSource } from './types.js';
 
 export interface ResumeHint {

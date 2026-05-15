@@ -1,3 +1,4 @@
+import { cmdPrefix } from "./util/invocation.js";
 import type { NormalizedMessage, SessionSource, SliceMeta, CursorCommands, VerbosityPreset } from './types.js';
 import { estimateMessageTokens, estimateSessionTokens, estimateRenderedMessageTokens, estimateRenderedSessionTokens } from './tokens.js';
 

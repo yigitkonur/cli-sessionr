@@ -1,3 +1,4 @@
+import { cmdPrefix } from "../util/invocation.js";
 import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';

@@ -1,3 +1,4 @@
+import { cmdPrefix } from "../util/invocation.js";
 import { loadSession } from '../discovery.js';
 import { SessionReaderError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget } from '../slicer.js';

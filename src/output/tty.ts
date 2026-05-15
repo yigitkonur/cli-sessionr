@@ -1,3 +1,4 @@
+import { cmdPrefix } from "../util/invocation.js";
 import { homedir } from 'node:os';
 import chalk from 'chalk';
 import type {

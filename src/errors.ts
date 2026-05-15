@@ -1,3 +1,4 @@
+import { cmdPrefix } from "./util/invocation.js";
 export const EXIT = {
   OK: 0,
   ERROR: 1,

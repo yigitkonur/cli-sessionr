@@ -1,3 +1,4 @@
+import { cmdPrefix } from "../util/invocation.js";
 import { listSessions } from '../discovery.js';
 import { exitCodeForError, SessionReaderError, EXIT } from '../errors.js';
 import type { SessionSource, OutputFormat } from '../types.js';

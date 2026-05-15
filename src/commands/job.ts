@@ -1,3 +1,4 @@
+import { cmdPrefix } from "../util/invocation.js";
 import { readJob, listJobs, finalizeJob, cancelJob } from '../jobs.js';
 import { createFormatter } from '../output/formatter.js';
 import { SessionReaderError, EXIT, exitCodeForError } from '../errors.js';
