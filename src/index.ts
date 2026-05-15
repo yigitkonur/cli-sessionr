@@ -1,4 +1,4 @@
-export { loadSession, listSessions } from './discovery.js';
+export { loadSession, listSessions, listSessionsScoped } from './discovery.js';
 export { parseCodexSession } from './parsers/codex.js';
 export { parseClaudeSession } from './parsers/claude.js';
 export { getPreset, PRESET_NAMES, DETAIL_LEVELS, resolveOutputFormat } from './config.js';

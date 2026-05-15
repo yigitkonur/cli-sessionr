@@ -1,4 +1,4 @@
-import { listSessions, loadSession } from '../discovery.js';
+import { listSessionsScoped, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
 import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
@@ -13,6 +13,7 @@ export async function searchCommand(
     source?: string;
     top?: string;
     maxSessions?: string;
+    cwd?: string;
     json?: boolean;
     output?: OutputFormat;
   },
@@ -27,7 +28,8 @@ export async function searchCommand(
 
   try {
     const maxSessions = opts.maxSessions ? parseInt(opts.maxSessions, 10) : 20;
-    const allEntries = await listSessions(opts.source as SessionSource | undefined);
+    const scoped = await listSessionsScoped(opts.source as SessionSource | undefined, opts.cwd ?? 'auto');
+    const allEntries = scoped.sessions;
     const entries = allEntries.slice(0, maxSessions);
     const query = opts.query.toLowerCase();
     const top = opts.top ? parseInt(opts.top, 10) : 10;
@@ -62,7 +64,7 @@ export async function searchCommand(
       }
       if (allEntries.length > maxSessions) {
         actions.push(
-          { command: `sessionr search -q "${opts.query}" --max-sessions ${maxSessions + 20}`, description: 'Search more sessions' },
+          { command: `sessionr search -q "${opts.query}" --max-sessions ${maxSessions + 20}${opts.cwd ? ` --cwd ${opts.cwd}` : ''}`, description: 'Search more sessions' },
         );
       }
 
@@ -71,6 +73,7 @@ export async function searchCommand(
         query: opts.query,
         sessions_scanned: entries.length,
         sessions_available: allEntries.length,
+        meta: scoped.meta,
         results: topResults.map((r) => ({
           id: r.id,
           source: r.source,

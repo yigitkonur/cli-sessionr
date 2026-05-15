@@ -1,4 +1,4 @@
-import { listSessions, loadSession } from '../discovery.js';
+import { listSessionsScoped, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
 import type { SessionSource, OutputFormat } from '../types.js';
@@ -7,7 +7,7 @@ const SOURCES = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'comman
 
 export async function listCommand(
   source?: string,
-  opts?: { limit?: string; offset?: string; search?: string; json?: boolean; output?: OutputFormat },
+  opts?: { limit?: string; offset?: string; search?: string; cwd?: string; json?: boolean; output?: OutputFormat },
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
   const outputFormat = opts?.output ?? (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
@@ -20,7 +20,8 @@ export async function listCommand(
   try {
     const limit = opts?.limit ? parseInt(opts.limit, 10) : 20;
     const offset = opts?.offset ? parseInt(opts.offset, 10) : 0;
-    let allEntries = await listSessions(source as SessionSource | undefined);
+    const scoped = await listSessionsScoped(source as SessionSource | undefined, opts?.cwd ?? 'auto');
+    let allEntries = scoped.sessions;
 
     // Content search across sessions
     if (opts?.search) {
@@ -52,15 +53,16 @@ export async function listCommand(
         offset,
         has_more: hasMore,
         available_sources: SOURCES,
+        meta: scoped.meta,
       };
 
       // Cursor commands
       const cursor: Record<string, string | null> = {
         next: hasMore
-          ? `sessionr list${source ? ' ' + source : ''} --offset ${offset + limit} --limit ${limit}`
+          ? `sessionr list${source ? ' ' + source : ''} --offset ${offset + limit} --limit ${limit}${opts?.cwd ? ` --cwd ${opts.cwd}` : ''}`
           : null,
         prev: offset > 0
-          ? `sessionr list${source ? ' ' + source : ''} --offset ${Math.max(0, offset - limit)} --limit ${limit}`
+          ? `sessionr list${source ? ' ' + source : ''} --offset ${Math.max(0, offset - limit)} --limit ${limit}${opts?.cwd ? ` --cwd ${opts.cwd}` : ''}`
           : null,
       };
       result.cursor = cursor;

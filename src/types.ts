@@ -87,6 +87,14 @@ export interface SessionListEntry {
   filePath: string;
 }
 
+export type CwdScope = 'auto' | 'fellback_to_global' | 'all' | 'explicit';
+
+export interface CwdScopeMeta {
+  cwd_scope: CwdScope;
+  cwd: string;
+  reason?: string;
+}
+
 // ── Verbosity Preset ───────────────────────────────────────────────────────
 
 export type PresetName = 'minimal' | 'standard' | 'verbose' | 'full';

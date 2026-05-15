@@ -48,8 +48,9 @@ program
   .option('-n, --limit <n>', 'Max sessions to list', '20')
   .option('--offset <n>', 'Skip first N sessions (for pagination)', '0')
   .option('-q, --search <query>', 'Search sessions by content')
+  .option('--cwd <mode>', 'Filter by cwd: auto | current | all | <path>', 'auto')
   .option('--json', '[deprecated] Use --output json')
-  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; json?: boolean }) => {
+  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; cwd?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
     await listCommand(source, {
@@ -157,8 +158,9 @@ program
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('--top <n>', 'Max results to return', '10')
   .option('--max-sessions <n>', 'Max sessions to scan (most recent first)', '20')
+  .option('--cwd <mode>', 'Filter by cwd: auto | current | all | <path>', 'auto')
   .option('--json', '[deprecated] Use --output json')
-  .action(async (opts: { query: string; source?: string; top?: string; maxSessions?: string; json?: boolean }) => {
+  .action(async (opts: { query: string; source?: string; top?: string; maxSessions?: string; cwd?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
     await searchCommand({
