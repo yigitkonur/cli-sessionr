@@ -4,7 +4,7 @@ import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { serializeMessage } from '../output/serialize.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
-import { InvalidRangeError, exitCodeForError } from '../errors.js';
+import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
@@ -226,10 +226,11 @@ export async function readCommand(
       return;
     }
 
+    const warnings: DiscoveryWarning[] = [];
     const session = await loadSession(
       sessionId,
       opts?.source as SessionSource | undefined,
-      (warning) => warnings.push(warning),
+      (warning: DiscoveryWarning) => warnings.push(warning),
     );
 
     let messages = session.messages;
@@ -297,7 +298,7 @@ export async function readCommand(
       const meta = injectNextAction(emptyMeta);
 
       if (outputFormat === 'json' || outputFormat === 'jsonl') {
-        const envelope = buildJsonEnvelope(session, [], meta, preset, summary);
+        const envelope = buildJsonEnvelope(session, [], meta, summary, shouldIncludeSummary(opts));
         envelope.notice = 'session is empty (no user/assistant messages)';
         console.log(JSON.stringify(envelope, dateReplacer, 2));
       } else {
@@ -431,7 +432,7 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
       tokenBudget,
       session.id,
       session.source,
-      opts.search ? 'search' : (opts.anchor ?? 'head'),
+      (opts.search ? 'search' : (opts.anchor ?? 'head')) as 'head' | 'tail' | 'search',
       opts.search,
       preset,
     );
