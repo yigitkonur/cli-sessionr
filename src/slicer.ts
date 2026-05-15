@@ -28,11 +28,9 @@ export function buildCursorCommands(
   };
 }
 
-export function estimatePageCount(messages: NormalizedMessage[], budget: number, preset?: VerbosityPreset): number {
+export function estimatePageCount(messages: NormalizedMessage[], budget: number): number {
   if (messages.length === 0) return 0;
-  const totalTokens = preset
-    ? estimateRenderedSessionTokens(messages, preset)
-    : estimateSessionTokens(messages);
+  const totalTokens = estimateSessionTokens(messages);
   return Math.max(1, Math.ceil(totalTokens / budget));
 }
 

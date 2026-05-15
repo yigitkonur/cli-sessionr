@@ -60,7 +60,7 @@ program
 
 program
   .command('read')
-  .argument('<session-id>', 'Session ID or prefix (use "sessionr list" to find)')
+  .argument('[session-id]', 'Session ID or prefix (use "sessionr list" to find)')
   .argument('[from]', 'Start message index (1-based)')
   .argument('[to]', 'End message index (1-based)')
   .description('Read session messages with token-aware pagination')
@@ -75,10 +75,12 @@ program
   .option('--before <cursor>', 'Cursor: show messages before this index')
   .option('--after <cursor>', 'Cursor: show messages after this index')
   .option('--if-changed <etag>', 'Only return data if changed since ETag')
+  .option('--include-summary', 'Include session summary even after page 1')
+  .option('--batch <path>', 'Read newline-separated session IDs as streaming JSONL')
   .option('--json', '[deprecated] Use --output json')
   .action(
     async (
-      sessionId: string,
+      sessionId: string | undefined,
       from: string | undefined,
       to: string | undefined,
       opts: Record<string, string | boolean | undefined>,
@@ -99,9 +101,17 @@ program
         before: opts.before ? parseInt(opts.before as string, 10) : undefined,
         after: opts.after ? parseInt(opts.after as string, 10) : undefined,
         ifChanged: opts.ifChanged as string | undefined,
+        includeSummary: opts.includeSummary as boolean | undefined,
+        batch: opts.batch as string | undefined,
       };
 
-      if (readOpts.ifChanged) {
+      if (!sessionId && !readOpts.batch) {
+        process.stderr.write('Error: <session-id> is required unless --batch is provided\n');
+        process.exitCode = 2;
+        return;
+      }
+
+      if (readOpts.ifChanged && sessionId) {
         const { loadSession } = await import('./discovery.js');
         const { computeETag } = await import('./etag.js');
         try {
@@ -116,7 +126,7 @@ program
         }
       }
 
-      await readCommand(sessionId, from, to, readOpts);
+      await readCommand(sessionId ?? '', from, to, readOpts);
     },
   );
 
