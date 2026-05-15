@@ -1,3 +1,9 @@
+## [2.8.1](https://github.com/yigitkonur/cli-sessionr/compare/v2.8.0...v2.8.1) (2026-05-15)
+
+### Bug Fixes
+
+* **read:** anchor messages = leading system/user run + last assistant ([0c47f5a](https://github.com/yigitkonur/cli-sessionr/commit/0c47f5aff14f51a4bef5e84eeb8b7bc8be72f3d3))
+
 ## [2.8.0](https://github.com/yigitkonur/cli-sessionr/compare/v2.7.1...v2.8.0) (2026-05-15)
 
 ### Features
