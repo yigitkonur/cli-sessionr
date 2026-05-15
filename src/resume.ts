@@ -49,11 +49,7 @@ const TOOL_DIRECTS: Record<SessionSource, ToolDirect | null> = {
     cmd: (id) => `goose run --resume --session-id ${id} -t "$(cat prompt.md)"`,
     verified: false,
   },
-  kiro: {
-    cmd: () => `kiro-cli chat --no-interactive --resume`,
-    verified: false,
-    tip: 'Kiro resumes most recent session in cwd (cannot target by ID)',
-  },
+  kiro: null,
   zed: null,
   factory: {
     cmd: (id) => `droid exec -s ${id} "$(cat prompt.md)"`,
@@ -67,6 +63,19 @@ export function getResumeHint(source: SessionSource, sessionId: string): ResumeH
 
   const defaultTip = 'Write your prompt to prompt.md, then run resume. ' +
     'Async returns a job ID — poll: sessionr job <id> | wait: sessionr wait <id>';
+
+  if (source === 'kiro') {
+    const newBase = 'sessionr send --new --source kiro -f prompt.md';
+    return {
+      resume: newBase,
+      resume_async: `${newBase} --async`,
+      direct: null,
+      verified: false,
+      tip: 'Kiro CLI cannot resume a specific session by ID. Start a new Kiro session instead. ' +
+        'Write your prompt to prompt.md, then run the new-session command. ' +
+        'Async returns a job ID — poll: sessionr job <id> | wait: sessionr wait <id>',
+    };
+  }
 
   if (!tool) {
     return {

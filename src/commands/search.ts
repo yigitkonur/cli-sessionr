@@ -1,12 +1,14 @@
-import { cmdPrefix } from "../util/invocation.js";
-import { listSessions, loadSession } from '../discovery.js';
+import { listSessionsScoped, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { exitCodeForError } from '../errors.js';
+import { findSearchMatches, type SearchMatch } from '../search-snippets.js';
+import { cmdPrefix } from '../util/invocation.js';
 import { parseBounded } from '../utils/validate.js';
 import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
 
 interface SearchResult extends SessionListEntry {
   matchCount: number;
+  matches: SearchMatch[];
 }
 
 export async function searchCommand(
@@ -15,6 +17,7 @@ export async function searchCommand(
     source?: string;
     top?: string;
     maxSessions?: string;
+    cwd?: string;
     json?: boolean;
     output?: OutputFormat;
   },
@@ -28,8 +31,9 @@ export async function searchCommand(
   });
 
   try {
-    const maxSessions = parseBounded('--max-sessions', opts.maxSessions, 20, 1);
-    const allEntries = await listSessions(opts.source as SessionSource | undefined);
+    const maxSessions = opts.maxSessions ? parseInt(opts.maxSessions, 10) : 20;
+    const scoped = await listSessionsScoped(opts.source as SessionSource | undefined, opts.cwd ?? 'auto');
+    const allEntries = scoped.sessions;
     const entries = allEntries.slice(0, maxSessions);
     const query = opts.query.toLowerCase();
     const top = parseBounded('--top', opts.top, 10, 1);
@@ -38,14 +42,14 @@ export async function searchCommand(
     for (const entry of entries) {
       try {
         const session = await loadSession(entry.id, entry.source);
-        let matchCount = 0;
-        for (const msg of session.messages) {
-          if (msg.content.toLowerCase().includes(query)) {
-            matchCount++;
-          }
-        }
+        const matchingMessages = session.messages.filter((msg) => msg.content.toLowerCase().includes(query));
+        const matchCount = matchingMessages.length;
         if (matchCount > 0) {
-          results.push({ ...entry, matchCount });
+          results.push({
+            ...entry,
+            matchCount,
+            matches: findSearchMatches(session.messages, opts.query),
+          });
         }
       } catch {
         // skip sessions that fail to parse
@@ -64,7 +68,7 @@ export async function searchCommand(
       }
       if (allEntries.length > maxSessions) {
         actions.push(
-          { command: `${cmdPrefix()} search -q "${opts.query}" --max-sessions ${maxSessions + 20}`, description: 'Search more sessions' },
+          { command: `sessionr search -q "${opts.query}" --max-sessions ${maxSessions + 20}${opts.cwd ? ` --cwd ${opts.cwd}` : ''}`, description: 'Search more sessions' },
         );
       }
 
@@ -73,6 +77,7 @@ export async function searchCommand(
         query: opts.query,
         sessions_scanned: entries.length,
         sessions_available: allEntries.length,
+        meta: scoped.meta,
         results: topResults.map((r) => ({
           id: r.id,
           source: r.source,
@@ -80,6 +85,11 @@ export async function searchCommand(
           updatedAt: r.updatedAt,
           summary: r.summary,
           match_count: r.matchCount,
+          matches: r.matches.map((match) => ({
+            message_index: match.messageIndex,
+            snippet: match.snippet,
+            char_offset: match.charOffset,
+          })),
         })),
         total_matches: topResults.length,
         actions,

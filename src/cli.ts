@@ -30,8 +30,8 @@ const program = new Command();
 
 program
   .name('sessionr')
-  .description(`sessionr v${PKG_VERSION} — read, send, and orchestrate AI coding sessions`)
-  .version(PKG_VERSION)
+  .description('sessionr v2.7.0 — read, send, and orchestrate AI coding sessions')
+  .version('2.7.0')
   .option('--output <format>', 'Output format: json, jsonl, table, text')
   .option('--api-version <n>', 'API version for structured output', '1')
   .option('--timing', 'Include timing_ms in JSON responses');
@@ -57,8 +57,9 @@ program
   .option('-n, --limit <n>', 'Max sessions to list', '20')
   .option('--offset <n>', 'Skip first N sessions (for pagination)', '0')
   .option('-q, --search <query>', 'Search sessions by content')
+  .option('--cwd <mode>', 'Filter by cwd: auto | current | all | <path>', 'auto')
   .option('--json', '[deprecated] Use --output json')
-  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; json?: boolean }) => {
+  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; cwd?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
     await listCommand(resolveSource(source), {
@@ -169,8 +170,9 @@ program
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('--top <n>', 'Max results to return', '10')
   .option('--max-sessions <n>', 'Max sessions to scan (most recent first)', '20')
+  .option('--cwd <mode>', 'Filter by cwd: auto | current | all | <path>', 'auto')
   .option('--json', '[deprecated] Use --output json')
-  .action(async (opts: { query: string; source?: string; top?: string; maxSessions?: string; json?: boolean }) => {
+  .action(async (opts: { query: string; source?: string; top?: string; maxSessions?: string; cwd?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
     await searchCommand({
@@ -424,7 +426,7 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
 
   return {
     api_version: 1,
-    version: PKG_VERSION,
+    version: '2.7.0',
     name: cmd.name(),
     description: cmd.description(),
     sources: SOURCES_LIST,
@@ -457,7 +459,12 @@ try {
   await program.parseAsync();
 } catch (err) {
   if (err instanceof CommanderError) {
-    if (err.code === 'commander.helpDisplayed' || err.code === 'commander.version') {
+    const successfulCommanderExits = new Set([
+      'commander.help',
+      'commander.helpDisplayed',
+      'commander.version',
+    ]);
+    if (successfulCommanderExits.has(err.code)) {
       process.exitCode = 0;
     } else {
       if (!process.stdout.isTTY) {

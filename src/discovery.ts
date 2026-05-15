@@ -1,7 +1,8 @@
 import './parsers/index.js'; // triggers all parser registrations
+import path from 'node:path';
 import { getAdapters, getAdapter } from './parsers/registry.js';
 import { SessionNotFoundError } from './errors.js';
-import type { SessionSource, SessionListEntry, NormalizedSession } from './types.js';
+import type { CwdScopeMeta, SessionSource, SessionListEntry, NormalizedSession } from './types.js';
 
 /**
  * Find a session by ID (full or prefix) and parse it.
@@ -73,4 +74,55 @@ export async function listSessions(
   }
 
   return deduped;
+}
+
+export interface ScopedListSessionsResult {
+  sessions: SessionListEntry[];
+  meta: CwdScopeMeta;
+}
+
+export async function listSessionsScoped(
+  source?: SessionSource,
+  cwdMode = 'auto',
+): Promise<ScopedListSessionsResult> {
+  const sessions = await listSessions(source);
+  const cwd = resolveCwdValue(cwdMode);
+
+  if (cwdMode === 'all') {
+    return {
+      sessions,
+      meta: { cwd_scope: 'all', cwd },
+    };
+  }
+
+  const matching = sessions.filter((entry) => entry.cwd === cwd);
+  if (cwdMode === 'auto') {
+    if (matching.length > 0) {
+      return {
+        sessions: matching,
+        meta: { cwd_scope: 'auto', cwd },
+      };
+    }
+
+    return {
+      sessions,
+      meta: {
+        cwd_scope: 'fellback_to_global',
+        cwd,
+        reason: 'no sessions matched cwd',
+      },
+    };
+  }
+
+  return {
+    sessions: matching,
+    meta: { cwd_scope: 'explicit', cwd },
+  };
+}
+
+function resolveCwdValue(cwdMode: string): string {
+  if (cwdMode === 'auto' || cwdMode === 'current' || cwdMode === 'all') {
+    return process.cwd();
+  }
+  return path.resolve(cwdMode);
 }

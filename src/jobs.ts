@@ -22,6 +22,11 @@ export function createJob(opts: {
   id: string;
   sessionId: string | null;
   source: SessionSource;
+  readBack: {
+    source: SessionSource;
+    tokens?: number;
+    preset?: string;
+  };
   cwd: string;
   message: string;
   pid: number;
@@ -35,6 +40,7 @@ export function createJob(opts: {
     id: opts.id,
     session_id: opts.sessionId,
     source: opts.source,
+    read_back: opts.readBack,
     cwd: opts.cwd,
     message: opts.message,
     status: 'running',
