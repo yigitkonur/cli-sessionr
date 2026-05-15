@@ -17,7 +17,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "skills"
   ],
   "engines": {
     "node": ">=18.0.0"

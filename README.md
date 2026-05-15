@@ -57,6 +57,38 @@ or if you want it around:
 npm i -g sessionr
 ```
 
+## claude skill (optional)
+
+a `use-sessionr` claude skill ships in this repo. install it once and any claude code / claude desktop agent gets a 250-line steering primer + 9 reference files (commands, json envelope, sources, error taxonomy, discover/read/resume workflows, recipes, troubleshooting). then any "find that session", "what did claude do yesterday", "resume session abc123" prompt routes through `sessionr` instead of grepping `~/.claude/projects/`.
+
+one-line install (recommended):
+
+```bash
+npx degit yigitkonur/cli-sessionr/skills/use-sessionr ~/.claude/skills/use-sessionr
+```
+
+manual fallback:
+
+```bash
+git clone --depth 1 https://github.com/yigitkonur/cli-sessionr /tmp/_sr \
+  && cp -r /tmp/_sr/skills/use-sessionr ~/.claude/skills/ \
+  && rm -rf /tmp/_sr
+```
+
+from an installed npm package:
+
+```bash
+cp -r "$(npm root -g)/sessionr/skills/use-sessionr" ~/.claude/skills/
+```
+
+verify:
+
+```bash
+ls ~/.claude/skills/use-sessionr/SKILL.md   # should exist
+```
+
+claude picks it up on next session start. uninstall is `rm -rf ~/.claude/skills/use-sessionr`.
+
 ## commands
 
 ### read path
