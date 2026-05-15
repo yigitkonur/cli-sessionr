@@ -1,3 +1,9 @@
+## [2.8.0](https://github.com/yigitkonur/cli-sessionr/compare/v2.7.1...v2.8.0) (2026-05-15)
+
+### Features
+
+* **read:** never truncate the first or last message of a session ([ee21529](https://github.com/yigitkonur/cli-sessionr/commit/ee21529a1754b8c4d9893816d63adabdb413b275)), closes [#1172](https://github.com/yigitkonur/cli-sessionr/issues/1172) [#1](https://github.com/yigitkonur/cli-sessionr/issues/1)
+
 ## [2.7.1](https://github.com/yigitkonur/cli-sessionr/compare/v2.7.0...v2.7.1) (2026-05-15)
 
 ### Bug Fixes
