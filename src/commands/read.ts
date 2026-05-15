@@ -2,11 +2,14 @@ import { homedir } from 'node:os';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
-import { InvalidRangeError, exitCodeForError } from '../errors.js';
+import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget, sliceByPage, filterByRole, buildCursorCommands, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens, estimateMessageTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
 import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary } from '../types.js';
+
+const VALID_ROLES = ['user', 'assistant', 'system', 'tool_use', 'tool_result'] as const;
+const VALID_ANCHORS = ['head', 'tail', 'search'] as const;
 
 function shortenPath(p: string): string {
   const home = homedir();
@@ -57,6 +60,41 @@ function injectNextAction(meta: SliceMeta): SliceMeta {
       tip: hint.tip,
     },
   };
+}
+
+function markPartial(meta: SliceMeta): SliceMeta {
+  if (!meta.has_more_before && !meta.has_more_after) return meta;
+  process.exitCode = EXIT.PARTIAL;
+  return { ...meta, partial: true };
+}
+
+function validateRoles(roleList: string): string[] {
+  const roles = roleList.split(',').map((r) => r.trim()).filter(Boolean);
+  const valid = [...VALID_ROLES];
+  const unknown = roles.filter((role) => !valid.includes(role as (typeof VALID_ROLES)[number]));
+  if (unknown.length > 0) {
+    throw new SessionReaderError(`Unknown role(s): ${unknown.join(', ')}`, {
+      code: 'INVALID_ROLE',
+      exitCode: EXIT.USAGE,
+      detail: { unknown, valid },
+      suggestion: 'sessionr read <id> --role user,assistant',
+    });
+  }
+  return roles;
+}
+
+function validateAnchor(anchor: string | undefined): 'head' | 'tail' | 'search' | undefined {
+  if (anchor == null) return undefined;
+  const valid = [...VALID_ANCHORS];
+  if (!valid.includes(anchor as (typeof VALID_ANCHORS)[number])) {
+    throw new SessionReaderError(`Unknown anchor "${anchor}"`, {
+      code: 'INVALID_ANCHOR',
+      exitCode: EXIT.USAGE,
+      detail: { provided: anchor, valid },
+      suggestion: 'sessionr read <id> --anchor head',
+    });
+  }
+  return anchor as 'head' | 'tail' | 'search';
 }
 
 function computeDetailHint(
@@ -170,8 +208,17 @@ export async function readCommand(
 
     // Role filtering (applied before slicing)
     if (opts?.role) {
-      const roles = opts.role.split(',').map((r) => r.trim());
+      const roles = validateRoles(opts.role);
       messages = filterByRole(messages, roles);
+    }
+
+    const requestedAnchor = validateAnchor(opts?.anchor);
+    if (requestedAnchor === 'search' && !opts?.search) {
+      throw new SessionReaderError('--anchor search requires --search <query>', {
+        code: 'INVALID_ANCHOR_USAGE',
+        exitCode: EXIT.USAGE,
+        suggestion: 'sessionr read <id> --anchor search --search "<term>"',
+      });
     }
 
     // Resolve preset: --detail > --preset > auto (verbose for agents, standard for TTY)
@@ -184,6 +231,14 @@ export async function readCommand(
       : getPreset(presetName!);
 
     // Token budget: --tokens flag > SESSIONREADER_MAX_TOKENS env > default 8K, always capped
+    if (opts?.tokens != null && (!Number.isFinite(opts.tokens) || opts.tokens <= 0)) {
+      throw new SessionReaderError('--tokens must be > 0', {
+        code: 'INVALID_TOKEN_BUDGET',
+        exitCode: EXIT.USAGE,
+        detail: { provided: opts.tokens },
+        suggestion: 'sessionr read <id> --tokens 4000',
+      });
+    }
     const rawBudget = opts?.tokens ?? getDefaultTokenBudget();
     const tokenBudget = Math.min(rawBudget, MAX_CHUNK_BUDGET);
 
@@ -193,7 +248,7 @@ export async function readCommand(
     // ── Page-based pagination (--page N) ──────────────────────────────────
     if (opts?.page != null) {
       const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, preset);
-      let meta = injectNextAction(result.meta);
+      let meta = markPartial(injectNextAction(result.meta));
       meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
       if (outputFormat === 'json' || outputFormat === 'jsonl') {
@@ -230,7 +285,7 @@ export async function readCommand(
     // Always apply token budget (8K max enforced)
     const anchor = opts?.search
       ? 'search' as const
-      : (opts?.anchor ?? 'head') as 'head' | 'tail' | 'search';
+      : (requestedAnchor ?? 'head');
 
     const result = sliceByTokenBudget(
       sliced,
@@ -242,7 +297,7 @@ export async function readCommand(
       preset,
     );
 
-    let meta = injectNextAction(result.meta);
+    let meta = markPartial(injectNextAction(result.meta));
     meta.detail_hint = computeDetailHint(result.messages, session.id, preset);
 
     let outputMessages = result.messages;
