@@ -47,14 +47,17 @@ export function createTtyFormatter(): Formatter {
       }
       lines.push(chalk.dim('\u2500'.repeat(60)));
 
-      const totalMessages = session.stats.totalMessages;
+      // Anchor messages — never char-truncated regardless of preset.
+      // (a) Leading system/user run at the very start of the session — the user's
+      //     "init prompt" plus any system framing that precedes/interleaves it.
+      // (b) The LAST assistant message in the session — typically the final
+      //     summary / answer.
+      const anchorIndices = computeAnchorIndices(session.messages);
       for (const msg of messages) {
         lines.push('');
         lines.push(messageHeader(msg.index, msg.role));
 
-        // First and last messages of the session are never char-truncated —
-        // they're the most semantically important turns (initial prompt + final answer).
-        const isAnchor = msg.index === 1 || msg.index === totalMessages;
+        const isAnchor = anchorIndices.has(msg.index);
         const effectivePreset = isAnchor ? expandPresetCaps(preset) : preset;
 
         const rendered = msg.blocks
@@ -261,9 +264,30 @@ function formatToolInput(input: Record<string, unknown>, maxChars: number): stri
   return truncate(joined, maxChars);
 }
 
+// Returns the set of message indices that should never be char-truncated:
+// the leading system/user run (the init prompt + any system framing) plus
+// the last assistant message in the session.
+function computeAnchorIndices(allMessages: NormalizedMessage[]): Set<number> {
+  const set = new Set<number>();
+  for (const msg of allMessages) {
+    if (msg.role === 'system' || msg.role === 'user') {
+      set.add(msg.index);
+    } else {
+      break;
+    }
+  }
+  for (let i = allMessages.length - 1; i >= 0; i--) {
+    if (allMessages[i].role === 'assistant') {
+      set.add(allMessages[i].index);
+      break;
+    }
+  }
+  return set;
+}
+
 // Returns a copy of the preset with all char caps lifted to Infinity.
-// Used for the first + last message of a session so the most important
-// turns are never truncated. show* visibility flags are preserved.
+// Used for anchor messages so they're never truncated, regardless of preset.
+// show* visibility flags are preserved from the user's preset choice.
 function expandPresetCaps(preset: VerbosityPreset): VerbosityPreset {
   return {
     ...preset,
