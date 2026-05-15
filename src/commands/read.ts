@@ -402,6 +402,11 @@ export async function readCommand(
         formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta),
       );
     }
+
+    // Signal partial reads (truncated by token budget) via PARTIAL exit code
+    if (meta.partial) {
+      process.exitCode = EXIT.PARTIAL;
+    }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     console.error(formatter.error(error));
