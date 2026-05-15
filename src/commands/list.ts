@@ -7,7 +7,7 @@ const SOURCES = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'comman
 
 export async function listCommand(
   source?: string,
-  opts?: { limit?: string; offset?: string; search?: string; json?: boolean; output?: OutputFormat },
+  opts?: { limit?: string; offset?: string; search?: string; maxSessions?: string; json?: boolean; output?: OutputFormat },
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
   const outputFormat = opts?.output ?? (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
@@ -21,12 +21,15 @@ export async function listCommand(
     const limit = opts?.limit ? parseInt(opts.limit, 10) : 20;
     const offset = opts?.offset ? parseInt(opts.offset, 10) : 0;
     let allEntries = await listSessions(source as SessionSource | undefined);
+    let searchMeta: Record<string, unknown> | undefined;
 
     // Content search across sessions
     if (opts?.search) {
       const query = opts.search.toLowerCase();
+      const maxSessions = parseBoundedInt(opts.maxSessions, 50, 1, 200);
+      const searchableEntries = allEntries.slice(0, maxSessions);
       const matched: typeof allEntries = [];
-      for (const entry of allEntries.slice(0, 50)) {
+      for (const entry of searchableEntries) {
         try {
           const session = await loadSession(entry.id, entry.source);
           const hasMatch = session.messages.some(
@@ -37,6 +40,12 @@ export async function listCommand(
           // skip unparseable sessions
         }
       }
+      searchMeta = {
+        query: opts.search,
+        sessions_scanned: searchableEntries.length,
+        sessions_available: allEntries.length,
+        truncated: allEntries.length > searchableEntries.length,
+      };
       allEntries = matched;
     }
 
@@ -53,6 +62,9 @@ export async function listCommand(
         has_more: hasMore,
         available_sources: SOURCES,
       };
+      if (searchMeta) {
+        result.meta = { search: searchMeta };
+      }
 
       // Cursor commands
       const cursor: Record<string, string | null> = {
@@ -73,7 +85,8 @@ export async function listCommand(
         );
       }
       actions.push(
-        { command: `sessionr list --search "keyword"`, description: 'Search sessions by content' },
+        { command: `sessionr list --search "keyword"`, description: 'Search recent sessions by content' },
+        { command: `sessionr search -q "keyword" --max-sessions 200`, description: 'Search deeper with ranked snippets' },
         { command: `sessionr send --new -s claude -f prompt.md`, description: 'Start new session' },
       );
       result.actions = actions;
@@ -92,4 +105,13 @@ export async function listCommand(
 function dateReplacer(_key: string, value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();
   return value;
+}
+
+function parseBoundedInt(value: string | undefined, fallback: number, min: number, max: number): number {
+  if (!value) return fallback;
+
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+
+  return Math.min(max, Math.max(min, parsed));
 }
