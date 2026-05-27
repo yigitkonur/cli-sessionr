@@ -3,6 +3,7 @@ import { listSessions } from '../discovery.js';
 import { exitCodeForError, SessionReaderError, EXIT } from '../errors.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
+import { ACCEPTED_OUTPUT_FORMATS, isAcceptedOutputFormat } from '../output/formatter.js';
 import type { SessionSource, OutputFormat } from '../types.js';
 
 function parseDuration(duration: string): number {
@@ -55,6 +56,41 @@ export async function pruneCommand(
   },
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
+
+  // oc/03: validate --output before any further work so unknown formats
+  // (e.g. --output xml) surface a structured INVALID_OUTPUT envelope
+  // instead of silently falling through to text. This mirrors the
+  // chokepoint in src/output/formatter.ts:createFormatter() — prune does
+  // its own dispatch (text vs envelope) below, so it owns the check.
+  if (opts.output !== undefined && !isAcceptedOutputFormat(opts.output)) {
+    const err = new SessionReaderError(
+      `Invalid --output "${String(opts.output)}"; expected one of: ${ACCEPTED_OUTPUT_FORMATS.join(', ')}`,
+      {
+        code: 'INVALID_OUTPUT',
+        errorClass: 'validation',
+        exitCode: EXIT.USAGE,
+        detail: {
+          provided: opts.output,
+          accepted: [...ACCEPTED_OUTPUT_FORMATS],
+        },
+        suggestion: 'Use --output json',
+        retry: false,
+      },
+    );
+    emit(
+      failure({
+        class: err.class,
+        code: err.code,
+        message: err.message,
+        detail: err.detail,
+        suggestion: err.suggestion,
+        retryable: err.retry,
+      }),
+      { format: 'json', isTTY, exitCode: exitCodeForError(err) },
+    );
+    return;
+  }
+
   const outputFormat: OutputFormat =
     opts.output ?? (opts.json ? 'json' : (isTTY ? 'text' : 'json'));
 

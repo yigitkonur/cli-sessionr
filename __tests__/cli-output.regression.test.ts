@@ -131,6 +131,30 @@ describe('oc/03 — unknown --output value is rejected with v2 envelope', () => 
       expect(obj.error.code).toBe('INVALID_OUTPUT');
     },
   );
+
+  // Regression for the Phase 1 quality-review BLOCKING gap: prune had its own
+  // output dispatch and skipped the formatter chokepoint, so `--output xml`
+  // silently dumped plain text. Lock the v2 INVALID_OUTPUT path in for prune.
+  it('prune --output xml is rejected with the same v2 envelope', () => {
+    const { stdout, status } = runCli([
+      '--output',
+      'xml',
+      'prune',
+      '--older-than',
+      '7d',
+      '--dry-run',
+    ]);
+    expect(status).toBe(2);
+    const obj = JSON.parse(stdout) as {
+      ok: boolean;
+      schema_version: string;
+      error: { code: string; class: string };
+    };
+    expect(obj.ok).toBe(false);
+    expect(obj.schema_version).toBe('v2');
+    expect(obj.error.code).toBe('INVALID_OUTPUT');
+    expect(obj.error.class).toBe('validation');
+  });
 });
 
 // ── Bug 4 ─────────────────────────────────────────────────────────────────
