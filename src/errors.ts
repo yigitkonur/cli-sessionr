@@ -85,6 +85,7 @@ export class SessionNotFoundError extends SessionReaderError {
 
     super(`Session not found: ${sessionId}`, {
       code: 'SESSION_NOT_FOUND',
+      errorClass: 'not_found',
       exitCode: EXIT.NOT_FOUND,
       detail,
       suggestion: buildSessionNotFoundSuggestion(sessionId, context?.totalSessions, prefixMatches.length),
@@ -112,6 +113,7 @@ export class ParseError extends SessionReaderError {
   constructor(filePath: string, reason: string) {
     super(`Failed to parse ${filePath}: ${reason}`, {
       code: 'PARSE_ERROR',
+      errorClass: 'internal',
       exitCode: EXIT.ERROR,
       detail: { file_path: filePath, reason },
       retry: false,
@@ -126,6 +128,7 @@ export class InvalidRangeError extends SessionReaderError {
       `Invalid range: messages ${from}-${to} requested, but session has ${total} messages`,
       {
         code: 'INVALID_RANGE',
+        errorClass: 'validation',
         exitCode: EXIT.USAGE,
         detail: { requested_from: from, requested_to: to, total_messages: total },
         suggestion: `${cmdPrefix()} read <session-id> 1 ${total}`,
@@ -142,6 +145,7 @@ export class TokenBudgetExceededError extends SessionReaderError {
       `Requested ${requested} tokens but session only contains ${available}`,
       {
         code: 'TOKEN_LIMIT_EXCEEDED',
+        errorClass: 'validation',
         exitCode: EXIT.USAGE,
         detail: { requested, available, session_id: sessionId },
         suggestion: `${cmdPrefix()} read ${sessionId} --tokens ${available}`,
