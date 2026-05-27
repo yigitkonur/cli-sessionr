@@ -35,6 +35,19 @@ describe('SessionReaderError', () => {
     expect(err.retry).toBe(true);
   });
 
+  it('defaults class to "internal" when errorClass is not provided', () => {
+    const err = new SessionReaderError('x');
+    expect(err.class).toBe('internal');
+  });
+
+  it('accepts an errorClass option and sets the class field', () => {
+    const err = new SessionReaderError('bad input', {
+      code: 'INVALID',
+      errorClass: 'validation',
+    });
+    expect(err.class).toBe('validation');
+  });
+
   it('toJSON produces machine-readable object', () => {
     const err = new SessionReaderError('oops', {
       code: 'FAIL',

@@ -16,9 +16,14 @@ import { sendCommand } from './commands/send.js';
 import { doctorCommand } from './commands/doctor.js';
 import { jobStatusCommand, jobWaitCommand, jobCancelCommand, jobListCommand } from './commands/job.js';
 import { PRESET_NAMES, DETAIL_LEVELS } from './config.js';
-import { SessionReaderError, exitCodeForError } from './errors.js';
+import { SessionReaderError, EXIT, exitCodeForError } from './errors.js';
 import { parseBounded, resolveSource, SOURCES_LIST } from './utils/validate.js';
+import { markStart } from './output/emit.js';
 import type { OutputFormat, DetailLevel, ReadOptions, SendOptions } from './types.js';
+
+// Anchor --timing measurements at CLI boot. The emit() helper reads from this
+// when callers pass {timing: true}; harmless no-op if --timing is never set.
+markStart();
 
 // Read version from package.json at module init so semantic-release bumps propagate
 // without code changes. dist/cli.js lives at <pkg>/dist/cli.js so ../package.json resolves.
@@ -54,6 +59,27 @@ program
   .option('--output <format>', 'Output format: json, jsonl, table, text')
   .option('--api-version <n>', 'API version for structured output', '1')
   .option('--timing', 'Include timing_ms in JSON responses');
+
+// --api-version gate: only legacy "1" and new "2" are accepted. Anything else
+// throws a structured SessionReaderError so the bottom-of-file catch block
+// emits a v2-shaped error envelope and exits 2.
+const VALID_API_VERSIONS = new Set(['1', '2']);
+program.hook('preAction', (thisCmd) => {
+  const apiVersion = thisCmd.opts().apiVersion as string | undefined;
+  if (apiVersion !== undefined && !VALID_API_VERSIONS.has(apiVersion)) {
+    throw new SessionReaderError(
+      `Invalid --api-version "${apiVersion}"; expected one of: 1, 2`,
+      {
+        code: 'INVALID_API_VERSION',
+        exitCode: EXIT.USAGE,
+        detail: { provided: apiVersion, accepted: ['1', '2'] },
+        suggestion: 'Pass --api-version 2 for the v3 envelope shape.',
+        retry: false,
+        errorClass: 'validation',
+      },
+    );
+  }
+});
 
 // Structured error handling for Commander errors
 program.exitOverride();
@@ -103,6 +129,7 @@ program
     await doctorCommand({
       ...opts,
       output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -607,7 +634,25 @@ try {
       process.exitCode = 2;
     }
   } else if (err instanceof SessionReaderError) {
-    console.error(JSON.stringify({ error: err.toJSON() }, null, 2));
+    // v2 envelope routing (oc/04): error envelopes go to stdout in JSON mode
+    // so downstream pipelines can read .ok === false uniformly. Phase 0 only
+    // routes errors raised at the top-level (e.g. INVALID_API_VERSION from
+    // the preAction hook); per-command paths migrate in Phase 2.
+    const parentOpts = program.opts();
+    const format = (parentOpts.output as OutputFormat | undefined) ?? 'json';
+    const { failure } = await import('./output/envelope.js');
+    const { emit } = await import('./output/emit.js');
+    emit(
+      failure({
+        class: err.class,
+        code: err.code,
+        message: err.message,
+        ...(Object.keys(err.detail).length > 0 ? { detail: err.detail } : {}),
+        ...(err.suggestion ? { suggestion: err.suggestion } : {}),
+        retryable: err.retry,
+      }),
+      { format, timing: Boolean(parentOpts.timing) },
+    );
     process.exitCode = exitCodeForError(err);
   } else {
     throw err;

@@ -1,4 +1,5 @@
 import type { SessionListEntry } from './types.js';
+import type { ErrorClass } from './output/envelope.js';
 import { cmdPrefix } from './util/invocation.js';
 
 export const EXIT = {
@@ -20,6 +21,12 @@ export class SessionReaderError extends Error {
   readonly detail: Record<string, unknown>;
   readonly suggestion?: string;
   readonly retry: boolean;
+  /**
+   * v2 envelope error class. Phase 0 only adds the field (defaulting to
+   * 'internal'); Phase 2 sweeps callsites to set it explicitly and renames
+   * `retry` → `retryable` across the CLI.
+   */
+  readonly class: ErrorClass;
 
   constructor(
     message: string,
@@ -29,6 +36,7 @@ export class SessionReaderError extends Error {
       detail?: Record<string, unknown>;
       suggestion?: string;
       retry?: boolean;
+      errorClass?: ErrorClass;
       cause?: unknown;
     },
   ) {
@@ -39,6 +47,7 @@ export class SessionReaderError extends Error {
     this.detail = opts?.detail ?? {};
     this.suggestion = opts?.suggestion;
     this.retry = opts?.retry ?? false;
+    this.class = opts?.errorClass ?? 'internal';
   }
 
   toJSON(): Record<string, unknown> {

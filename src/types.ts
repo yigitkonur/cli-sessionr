@@ -1,3 +1,15 @@
+// ── Re-exports (v2 envelope contract) ──────────────────────────────────────
+// Callers may import these directly from './output/envelope.js'; re-exported
+// here so the rest of the codebase can keep a single import target.
+export type {
+  ErrorClass,
+  V2Action,
+  V2Envelope,
+  V2Error,
+  V2Meta,
+} from './output/envelope.js';
+export { SCHEMA_VERSION, success, failure } from './output/envelope.js';
+
 // ── Source Types ────────────────────────────────────────────────────────────
 
 export type SessionSource =

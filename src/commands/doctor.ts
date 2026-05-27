@@ -1,14 +1,25 @@
 import * as fs from 'node:fs';
 import * as zlib from 'node:zlib';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 import '../parsers/index.js';
 import { getAdapters } from '../parsers/registry.js';
 import { isSqliteAvailable } from '../parsers/sqlite.js';
-import { exitCodeForError } from '../errors.js';
+import { SessionReaderError, exitCodeForError } from '../errors.js';
 import { which } from '../utils/which.js';
+import { success, failure } from '../output/envelope.js';
+import { emit } from '../output/emit.js';
 import type { OutputFormat, SessionSource } from '../types.js';
 
-const SESSIONR_VERSION = '2.6.0';
+// Read version from package.json at module init so semantic-release bumps
+// propagate without code changes. dist/commands/doctor.js lives at
+// <pkg>/dist/commands/doctor.js, so ../../package.json resolves to the root.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SESSIONR_VERSION = (
+  JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8')) as { version: string }
+).version;
 
 const SPAWN_BINS: Record<SessionSource, string> = {
   claude: 'claude',
@@ -34,8 +45,13 @@ interface DoctorSource {
   spawn_bin_path?: string;
 }
 
-export async function doctorCommand(opts?: { json?: boolean; output?: OutputFormat }): Promise<void> {
-  const outputFormat = opts?.output ?? (opts?.json ? 'json' : ((process.stdout.isTTY ?? false) ? 'text' : 'json'));
+export async function doctorCommand(opts?: {
+  json?: boolean;
+  output?: OutputFormat;
+  timing?: boolean;
+}): Promise<void> {
+  const outputFormat: OutputFormat =
+    opts?.output ?? (opts?.json ? 'json' : ((process.stdout.isTTY ?? false) ? 'text' : 'json'));
 
   try {
     const warnings: string[] = [];
@@ -71,26 +87,41 @@ export async function doctorCommand(opts?: { json?: boolean; output?: OutputForm
       warnings.push('zed: zstd support unavailable; compressed Zed messages cannot be parsed');
     }
 
-    const envelope = {
-      ok: true,
-      schema_version: 'v1',
-      result: {
-        node_version: process.version,
-        sessionr_version: SESSIONR_VERSION,
-        cwd: process.cwd(),
-        sources,
-        ...(warnings.length > 0 ? { warnings } : {}),
-      },
+    const result = {
+      node_version: process.version,
+      sessionr_version: SESSIONR_VERSION,
+      cwd: process.cwd(),
+      sources,
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
-      console.log(JSON.stringify(envelope, null, 2));
+      emit(success(result, { meta: { cwd: process.cwd() } }), {
+        format: outputFormat,
+        timing: opts?.timing,
+      });
     } else {
-      console.log(formatText(sources, warnings));
+      // Text path retained verbatim from v2.9; full text polish is Phase 3.
+      process.stdout.write(formatText(sources, warnings) + '\n');
     }
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    console.error(error.message);
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const isSre = err instanceof SessionReaderError;
+      emit(
+        failure({
+          class: isSre ? err.class : 'internal',
+          code: isSre ? err.code : 'DOCTOR_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+          ...(isSre && Object.keys(err.detail).length > 0 ? { detail: err.detail } : {}),
+          ...(isSre && err.suggestion ? { suggestion: err.suggestion } : {}),
+          retryable: isSre ? err.retry : false,
+        }),
+        { format: outputFormat, timing: opts?.timing },
+      );
+    } else {
+      const error = err instanceof Error ? err : new Error(String(err));
+      process.stderr.write(error.message + '\n');
+    }
     process.exitCode = exitCodeForError(err);
   }
 }
