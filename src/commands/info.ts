@@ -2,6 +2,7 @@ import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
+import { toExternal } from '../output/serialize.js';
 import { exitCodeForError, SessionReaderError } from '../errors.js';
 import { cmdPrefix } from '../util/invocation.js';
 import type { SessionSource, OutputFormat, V2Action } from '../types.js';
@@ -26,6 +27,10 @@ export async function infoCommand(
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
       const prefix = cmdPrefix();
+      // toExternal() snake-cases nested keys (byRole.toolUse → by_role.tool_use,
+      // tokenUsage.cacheRead → token_usage.cache_read, etc.) and converts Dates
+      // to ISO strings. info ships the lightweight projection: identity +
+      // metadata + headline stats. Full session details live in `stats`.
       const sessionPayload = {
         id: session.id,
         source: session.source,
@@ -35,8 +40,8 @@ export async function infoCommand(
         created_at: dateOrNull(session.metadata.createdAt),
         updated_at: dateOrNull(session.metadata.updatedAt),
         total_messages: session.stats.totalMessages,
-        by_role: session.stats.byRole,
-        token_usage: session.stats.tokenUsage,
+        by_role: toExternal(session.stats.byRole),
+        token_usage: toExternal(session.stats.tokenUsage),
         duration_ms: session.stats.durationMs,
       };
       const actions: V2Action[] = [
