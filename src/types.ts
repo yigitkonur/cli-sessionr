@@ -303,7 +303,10 @@ export interface Job {
 
 export interface SendOptions {
   source?: string;
-  message: string;
+  /** Inline prompt; mutually exclusive with `file`. Validated in sendCommand. */
+  message?: string;
+  /** Path to a file whose contents form the prompt; validated in sendCommand. */
+  file?: string;
   async?: boolean;
   new?: boolean;
   cwd?: string;

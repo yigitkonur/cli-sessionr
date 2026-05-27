@@ -19,6 +19,7 @@ import { PRESET_NAMES, DETAIL_LEVELS } from './config.js';
 import { SessionReaderError, EXIT, exitCodeForError } from './errors.js';
 import { parseBounded, resolveSource, SOURCES_LIST } from './utils/validate.js';
 import { markStart } from './output/emit.js';
+import { success } from './output/envelope.js';
 import type { OutputFormat, DetailLevel, ReadOptions, SendOptions } from './types.js';
 
 // Anchor --timing measurements at CLI boot. The emit() helper reads from this
@@ -376,32 +377,13 @@ Examples:
         preset?: string;
       },
     ) => {
-      let message: string;
-      if (opts.file && opts.message) {
-        process.stderr.write('Error: --message and --file are mutually exclusive\n');
-        process.exitCode = 2;
-        return;
-      }
-      if (opts.file) {
-        const { readFileSync } = await import('node:fs');
-        try {
-          message = readFileSync(opts.file, 'utf-8').trim();
-        } catch (err) {
-          process.stderr.write(`Error: Cannot read file "${opts.file}": ${(err as Error).message}\n`);
-          process.exitCode = 2;
-          return;
-        }
-      } else if (opts.message) {
-        message = opts.message;
-      } else {
-        process.stderr.write('Error: Either --message or --file is required\n');
-        process.exitCode = 2;
-        return;
-      }
-
+      // oc/05: pass message + file through unvalidated. sendCommand resolves
+      // them AFTER the formatter is initialised so JSON callers get a v2
+      // envelope on stdout instead of raw text on stderr.
       const parentOpts = program.opts();
       const sendOpts: SendOptions = {
-        message,
+        message: opts.message,
+        file: opts.file,
         source: resolveSource(opts.source),
         new: opts.new,
         async: opts.async,
@@ -542,7 +524,15 @@ const originalHelp = program.helpInformation.bind(program);
 program.helpInformation = function () {
   const parentOpts = program.opts();
   if (parentOpts.output === 'json') {
-    return JSON.stringify(buildHelpSchema(program), null, 2);
+    // oc/06: emit a v2 envelope (ok:true, schema_version:'v2', result:{…})
+    // so `sessionr --output json help` matches the same shape every other
+    // command produces. Commander writes this string to stdout and then
+    // throws `commander.helpDisplayed`, which the top-level catch maps to
+    // exitCode = 0 — so the previous "exit 2 + raw schema" behaviour is
+    // gone for good. Returning a string keeps Commander's helpInformation
+    // contract intact; the string already includes its trailing newline
+    // via JSON.stringify-and-emit semantics below.
+    return JSON.stringify(success(buildHelpSchema(program)));
   }
   return originalHelp() + TOP_LEVEL_HELP_AFTER;
 };
@@ -585,6 +575,10 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
       '8. sessionr send <id> -f prompt.md --async → sessionr wait <job-id> → sessionr read <id> --after N — long-running flows',
       '9. sessionr context <id> --tokens 8000 — export for cross-tool handoff',
     ],
+    // `commands` is the canonical full list (covered by the acceptance probe);
+    // `primary_commands` / `all_commands` are kept for backward compat with
+    // any agent that already keys off the legacy field names.
+    commands: all,
     primary_commands: primary,
     all_commands: all,
     exit_codes: {

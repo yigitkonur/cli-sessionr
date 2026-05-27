@@ -6,6 +6,12 @@ export interface RunCommand {
   args: string[];
 }
 
+/**
+ * Build the resume-an-existing-session command for `source`. Every branch
+ * returns a fully-populated RunCommand or throws a SessionReaderError — never
+ * returns undefined (wp/01 prevention). The trailing `_exhaustive: never`
+ * triggers a compile-time check that every SessionSource value is handled.
+ */
 export function buildResumeCommand(
   source: SessionSource | undefined,
   sessionId: string,
@@ -15,6 +21,7 @@ export function buildResumeCommand(
     throw new SessionReaderError('Source could not be determined for resume', {
       code: 'SOURCE_UNKNOWN',
       exitCode: EXIT.NOT_FOUND,
+      errorClass: 'not_found',
       suggestion: 'Verify the session exists with: sessionr list --output json',
     });
   }
@@ -40,22 +47,36 @@ export function buildResumeCommand(
       throw new SessionReaderError('Kiro CLI cannot resume a specific session', {
         code: 'UNSUPPORTED_OPERATION',
         exitCode: EXIT.USAGE,
+        errorClass: 'validation',
         suggestion: "sessionr send --new --source kiro -m '...'",
       });
     case 'zed':
-      throw new Error('Zed AI threads are GUI-only — no CLI send support');
+      throw new SessionReaderError('Zed AI threads are GUI-only — no CLI send support', {
+        code: 'UNSUPPORTED_SOURCE',
+        exitCode: EXIT.USAGE,
+        errorClass: 'validation',
+        detail: { source },
+        suggestion: 'Use a CLI-based tool (claude, codex, gemini, etc.)',
+      });
     case 'factory':
       return { bin: 'droid', args: ['exec', '-s', sessionId, message] };
   }
 
+  // Compile-time exhaustiveness check: if a new SessionSource is added without
+  // a case above, TypeScript flags this assignment.
   const _exhaustive: never = source;
-  throw new SessionReaderError(`Unsupported source: ${_exhaustive}`, {
+  throw new SessionReaderError(`Unsupported source: ${String(_exhaustive)}`, {
     code: 'UNSUPPORTED_SOURCE',
     exitCode: EXIT.USAGE,
+    errorClass: 'validation',
     detail: { source: _exhaustive },
   });
 }
 
+/**
+ * Build the new-session command for `source`. Same exhaustiveness contract as
+ * buildResumeCommand: every value either returns a RunCommand or throws.
+ */
 export function buildNewCommand(
   source: SessionSource | undefined,
   message: string,
@@ -65,6 +86,7 @@ export function buildNewCommand(
     throw new SessionReaderError('Source could not be determined for new session', {
       code: 'SOURCE_UNKNOWN',
       exitCode: EXIT.NOT_FOUND,
+      errorClass: 'not_found',
       suggestion: 'Specify a source, e.g. sessionr send --new --source claude -f prompt.md',
     });
   }
@@ -89,15 +111,23 @@ export function buildNewCommand(
     case 'kiro':
       return { bin: 'kiro-cli', args: ['chat', '--no-interactive', message] };
     case 'zed':
-      throw new Error('Zed AI threads are GUI-only — no CLI send support');
+      throw new SessionReaderError('Zed AI threads are GUI-only — no CLI send support', {
+        code: 'UNSUPPORTED_SOURCE',
+        exitCode: EXIT.USAGE,
+        errorClass: 'validation',
+        detail: { source },
+        suggestion: 'Use a CLI-based tool (claude, codex, gemini, etc.)',
+      });
     case 'factory':
       return { bin: 'droid', args: ['exec', message] };
   }
 
+  // Exhaustiveness check — see buildResumeCommand above.
   const _exhaustive: never = source;
-  throw new SessionReaderError(`Unsupported source: ${_exhaustive}`, {
+  throw new SessionReaderError(`Unsupported source: ${String(_exhaustive)}`, {
     code: 'UNSUPPORTED_SOURCE',
     exitCode: EXIT.USAGE,
+    errorClass: 'validation',
     detail: { source: _exhaustive },
   });
 }

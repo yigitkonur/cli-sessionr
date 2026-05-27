@@ -1,6 +1,8 @@
-import { cmdPrefix } from "../util/invocation.js";
+import { cmdPrefix } from '../util/invocation.js';
 import { listSessions } from '../discovery.js';
 import { exitCodeForError, SessionReaderError, EXIT } from '../errors.js';
+import { success, failure } from '../output/envelope.js';
+import { emit } from '../output/emit.js';
 import type { SessionSource, OutputFormat } from '../types.js';
 
 function parseDuration(duration: string): number {
@@ -8,6 +10,7 @@ function parseDuration(duration: string): number {
   if (!match) {
     throw new SessionReaderError(`Invalid duration: "${duration}". Use format like 7d, 24h, 30m`, {
       code: 'INVALID_DURATION',
+      errorClass: 'validation',
       exitCode: EXIT.USAGE,
     });
   }
@@ -15,6 +18,7 @@ function parseDuration(duration: string): number {
   if (value <= 0) {
     throw new SessionReaderError('Duration must be greater than 0', {
       code: 'INVALID_DURATION',
+      errorClass: 'validation',
       exitCode: EXIT.USAGE,
       suggestion: 'sessionr prune --older-than 7d --dry-run',
     });
@@ -30,6 +34,15 @@ function parseDuration(duration: string): number {
   return value * multipliers[unit];
 }
 
+/**
+ * Prune sessions older than a threshold.
+ *
+ * v3.0 NOTE: Real deletion is intentionally NOT implemented. The
+ * `--dry-run` path returns a v2 success envelope previewing what would
+ * be deleted; `--yes` (or any code path that would actually delete)
+ * refuses with `NOT_IMPLEMENTED` so the success envelope never lies
+ * about destructive action. Real deletion is planned for v3.1.0.
+ */
 export async function pruneCommand(
   opts: {
     olderThan: string;
@@ -38,19 +51,30 @@ export async function pruneCommand(
     source?: string;
     json?: boolean;
     output?: OutputFormat;
+    timing?: boolean;
   },
 ): Promise<void> {
+  const isTTY = process.stdout.isTTY ?? false;
+  const outputFormat: OutputFormat =
+    opts.output ?? (opts.json ? 'json' : (isTTY ? 'text' : 'json'));
+
   try {
     const durationMs = parseDuration(opts.olderThan);
     const cutoff = new Date(Date.now() - durationMs);
 
-    if (!opts.dryRun && opts.yes) {
+    // Interim refuse path: v3.0 ships dry-run only. Any caller asking for
+    // real deletion gets a hard refusal so the success envelope never
+    // misrepresents reality (the "01-CRITICAL-prune-yes-fakes-deletion" bug).
+    if (opts.yes && !opts.dryRun) {
       throw new SessionReaderError(
-        'prune --yes is not yet implemented; use --dry-run to preview sessions that would be deleted',
+        'Real deletion not implemented yet; use --dry-run to preview',
         {
           code: 'NOT_IMPLEMENTED',
+          errorClass: 'internal',
           exitCode: EXIT.ERROR,
-          suggestion: `sessionr prune --older-than ${opts.olderThan} --dry-run`,
+          detail: { feature: 'prune --yes', planned_in: 'v3.1.0' },
+          suggestion: 'sessionr prune --dry-run --output json',
+          retry: false,
         },
       );
     }
@@ -60,58 +84,84 @@ export async function pruneCommand(
 
     if (opts.dryRun) {
       const result = {
-        api_version: 1,
         dry_run: true,
         would_delete: toDelete.map((e) => ({
           id: e.id,
           source: e.source,
-          updated_at: e.updatedAt,
+          updated_at: e.updatedAt.toISOString(),
           cwd: e.cwd,
         })),
         count: toDelete.length,
       };
-      console.log(JSON.stringify(result, dateReplacer, 2));
+
+      if (outputFormat === 'json' || outputFormat === 'jsonl') {
+        emit(
+          success(result, {
+            meta: {
+              cwd: process.cwd(),
+              older_than: opts.olderThan,
+              cutoff: cutoff.toISOString(),
+            },
+            actions: [
+              {
+                command: `${cmdPrefix()} prune --older-than ${opts.olderThan} --yes`,
+                description: 'Actually delete the sessions above (NOT_IMPLEMENTED in v3.0)',
+              },
+            ],
+          }),
+          { format: outputFormat, timing: opts.timing },
+        );
+      } else {
+        process.stdout.write(
+          `Would delete ${toDelete.length} sessions older than ${opts.olderThan} (cutoff: ${cutoff.toISOString()}).\n`,
+        );
+        for (const e of toDelete) {
+          process.stdout.write(`  ${e.id}  ${e.source}  ${e.cwd}\n`);
+        }
+      }
       return;
     }
 
-    if (!process.stdout.isTTY) {
+    // No --dry-run and no --yes: classic confirmation-required usage error.
+    if (!isTTY) {
       throw new SessionReaderError(
         'Destructive operation requires --yes flag when not running interactively',
         {
           code: 'CONFIRMATION_REQUIRED',
+          errorClass: 'validation',
           exitCode: EXIT.USAGE,
           suggestion: `${cmdPrefix()} prune --older-than ${opts.olderThan} --yes`,
         },
       );
     }
 
-    if (!opts.yes) {
-      throw new SessionReaderError(
-        `Would delete ${toDelete.length} sessions. Re-run with --yes to confirm, or use --dry-run to preview.`,
-        {
-          code: 'CONFIRMATION_REQUIRED',
-          exitCode: EXIT.USAGE,
-          suggestion: `${cmdPrefix()} prune --older-than ${opts.olderThan} --yes`,
-        },
-      );
-    }
+    throw new SessionReaderError(
+      `Would delete ${toDelete.length} sessions. Re-run with --yes to confirm, or use --dry-run to preview.`,
+      {
+        code: 'CONFIRMATION_REQUIRED',
+        errorClass: 'validation',
+        exitCode: EXIT.USAGE,
+        suggestion: `${cmdPrefix()} prune --older-than ${opts.olderThan} --yes`,
+      },
+    );
   } catch (err) {
-    const writeError = isStructuredOutput(opts) ? console.log : console.error;
-    if (err instanceof SessionReaderError) {
-      writeError(JSON.stringify({ error: err.toJSON() }, null, 2));
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const isSre = err instanceof SessionReaderError;
+      emit(
+        failure({
+          class: isSre ? err.class : 'internal',
+          code: isSre ? err.code : 'PRUNE_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+          ...(isSre && Object.keys(err.detail).length > 0 ? { detail: err.detail } : {}),
+          ...(isSre && err.suggestion ? { suggestion: err.suggestion } : {}),
+          retryable: isSre ? err.retry : false,
+        }),
+        { format: outputFormat, timing: opts.timing },
+      );
     } else {
       const error = err instanceof Error ? err : new Error(String(err));
-      writeError(JSON.stringify({ error: { code: 'PRUNE_FAILED', message: error.message, retry: false } }, null, 2));
+      process.stderr.write(error.message + '\n');
     }
     process.exitCode = exitCodeForError(err);
   }
-}
-
-function isStructuredOutput(opts: { json?: boolean; output?: OutputFormat }): boolean {
-  return opts.output === 'json' || opts.output === 'jsonl' || opts.json === true;
-}
-
-function dateReplacer(_key: string, value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString();
-  return value;
 }

@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { closeSync, openSync } from 'node:fs';
+import { readFileSync, closeSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { mkdirSync } from 'node:fs';
 import { loadSession, listSessions } from '../discovery.js';
-import { buildResumeCommand, buildNewCommand, canSend } from '../runners.js';
+import { buildResumeCommand, buildNewCommand, canSend, type RunCommand } from '../runners.js';
 import { createJob, generateJobId, jobExitPath } from '../jobs.js';
 import { createFormatter } from '../output/formatter.js';
 import { serializeMessage } from '../output/serialize.js';
@@ -14,9 +14,84 @@ import { estimateSessionTokens } from '../tokens.js';
 import { SessionReaderError, EXIT, exitCodeForError } from '../errors.js';
 import { resolveSourceAlias } from '../parsers/registry.js';
 import { cmdPrefix } from '../util/invocation.js';
+import { failure } from '../output/envelope.js';
+import { emit } from '../output/emit.js';
 import type { SessionSource, SendOptions, OutputFormat, SliceMeta } from '../types.js';
 
 const JOBS_DIR = join(homedir(), '.sessionreader', 'jobs');
+
+/**
+ * Resolve the user-supplied prompt from `--message` / `--file`. All three
+ * validation branches (conflicting, file unreadable, missing) throw a
+ * structured `SessionReaderError` (validation class) so the top-level
+ * try/catch can route them through the v2 envelope via emit(failure()).
+ *
+ * oc/05 fix: these checks MUST run AFTER the formatter is initialised so
+ * `--output json` callers see a parseable error envelope on stdout.
+ */
+function resolveMessage(opts: SendOptions): string {
+  const hasMessage = typeof opts.message === 'string' && opts.message.length > 0;
+  const hasFile = typeof opts.file === 'string' && opts.file.length > 0;
+
+  if (hasMessage && hasFile) {
+    throw new SessionReaderError('--message and --file are mutually exclusive', {
+      code: 'CONFLICTING_FLAGS',
+      exitCode: EXIT.USAGE,
+      errorClass: 'validation',
+      suggestion: 'sessionr send <id> -m "text"  OR  sessionr send <id> -f prompt.md',
+    });
+  }
+
+  if (hasFile) {
+    try {
+      return readFileSync(opts.file as string, 'utf-8').trim();
+    } catch (err) {
+      throw new SessionReaderError(`Cannot read file "${opts.file}"`, {
+        code: 'FILE_NOT_READABLE',
+        exitCode: EXIT.USAGE,
+        errorClass: 'validation',
+        detail: { path: opts.file, cause: (err as Error).message },
+        suggestion: `Check that ${opts.file} exists and is readable`,
+        cause: err,
+      });
+    }
+  }
+
+  if (hasMessage) {
+    return opts.message as string;
+  }
+
+  throw new SessionReaderError('Either --message or --file is required', {
+    code: 'MISSING_MESSAGE',
+    exitCode: EXIT.USAGE,
+    errorClass: 'validation',
+    suggestion: 'sessionr send <id> -m "your prompt"',
+  });
+}
+
+/**
+ * Guard: refuse to call spawn() with a partially-resolved RunCommand. The v2
+ * runner builders should always raise SOURCE_UNKNOWN before returning a
+ * malformed shape, but the guard prevents wp/01-style undefined-property
+ * TypeErrors if a code path ever slips through.
+ */
+function assertSpawnable(cmd: RunCommand | undefined | null): asserts cmd is RunCommand {
+  if (
+    !cmd ||
+    typeof cmd.bin !== 'string' ||
+    cmd.bin.length === 0 ||
+    !Array.isArray(cmd.args)
+  ) {
+    throw new SessionReaderError('Spawn command could not be resolved', {
+      code: 'UNRESOLVED_SPAWN_COMMAND',
+      exitCode: EXIT.ERROR,
+      errorClass: 'internal',
+      detail: cmd ? { bin: cmd.bin ?? null, args_type: typeof cmd.args } : { cmd: null },
+      retry: false,
+      suggestion: 'sessionr doctor   (verify tool installation)',
+    });
+  }
+}
 
 export async function sendCommand(
   sessionId: string | undefined,
@@ -24,8 +99,16 @@ export async function sendCommand(
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
   const formatter = createFormatter({ output: opts.output, isTTY });
+  // emit() needs the raw format string to choose JSONL vs pretty JSON.
+  // The formatter resolves text/table for TTY; for the v2 error path we
+  // route through emit() so the error envelope shape matches Phase 0.
+  const format: OutputFormat = opts.output ?? (isTTY ? 'text' : 'json');
 
   try {
+    // oc/05: resolve message AFTER the formatter exists so validation errors
+    // surface as v2 envelopes on stdout in JSON mode.
+    const message = resolveMessage(opts);
+
     const isNew = opts.new === true;
     let source = resolveSource(sessionId, opts.source, isNew);
 
@@ -46,6 +129,7 @@ export async function sendCommand(
       throw new SessionReaderError('Source could not be determined for send', {
         code: 'SOURCE_UNKNOWN',
         exitCode: EXIT.NOT_FOUND,
+        errorClass: 'not_found',
         suggestion: 'Verify the session exists with: sessionr list --output json',
       });
     }
@@ -54,25 +138,45 @@ export async function sendCommand(
       throw new SessionReaderError('Zed AI threads are GUI-only — no CLI send support', {
         code: 'UNSUPPORTED_SOURCE',
         exitCode: EXIT.USAGE,
+        errorClass: 'validation',
         detail: { source },
         suggestion: 'Use a CLI-based tool (claude, codex, gemini, etc.)',
       });
     }
 
-    // Build the command
+    // Build the command (with safety guard against malformed RunCommand shapes).
     const cmd = isNew
-      ? buildNewCommand(source, opts.message, cwd)
-      : buildResumeCommand(source, resolvedSessionId!, opts.message);
+      ? buildNewCommand(source, message, cwd)
+      : buildResumeCommand(source, resolvedSessionId!, message);
+    assertSpawnable(cmd);
 
     if (opts.async) {
-      await runAsync(cmd, resolvedSessionId, source, cwd, opts, messageCountBefore, isNew, formatter);
+      await runAsync(cmd, resolvedSessionId, source, cwd, { ...opts, message }, messageCountBefore, isNew, formatter);
     } else {
-      await runSync(cmd, resolvedSessionId, source, cwd, opts, messageCountBefore, isNew, formatter);
+      await runSync(cmd, resolvedSessionId, source, cwd, { ...opts, message }, messageCountBefore, isNew, formatter);
     }
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    console.error(formatter.error(error));
-    process.exitCode = exitCodeForError(err);
+    const sre =
+      err instanceof SessionReaderError
+        ? err
+        : new SessionReaderError(err instanceof Error ? err.message : String(err), {
+            code: 'UNKNOWN_ERROR',
+            exitCode: EXIT.ERROR,
+            errorClass: 'internal',
+            cause: err,
+          });
+
+    emit(
+      failure({
+        class: sre.class,
+        code: sre.code,
+        message: sre.message,
+        ...(Object.keys(sre.detail).length > 0 ? { detail: sre.detail } : {}),
+        ...(sre.suggestion ? { suggestion: sre.suggestion } : {}),
+        retryable: sre.retry,
+      }),
+      { format, exitCode: exitCodeForError(sre) },
+    );
   }
 }
 
@@ -86,6 +190,7 @@ function resolveSource(
     throw new SessionReaderError('--source is required when creating a new session', {
       code: 'MISSING_SOURCE',
       exitCode: EXIT.USAGE,
+      errorClass: 'validation',
       suggestion: 'sessionr send --new --source claude -f prompt.md',
     });
   }
@@ -93,6 +198,7 @@ function resolveSource(
     throw new SessionReaderError('Either <session-id> or --new --source is required', {
       code: 'MISSING_SESSION',
       exitCode: EXIT.USAGE,
+      errorClass: 'validation',
       suggestion: 'sessionr send <session-id> -f prompt.md OR --new --source claude -f prompt.md',
     });
   }
@@ -101,7 +207,7 @@ function resolveSource(
 }
 
 async function runSync(
-  cmd: { bin: string; args: string[] },
+  cmd: RunCommand,
   sessionId: string | null,
   source: SessionSource,
   cwd: string,
@@ -111,6 +217,11 @@ async function runSync(
   formatter: ReturnType<typeof createFormatter>,
 ): Promise<void> {
   const resolvedSource = source;
+
+  // wp/02 + wp/06: anchor the detect-new-session window to a timestamp captured
+  // BEFORE the child runs so we never attach to a session created earlier by
+  // another tool. Allow 2s of clock skew slop.
+  const beforeSendT = Date.now();
 
   const result = await spawnAndWait(cmd, cwd);
 
@@ -138,7 +249,7 @@ async function runSync(
   // Find the session and get new messages
   let finalSessionId = sessionId;
   if (isNew) {
-    finalSessionId = await detectNewSession(resolvedSource, cwd);
+    finalSessionId = await detectNewSession(resolvedSource, cwd, beforeSendT);
   }
 
   if (!finalSessionId) {
@@ -146,7 +257,8 @@ async function runSync(
       throw new SessionReaderError('Tool completed but new session was not detected in cwd', {
         code: 'NEW_SESSION_NOT_DETECTED',
         exitCode: EXIT.PARTIAL,
-        detail: { source: resolvedSource, cwd },
+        errorClass: 'partial',
+        detail: { source: resolvedSource, cwd, hint: 'session may take a moment to flush' },
         suggestion: `sessionr list --cwd current --source ${resolvedSource} -n 5`,
         retry: true,
       });
@@ -155,6 +267,7 @@ async function runSync(
     throw new SessionReaderError('Session could not be determined after send', {
       code: 'SESSION_NOT_FOUND',
       exitCode: EXIT.NOT_FOUND,
+      errorClass: 'not_found',
       detail: { source: resolvedSource },
       suggestion: 'sessionr list --output json',
     });
@@ -220,7 +333,7 @@ async function runSync(
 }
 
 async function runAsync(
-  cmd: { bin: string; args: string[] },
+  cmd: RunCommand,
   sessionId: string | null,
   source: SessionSource,
   cwd: string,
@@ -265,6 +378,9 @@ async function runAsync(
       {
         cwd,
         detached: true,
+        // stdio: child stdout/stderr go straight to sidecar files so the parent
+        // can return immediately without buffering the child's output in
+        // memory. wp/03: synchronous mode buffers via spawnAndWait() instead.
         stdio: ['ignore', stdoutFd, stderrFd],
       },
     );
@@ -298,7 +414,7 @@ async function runAsync(
       source,
       readBack: { source, tokens: opts.tokens, preset: opts.preset },
       cwd,
-      message: opts.message,
+      message: opts.message ?? '',
       pid: child.pid,
       messageCountBefore,
       isNewSession: isNew,
@@ -349,27 +465,52 @@ async function runAsync(
   process.exitCode = EXIT.OK;
 }
 
-async function detectNewSession(
+/**
+ * Poll the source's session index for a brand-new session created during this
+ * send. wp/02 + wp/06: anchored to `beforeSendT` so we never return a session
+ * that existed prior to spawn (cross-project leakage). Returns null when no
+ * fresh session is detected after polling — the caller maps that to a
+ * `NEW_SESSION_NOT_DETECTED` partial error.
+ */
+export async function detectNewSession(
   source: SessionSource,
   cwd: string,
+  beforeSendT: number,
+  deps: { listSessions?: typeof listSessions; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<string | null> {
+  const list = deps.listSessions ?? listSessions;
+  const wait = deps.sleep ?? sleep;
   const attempts = 10;
   const delayMs = 200;
+  const slopMs = 2_000; // tolerance for filesystem mtime / clock skew.
+  const cutoff = beforeSendT - slopMs;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const entries = await listSessions(source, 10);
-      const now = Date.now();
-      const match = entries.find(
-        (e) => e.cwd === cwd && now - e.updatedAt.getTime() < 30_000,
+      const entries = await list(source, 10);
+      const t = Date.now();
+      const candidates = entries.filter(
+        (e) =>
+          e.cwd === cwd &&
+          e.updatedAt.getTime() >= cutoff &&
+          t - e.updatedAt.getTime() < 30_000,
       );
-      if (match) return match.id;
+      if (candidates.length === 1) return candidates[0].id;
+      if (candidates.length > 1) {
+        // Closest to spawn-completion-time wins. Stable in the common case
+        // where only one session is fresh.
+        candidates.sort(
+          (a, b) =>
+            Math.abs(a.updatedAt.getTime() - t) - Math.abs(b.updatedAt.getTime() - t),
+        );
+        return candidates[0].id;
+      }
     } catch {
       // Keep polling; the session index can lag immediately after tool exit.
     }
 
     if (attempt < attempts - 1) {
-      await sleep(delayMs);
+      await wait(delayMs);
     }
   }
 
@@ -386,11 +527,21 @@ export interface SpawnResult {
   stderrTail: string[];
 }
 
+/**
+ * Run a child process to completion, mirroring its stdout+stderr to our stderr
+ * (so JSON callers see live progress without polluting the stdout envelope)
+ * and capturing the trailing 50 lines per stream for inclusion in error
+ * envelopes. wp/03: both pipes are drained continuously to prevent OS buffer
+ * deadlock; remaining buffered text is flushed before the promise settles.
+ */
 export function spawnAndWait(
-  cmd: { bin: string; args: string[] },
+  cmd: RunCommand,
   cwd: string,
 ): Promise<SpawnResult> {
   return new Promise((resolve, reject) => {
+    // wp/03: explicit pipe stdio so the parent can drain stdout/stderr. With
+    // pipes the child blocks once the OS buffer (~64KB) fills, so the data
+    // listeners below MUST run for the lifetime of the child.
     const child = spawn(cmd.bin, cmd.args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -406,6 +557,10 @@ export function spawnAndWait(
     };
 
     child.once('error', (err) => {
+      // Drain whatever the OS already delivered before the error fired so the
+      // tail buffer carries diagnostic context for the caller.
+      stdoutTail.flush();
+      stderrTail.flush();
       settle(
         reject,
         new SessionReaderError(`Failed to spawn ${cmd.bin}: ${err.message}`, {
@@ -429,7 +584,12 @@ export function spawnAndWait(
   });
 }
 
-function tapOutput(stream: NodeJS.ReadableStream): { lines: string[]; flush: () => void } {
+/**
+ * Attach a data listener to a child stream, mirror chunks to stderr, and
+ * keep a rolling buffer of the last 50 complete lines. Exported for unit
+ * tests (wp/03 regression coverage).
+ */
+export function tapOutput(stream: NodeJS.ReadableStream): { lines: string[]; flush: () => void } {
   const lines: string[] = [];
   let buffered = '';
 
