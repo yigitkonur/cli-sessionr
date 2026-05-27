@@ -210,6 +210,9 @@ Examples:
         }
       }
 
+      // Forward parent --timing into read so meta.timing_ms appears in the
+      // v2 envelope. Phase 1 carry-forward.
+      readOpts.timing = Boolean(parentOpts.timing);
       await readCommand(sessionId ?? '', from, to, readOpts);
     },
   );
@@ -232,6 +235,7 @@ Examples:
       ...opts,
       source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -253,6 +257,7 @@ Examples:
       ...opts,
       source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -278,6 +283,7 @@ Examples:
       ...opts,
       source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -300,6 +306,7 @@ Examples:
       ...opts,
       source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -321,6 +328,7 @@ Examples:
       ...opts,
       source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -421,12 +429,15 @@ Examples:
         format?: string;
       },
     ) => {
+      const parentOpts = program.opts();
       await contextExportCommand(sessionId, {
         source: resolveSource(opts.source),
         tokens: parseOptionalBounded('--tokens', opts.tokens, 1),
         includeSystemPrompt: opts.includeSystemPrompt,
         includeToolResults: opts.includeToolResults,
         format: opts.format as 'messages' | 'summary' | undefined,
+        output: parentOpts.output as OutputFormat | undefined,
+        timing: Boolean(parentOpts.timing),
       });
     },
   );
@@ -447,6 +458,7 @@ Examples:
     await jobListCommand({
       output: parentOpts.output as OutputFormat | undefined,
       status: opts.status,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -463,6 +475,7 @@ Examples:
     const parentOpts = program.opts();
     await jobStatusCommand(jobId, {
       output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -483,6 +496,7 @@ Examples:
       output: parentOpts.output as OutputFormat | undefined,
       timeout: parseOptionalBounded('--timeout', opts.timeout, 1),
       interval: parseOptionalBounded('--interval', opts.interval, 1),
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -499,6 +513,7 @@ Examples:
     const parentOpts = program.opts();
     await jobCancelCommand(jobId, {
       output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -619,12 +634,23 @@ try {
     if (successfulCommanderExits.has(err.code)) {
       process.exitCode = 0;
     } else {
-      if (!process.stdout.isTTY) {
-        const msg = err.message.replace(/^error:\s*/i, '');
-        process.stdout.write(JSON.stringify({
-          error: { code: 'USAGE_ERROR', message: msg, retry: false },
-        }, null, 2) + '\n');
-      }
+      // oc/08 + oc/09 carry-forward: argparse failures must emit the same
+      // v2 envelope shape every other path produces, on stdout, so callers
+      // can branch on `.ok === false` uniformly without `2>&1` plumbing.
+      const parentOpts = program.opts();
+      const format = (parentOpts.output as OutputFormat | undefined) ?? 'json';
+      const msg = err.message.replace(/^error:\s*/i, '');
+      const { failure } = await import('./output/envelope.js');
+      const { emit } = await import('./output/emit.js');
+      emit(
+        failure({
+          class: 'validation',
+          code: 'USAGE_ERROR',
+          message: msg,
+          retryable: false,
+        }),
+        { format, timing: Boolean(parentOpts.timing) },
+      );
       process.exitCode = 2;
     }
   } else if (err instanceof SessionReaderError) {

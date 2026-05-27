@@ -1,10 +1,13 @@
-import { cmdPrefix } from "../util/invocation.js";
+import { cmdPrefix } from '../util/invocation.js';
 import { loadSession } from '../discovery.js';
+import { createFormatter } from '../output/formatter.js';
+import { success, failure } from '../output/envelope.js';
+import { emit } from '../output/emit.js';
 import { SessionReaderError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getDefaultTokenBudget } from '../config.js';
-import type { SessionSource, OutputFormat, NormalizedMessage } from '../types.js';
+import type { SessionSource, OutputFormat, NormalizedMessage, V2Action } from '../types.js';
 
 export async function contextExportCommand(
   sessionId: string,
@@ -15,8 +18,18 @@ export async function contextExportCommand(
     includeToolResults?: boolean;
     format?: 'messages' | 'summary';
     output?: OutputFormat;
+    json?: boolean;
+    timing?: boolean;
   },
 ): Promise<void> {
+  const isTTY = process.stdout.isTTY ?? false;
+  const outputFormat: OutputFormat = opts.output ?? (opts.json ? 'json' : (isTTY ? 'text' : 'json'));
+  const formatter = createFormatter({
+    output: opts.output,
+    json: opts.json,
+    isTTY,
+  });
+
   try {
     const session = await loadSession(
       sessionId,
@@ -36,8 +49,8 @@ export async function contextExportCommand(
       messages = messages.filter((m) => m.role !== 'tool_result');
     }
 
-    // Slice to fit budget
-    const result = sliceByTokenBudget(
+    // Slice to fit budget (tail anchor so the handoff captures the latest state)
+    const sliceResult = sliceByTokenBudget(
       messages,
       tokenBudget,
       session.id,
@@ -63,45 +76,56 @@ export async function contextExportCommand(
       .reverse()
       .find((m) => m.role === 'user');
 
-    const contextObj: Record<string, unknown> = {
-      api_version: 1,
-      meta: {
-        next_action: {
-          command: `sessionr send --new --source ${session.source} -f prompt.md`,
-          description: 'Start a new session with this exported context',
-        },
-      },
-      context: {
-        session_id: session.id,
-        source: session.source,
-        model: session.metadata.model,
-        cwd: session.metadata.cwd,
-        git_branch: session.metadata.gitBranch,
-        messages: opts.format === 'summary'
-          ? summarizeMessages(result.messages)
-          : result.messages.map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
-        active_files: [...activeFiles].slice(0, 50),
-        current_task: lastUserMsg
-          ? lastUserMsg.content.slice(0, 500)
-          : null,
-        token_count_estimate: estimateSessionTokens(result.messages),
-      },
-      actions: [
-        { command: `${cmdPrefix()} send --new --source ${session.source} -f prompt.md`, description: 'Start new session with this context' },
-        { command: `${cmdPrefix()} read ${session.id} --tokens 4000`, description: 'Read full session messages' },
-      ],
+    const result = {
+      session_id: session.id,
+      source: session.source,
+      model: session.metadata.model,
+      cwd: session.metadata.cwd,
+      git_branch: session.metadata.gitBranch,
+      messages: opts.format === 'summary'
+        ? summarizeMessages(sliceResult.messages)
+        : sliceResult.messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+      active_files: [...activeFiles].slice(0, 50),
+      current_task: lastUserMsg
+        ? lastUserMsg.content.slice(0, 500)
+        : null,
+      token_count_estimate: estimateSessionTokens(sliceResult.messages),
     };
 
-    console.log(JSON.stringify(contextObj, null, 2));
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const prefix = cmdPrefix();
+      const actions: V2Action[] = [
+        { command: `${prefix} send --new --source ${session.source} -f prompt.md`, description: 'Start new session with this context' },
+        { command: `${prefix} read ${session.id} --tokens 4000`, description: 'Read full session messages' },
+      ];
+      emit(success(result, { actions }), {
+        format: outputFormat,
+        timing: opts.timing,
+      });
+    } else {
+      // text/table fallback: pretty-print the result so callers still see it.
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    }
   } catch (err) {
-    if (err instanceof SessionReaderError) {
-      console.error(JSON.stringify({ error: err.toJSON() }, null, 2));
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const isSre = err instanceof SessionReaderError;
+      emit(
+        failure({
+          class: isSre ? err.class : 'internal',
+          code: isSre ? err.code : 'CONTEXT_EXPORT_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+          ...(isSre && Object.keys(err.detail).length > 0 ? { detail: err.detail } : {}),
+          ...(isSre && err.suggestion ? { suggestion: err.suggestion } : {}),
+          retryable: isSre ? err.retry : false,
+        }),
+        { format: outputFormat, timing: opts.timing },
+      );
     } else {
       const error = err instanceof Error ? err : new Error(String(err));
-      console.error(JSON.stringify({ error: { code: 'CONTEXT_EXPORT_FAILED', message: error.message, retry: false } }, null, 2));
+      process.stderr.write(formatter.error(error) + '\n');
     }
     process.exitCode = exitCodeForError(err);
   }

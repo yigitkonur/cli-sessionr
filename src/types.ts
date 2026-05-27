@@ -272,6 +272,8 @@ export interface ReadOptions {
   page?: number;
   includeSummary?: boolean;
   batch?: string;
+  /** Phase 1 carry-forward: forwarded from cli.ts so meta.timing_ms appears. */
+  timing?: boolean;
 }
 
 // ── Job Types (Write Path) ─────────────────────────────────────────────────

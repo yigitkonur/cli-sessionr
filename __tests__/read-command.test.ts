@@ -48,28 +48,45 @@ function makeSession(messages: NormalizedMessage[]): NormalizedSession {
   };
 }
 
+// Phase 2: read command now routes JSON envelopes (success + failure) through
+// emit() → process.stdout.write, not console.log/console.error. Capture stdout
+// directly so the test reflects the live IO contract.
+function captureStdout(): { chunks: string[]; restore: () => void } {
+  const chunks: string[] = [];
+  const spy = vi
+    .spyOn(process.stdout, 'write')
+    .mockImplementation(((chunk: unknown) => {
+      chunks.push(typeof chunk === 'string' ? chunk : String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+  return { chunks, restore: () => spy.mockRestore() };
+}
+
 describe('readCommand validation', () => {
-  let logSpy: ReturnType<typeof vi.spyOn>;
-  let errorSpy: ReturnType<typeof vi.spyOn>;
+  let stdout: ReturnType<typeof captureStdout>;
 
   beforeEach(() => {
     process.exitCode = undefined;
-    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    stdout = captureStdout();
     vi.mocked(loadSession).mockResolvedValue(makeSession([makeMessage(1), makeMessage(2)]));
   });
 
   afterEach(() => {
-    logSpy?.mockRestore();
-    errorSpy?.mockRestore();
+    stdout.restore();
     vi.clearAllMocks();
     process.exitCode = undefined;
   });
 
+  function parseEnvelope(): Record<string, unknown> {
+    return JSON.parse(stdout.chunks.join(''));
+  }
+
   it('returns INVALID_TOKEN_BUDGET for non-positive tokens', async () => {
     await readCommand('sess-test', undefined, undefined, { output: 'json', tokens: 0 });
 
-    const body = JSON.parse(errorSpy.mock.calls[0][0] as string);
+    const body = parseEnvelope() as { ok: boolean; schema_version: string; error: { code: string } };
+    expect(body.ok).toBe(false);
+    expect(body.schema_version).toBe('v2');
     expect(body.error.code).toBe('INVALID_TOKEN_BUDGET');
     expect(process.exitCode).toBe(EXIT.USAGE);
   });
@@ -77,7 +94,11 @@ describe('readCommand validation', () => {
   it('returns INVALID_ROLE for unknown roles before slicing', async () => {
     await readCommand('sess-test', undefined, undefined, { output: 'json', role: 'user,banana' });
 
-    const body = JSON.parse(errorSpy.mock.calls[0][0] as string);
+    const body = parseEnvelope() as {
+      ok: boolean;
+      error: { code: string; detail: { unknown: string[]; valid: string[] } };
+    };
+    expect(body.ok).toBe(false);
     expect(body.error.code).toBe('INVALID_ROLE');
     expect(body.error.detail.unknown).toEqual(['banana']);
     expect(body.error.detail.valid).toEqual(['user', 'assistant', 'system', 'tool_use', 'tool_result']);
@@ -87,7 +108,7 @@ describe('readCommand validation', () => {
   it('returns INVALID_ANCHOR for unknown anchors', async () => {
     await readCommand('sess-test', undefined, undefined, { output: 'json', anchor: 'sideways' });
 
-    const body = JSON.parse(errorSpy.mock.calls[0][0] as string);
+    const body = parseEnvelope() as { error: { code: string } };
     expect(body.error.code).toBe('INVALID_ANCHOR');
     expect(process.exitCode).toBe(EXIT.USAGE);
   });
@@ -95,7 +116,7 @@ describe('readCommand validation', () => {
   it('requires --search with --anchor search', async () => {
     await readCommand('sess-test', undefined, undefined, { output: 'json', anchor: 'search' });
 
-    const body = JSON.parse(errorSpy.mock.calls[0][0] as string);
+    const body = parseEnvelope() as { error: { code: string } };
     expect(body.error.code).toBe('INVALID_ANCHOR_USAGE');
     expect(process.exitCode).toBe(EXIT.USAGE);
   });
@@ -108,7 +129,13 @@ describe('readCommand validation', () => {
 
     await readCommand('sess-test', undefined, undefined, { output: 'json', tokens: 200 });
 
-    const body = JSON.parse(logSpy.mock.calls[0][0] as string);
+    const body = parseEnvelope() as {
+      ok: boolean;
+      schema_version: string;
+      meta: { partial?: boolean; has_more_after?: boolean; has_more_before?: boolean };
+    };
+    expect(body.ok).toBe(true);
+    expect(body.schema_version).toBe('v2');
     expect(body.meta.partial).toBe(true);
     expect(body.meta.has_more_after || body.meta.has_more_before).toBe(true);
     expect(process.exitCode).toBe(EXIT.PARTIAL);

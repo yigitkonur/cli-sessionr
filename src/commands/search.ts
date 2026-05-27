@@ -1,8 +1,16 @@
 import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
-import { exitCodeForError } from '../errors.js';
+import { success, failure } from '../output/envelope.js';
+import { emit } from '../output/emit.js';
+import { exitCodeForError, SessionReaderError } from '../errors.js';
 import { cmdPrefix } from '../util/invocation.js';
-import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
+import type {
+  SessionSource,
+  OutputFormat,
+  SessionListEntry,
+  V2Action,
+  V2Meta,
+} from '../types.js';
 
 interface SearchMatch {
   messageIndex: number;
@@ -54,10 +62,11 @@ export async function searchCommand(
     cwd?: string;
     json?: boolean;
     output?: OutputFormat;
+    timing?: boolean;
   },
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
-  const outputFormat = opts.output ?? (opts.json ? 'json' : (isTTY ? 'text' : 'json'));
+  const outputFormat: OutputFormat = opts.output ?? (opts.json ? 'json' : (isTTY ? 'text' : 'json'));
   const formatter = createFormatter({
     output: opts.output,
     json: opts.json,
@@ -94,28 +103,28 @@ export async function searchCommand(
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
       const prefix = cmdPrefix();
-      const actions: Array<{ command: string; description: string }> = [];
+      const actions: V2Action[] = [];
       if (topResults.length > 0) {
-        actions.push(
-          { command: `${prefix} read ${topResults[0].id} --search "${opts.query}" --tokens 4000`, description: 'Read top match with context' },
-        );
+        actions.push({
+          command: `${prefix} read ${topResults[0].id} --search "${opts.query}" --tokens 4000`,
+          description: 'Read top match with context',
+        });
       }
       if (allEntries.length > maxSessions) {
-        actions.push(
-          { command: `${prefix} search -q "${opts.query}" --max-sessions ${maxSessions + 20}`, description: 'Search more sessions' },
-        );
+        actions.push({
+          command: `${prefix} search -q "${opts.query}" --max-sessions ${maxSessions + 20}`,
+          description: 'Search more sessions',
+        });
       }
 
       const result: Record<string, unknown> = {
-        api_version: 1,
         query: opts.query,
         sessions_scanned: entries.length,
-        sessions_available: allEntries.length,
         results: topResults.map((r) => ({
           id: r.id,
           source: r.source,
           cwd: r.cwd,
-          updatedAt: r.updatedAt,
+          updatedAt: r.updatedAt instanceof Date ? r.updatedAt.toISOString() : r.updatedAt,
           summary: r.summary,
           match_count: r.matchCount,
           matches: r.matches.map((match) => ({
@@ -125,20 +134,39 @@ export async function searchCommand(
           })),
         })),
         total_matches: topResults.length,
-        actions,
       };
-      console.log(JSON.stringify(result, dateReplacer, 2));
+
+      const meta: V2Meta = {
+        sessions_available: allEntries.length,
+        top,
+        max_sessions: maxSessions,
+      };
+
+      emit(success(result, { meta, actions }), {
+        format: outputFormat,
+        timing: opts.timing,
+      });
     } else {
-      console.log(formatter.list(topResults));
+      process.stdout.write(formatter.list(topResults) + '\n');
     }
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    console.error(formatter.error(error));
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const isSre = err instanceof SessionReaderError;
+      emit(
+        failure({
+          class: isSre ? err.class : 'internal',
+          code: isSre ? err.code : 'SEARCH_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+          ...(isSre && Object.keys(err.detail).length > 0 ? { detail: err.detail } : {}),
+          ...(isSre && err.suggestion ? { suggestion: err.suggestion } : {}),
+          retryable: isSre ? err.retry : false,
+        }),
+        { format: outputFormat, timing: opts.timing },
+      );
+    } else {
+      const error = err instanceof Error ? err : new Error(String(err));
+      process.stderr.write(formatter.error(error) + '\n');
+    }
     process.exitCode = exitCodeForError(err);
   }
-}
-
-function dateReplacer(_key: string, value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString();
-  return value;
 }
