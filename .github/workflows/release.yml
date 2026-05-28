@@ -39,6 +39,14 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: 'pnpm'
 
+      # Node 22 ships npm 10.x, but npm's NATIVE OIDC trusted publishing
+      # (used by `npm publish` under semantic-release) requires npm >= 11.5.1.
+      # Without this, OIDC verifyConditions passes but the actual publish
+      # fails with ENEEDAUTH. Upgrade the global npm so trusted publishing
+      # works token-free.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@latest && npm --version
+
       - name: Install
         run: pnpm install --frozen-lockfile || pnpm install
 
@@ -51,10 +59,11 @@ jobs:
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # actions/setup-node writes .npmrc with ${NODE_AUTH_TOKEN}, so the
-          # npm CLI (used by @semantic-release/npm verifyConditions) needs this
-          # env var set in addition to NPM_TOKEN.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No NPM_TOKEN / NODE_AUTH_TOKEN on purpose: this package uses npm
+          # Trusted Publishing (OIDC). If a token were present, setup-node
+          # would write it into .npmrc and `npm publish` would prefer token
+          # auth (which hits 2FA/EOTP on this account). With no token + npm
+          # >= 11.5.1 + id-token:write, `npm publish` authenticates via OIDC
+          # and emits provenance natively.
           NPM_CONFIG_PROVENANCE: 'true'
         run: npx semantic-release
