@@ -14,9 +14,9 @@ export default defineConfig({
     // and running every file in parallel oversubscribes the box (EAGAIN /
     // empty stdout / timeouts). A small pool keeps the suite deterministic on
     // a single developer machine without serializing everything.
+    // Vitest 4 moved maxForks/minForks to the top-level maxWorkers/minWorkers.
     pool: 'forks',
-    poolOptions: {
-      forks: { maxForks: 4, minForks: 1 },
-    },
+    maxWorkers: 4,
+    minWorkers: 1,
   },
 });
