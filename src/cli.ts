@@ -120,6 +120,7 @@ Examples:
     await listCommand(resolveSource(source), {
       ...opts,
       output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -198,9 +199,18 @@ Examples:
       };
 
       if (!sessionId && !readOpts.batch) {
-        process.stderr.write('Error: <session-id> is required unless --batch is provided\n');
-        process.exitCode = 2;
-        return;
+        // HIGH-1 (adversarial review): was a raw stderr write + exit 2, which
+        // left JSON callers with empty stdout and no parseable error. Throw a
+        // SessionReaderError so the global catch routes it through
+        // emit(failure(...)) — v2 envelope on stdout, exit 2.
+        throw new SessionReaderError('A session-id is required unless --batch is provided', {
+          code: 'MISSING_ARGUMENT',
+          errorClass: 'validation',
+          exitCode: EXIT.USAGE,
+          detail: { argument: 'session-id' },
+          suggestion: 'sessionr read <id>   OR   sessionr read --batch <ids-file>',
+          retry: false,
+        });
       }
 
       // Phase 2 review carry-forward (NOTE): the legacy --if-changed
@@ -357,6 +367,7 @@ Examples:
       ...opts,
       source: resolveSource(opts.source),
       output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
     });
   });
 
@@ -621,7 +632,9 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
   const all = allCmds.filter((c) => !(c as unknown as Record<string, boolean>)._hidden || !PRIMARY.has(c.name())).map(mapCmd);
 
   return {
-    api_version: 1,
+    // MEDIUM-4 (adversarial review): dropped the legacy `api_version: 1` — the
+    // v2 envelope carries schema_version at the top level; the help `result`
+    // must not reintroduce the retired field. `version` (the CLI version) stays.
     version: PKG_VERSION,
     name: cmd.name(),
     description: cmd.description(),

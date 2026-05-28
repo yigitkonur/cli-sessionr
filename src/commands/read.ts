@@ -553,6 +553,22 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
   const rawBudget = opts.tokens ?? getDefaultTokenBudget();
   const tokenBudget = Math.min(rawBudget, MAX_CHUNK_BUDGET);
 
+  // HIGH-2 (adversarial review): validate --role ONCE up front. Previously the
+  // batch path split the roles raw and let filterByRole silently drop every
+  // message for an invalid role, yielding ok:true + empty messages with no
+  // error. validateRoles throws INVALID_ROLE; we emit it as a single JSONL
+  // error line (M5 framing) and stop — a bad role is a whole-batch usage error.
+  let validatedRoles: string[] | undefined;
+  if (opts.role) {
+    try {
+      validatedRoles = validateRoles(opts.role);
+    } catch (err) {
+      emitBatchError(err, 'READ_BATCH_FAILED');
+      process.exitCode = exitCodeForError(err);
+      return;
+    }
+  }
+
   // Emit a batch header as the first JSONL envelope so consumers can sanity-
   // check the run before unrolling individual session envelopes.
   emit(
@@ -560,39 +576,74 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
     { format: 'jsonl' },
   );
 
+  let anyError = false;
   for (const id of ids) {
-    const session = await loadSession(id, opts.source as SessionSource | undefined);
-    let messages = session.messages;
-    if (opts.role) {
-      const roles = opts.role.split(',').map((r) => r.trim());
-      messages = filterByRole(messages, roles);
+    // MEDIUM-5 (adversarial review): a missing session mid-batch used to throw
+    // out to the outer catch, which emitted a multi-line pretty-JSON failure
+    // AFTER the JSONL lines — an unparseable mixed stream. Now every session
+    // (success OR failure) is exactly one JSONL line and the batch continues.
+    try {
+      const session = await loadSession(id, opts.source as SessionSource | undefined);
+      let messages = session.messages;
+      if (validatedRoles) {
+        messages = filterByRole(messages, validatedRoles);
+      }
+
+      const result = sliceByTokenBudget(
+        messages,
+        tokenBudget,
+        session.id,
+        session.source,
+        (opts.search ? 'search' : (opts.anchor ?? 'head')) as 'head' | 'tail' | 'search',
+        opts.search,
+        preset,
+      );
+      let meta = injectNextAction(result.meta);
+      meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts.preset, detail });
+      meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
+
+      emitReadEnvelope({
+        session,
+        messages: result.messages,
+        meta,
+        summary: buildSessionSummary(session, tokenBudget, preset),
+        includeSummary: true,
+        outputFormat: 'jsonl',
+        timing: opts.timing,
+        preset,
+        detail,
+      });
+    } catch (err) {
+      anyError = true;
+      emitBatchError(err, 'SESSION_NOT_FOUND', { session_id: id });
     }
-
-    const result = sliceByTokenBudget(
-      messages,
-      tokenBudget,
-      session.id,
-      session.source,
-      (opts.search ? 'search' : (opts.anchor ?? 'head')) as 'head' | 'tail' | 'search',
-      opts.search,
-      preset,
-    );
-    let meta = injectNextAction(result.meta);
-    meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts.preset, detail });
-    meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
-
-    emitReadEnvelope({
-      session,
-      messages: result.messages,
-      meta,
-      summary: buildSessionSummary(session, tokenBudget, preset),
-      includeSummary: true,
-      outputFormat: 'jsonl',
-      timing: opts.timing,
-      preset,
-      detail,
-    });
   }
+
+  // If any session failed, surface a non-zero exit so scripted callers notice,
+  // while still having emitted a clean JSONL line for every id.
+  if (anyError && (process.exitCode === undefined || process.exitCode === 0)) {
+    process.exitCode = EXIT.NOT_FOUND;
+  }
+}
+
+/** Emit a single-line JSONL v2 failure envelope (keeps batch framing uniform). */
+function emitBatchError(err: unknown, fallbackCode: string, extraDetail?: Record<string, unknown>): void {
+  const isSre = err instanceof SessionReaderError;
+  const detail = {
+    ...(isSre && Object.keys(err.detail).length > 0 ? err.detail : {}),
+    ...(extraDetail ?? {}),
+  };
+  emit(
+    failure({
+      class: isSre ? err.class : 'internal',
+      code: isSre ? err.code : fallbackCode,
+      message: err instanceof Error ? err.message : String(err),
+      ...(Object.keys(detail).length > 0 ? { detail } : {}),
+      ...(isSre && err.suggestion ? { suggestion: err.suggestion } : {}),
+      retryable: isSre ? err.retry : false,
+    }),
+    { format: 'jsonl' },
+  );
 }
 
 // H6: callers may pass --preset AND --detail; --detail always wins. We

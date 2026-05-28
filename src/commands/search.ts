@@ -51,11 +51,25 @@ function findSearchMatches(
   return found;
 }
 
-function parseBoundedInt(value: string | undefined, fallback: number, min: number, max: number): number {
-  if (!value) return fallback;
-  const parsed = parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, parsed));
+// MEDIUM-6 (adversarial review): was a silent clamp (Math.min/Math.max) that
+// turned `--top 0` into 1 and `--max-sessions nope` into the default with
+// ok:true/exit 0. An agent passing a bad value got wrong-sized results and no
+// signal. Now strict: out-of-range or non-integer throws INVALID_RANGE (exit 2)
+// like the equivalent guard in list.ts.
+function parseBoundedIntStrict(flag: string, value: string | undefined, fallback: number, min: number, max: number): number {
+  if (value === undefined) return fallback;
+  const trimmed = typeof value === 'string' ? value.trim() : value;
+  const parsed = Number(trimmed);
+  if (trimmed === '' || !Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new SessionReaderError(`${flag}: must be an integer in [${min}, ${max}]`, {
+      code: 'INVALID_RANGE',
+      exitCode: EXIT.USAGE,
+      errorClass: 'validation',
+      detail: { argument: flag, provided: value, min, max },
+      suggestion: `sessionr search -q "<query>" ${flag} ${fallback}`,
+    });
+  }
+  return parsed;
 }
 
 export async function searchCommand(
@@ -92,8 +106,8 @@ export async function searchCommand(
       });
     }
 
-    const maxSessions = parseBoundedInt(opts.maxSessions, 20, 1, 200);
-    const top = parseBoundedInt(opts.top, 10, 1, 200);
+    const maxSessions = parseBoundedIntStrict('--max-sessions', opts.maxSessions, 20, 1, 200);
+    const top = parseBoundedIntStrict('--top', opts.top, 10, 1, 200);
     const allEntries = await listSessions(opts.source as SessionSource | undefined);
     const entries = allEntries.slice(0, maxSessions);
     const query = opts.query.toLowerCase();
@@ -146,7 +160,9 @@ export async function searchCommand(
           id: r.id,
           source: r.source,
           cwd: r.cwd,
-          updatedAt: r.updatedAt instanceof Date ? r.updatedAt.toISOString() : r.updatedAt,
+          // HIGH-3 (adversarial review): was camelCase `updatedAt` — the only
+          // non-snake_case key in the search result block. Match the contract.
+          updated_at: r.updatedAt instanceof Date ? r.updatedAt.toISOString() : r.updatedAt,
           summary: r.summary,
           match_count: r.matchCount,
           // it/08: top-level snippet preview (50 chars before + match + 50 chars after).

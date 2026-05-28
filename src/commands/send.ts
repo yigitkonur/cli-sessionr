@@ -206,20 +206,17 @@ export async function sendCommand(
     // the exact `{bin, args, cwd}` it would launch without side effects.
     // The result is a normal v2 success envelope with `result.dry_run: true`.
     if (opts.dryRun) {
+      // L8 (adversarial review): forward --timing here too (was omitted).
       emit(
-        {
-          ok: true,
-          schema_version: 'v2' as const,
-          result: {
-            dry_run: true,
-            would_spawn: { bin: cmd.bin, args: cmd.args, cwd },
-            source,
-            session_id: resolvedSessionId,
-            is_new_session: isNew,
-            max_new_per_run: maxNew,
-          },
-        },
-        { format },
+        success({
+          dry_run: true,
+          would_spawn: { bin: cmd.bin, args: cmd.args, cwd },
+          source,
+          session_id: resolvedSessionId,
+          is_new_session: isNew,
+          max_new_per_run: maxNew,
+        }),
+        { format, timing: opts.timing },
       );
       return;
     }

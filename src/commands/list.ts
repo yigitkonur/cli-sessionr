@@ -2,6 +2,7 @@ import { listSessionsScoped, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
+import { toExternal } from '../output/serialize.js';
 import { EXIT, exitCodeForError, SessionReaderError } from '../errors.js';
 import { cmdPrefix } from '../util/invocation.js';
 import type { SessionSource, OutputFormat, SessionListEntry, V2Meta } from '../types.js';
@@ -250,8 +251,9 @@ export async function listCommand(
 }
 
 function serializeEntry(entry: SessionListEntry): Record<string, unknown> {
-  return {
-    ...entry,
-    updatedAt: entry.updatedAt instanceof Date ? entry.updatedAt.toISOString() : entry.updatedAt,
-  };
+  // HIGH-3 (adversarial review): the old `...entry` spread leaked camelCase
+  // keys (updatedAt, filePath, isEmpty) into the v2 envelope on the highest-
+  // traffic read path. toExternal() snake_cases them (updated_at, file_path,
+  // is_empty) and ISO-encodes the Date in one pass.
+  return toExternal(entry) as Record<string, unknown>;
 }
