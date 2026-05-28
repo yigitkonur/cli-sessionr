@@ -228,10 +228,17 @@ export interface SliceMeta {
     resume_async: string;
     direct: string | null;
     verified: boolean;
+    /** it/12: true when the spawn binary for `source` is actually on PATH. */
+    runtime_bin_available?: boolean;
     tip: string;
   };
   detail_hint?: {
     current_preset: string;
+    /** it/06: estimated tokens for the CURRENT preset (so agents can compare
+     * against upgrade_options without re-summing). */
+    current_estimated_tokens?: number;
+    /** it/06: true when the current preset's render fits inside token_budget. */
+    current_will_fit_in_budget?: boolean;
     hidden_tool_calls: number;
     truncated_results: number;
     thinking_hidden: boolean;

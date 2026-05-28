@@ -31,7 +31,7 @@ export function createJsonlFormatter(): Formatter {
       messages: NormalizedMessage[],
       from: number,
       to: number,
-      _preset: VerbosityPreset,
+      preset: VerbosityPreset,
       meta?: SliceMeta,
     ): string {
       const lines: string[] = [];
@@ -44,11 +44,14 @@ export function createJsonlFormatter(): Formatter {
       };
       lines.push(line({ type: 'meta', ...metaObj }));
 
+      // oc/12: pass the preset through so verbose/full callers get `blocks`
+      // and minimal/standard callers get `content` — never both. Without
+      // this the JSONL stream paid ~2x bytes for every tool_result message.
       for (const m of messages) {
         lines.push(
           line({
             type: 'message',
-            ...serializeMessage(m),
+            ...serializeMessage(m, { preset: preset.name }),
           }),
         );
       }

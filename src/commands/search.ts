@@ -2,7 +2,7 @@ import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
-import { exitCodeForError, SessionReaderError } from '../errors.js';
+import { EXIT, exitCodeForError, SessionReaderError } from '../errors.js';
 import { cmdPrefix } from '../util/invocation.js';
 import type {
   SessionSource,
@@ -21,19 +21,24 @@ interface SearchMatch {
 interface SearchResult extends SessionListEntry {
   matchCount: number;
   matches: SearchMatch[];
+  /** it/08: a single quick-preview snippet so callers don't have to drill into matches[]. */
+  snippet?: string;
 }
 
 function findSearchMatches(
   messages: { index: number; content: string }[],
   query: string,
   maxMatches = 5,
-  snippetRadius = 60,
+  snippetRadius = 50,
 ): SearchMatch[] {
   const lowerQuery = query.toLowerCase();
   const found: SearchMatch[] = [];
   for (const msg of messages) {
     const idx = msg.content.toLowerCase().indexOf(lowerQuery);
     if (idx === -1) continue;
+    // it/08: snippet = ~50 chars before + match + ~50 chars after, with
+    // whitespace collapsed and ellipses for trimmed edges so it stays one
+    // line in tools that don't word-wrap.
     const from = Math.max(0, idx - snippetRadius);
     const to = Math.min(msg.content.length, idx + query.length + snippetRadius);
     const snippet =
@@ -74,6 +79,19 @@ export async function searchCommand(
   });
 
   try {
+    // search-without-query validation: commander already enforces `-q` is
+    // present (requiredOption) but accepts empty strings, which would scan
+    // every session and return every result. Reject those upfront.
+    if (typeof opts.query !== 'string' || opts.query.trim() === '') {
+      throw new SessionReaderError('search requires a non-empty --query', {
+        code: 'INVALID_QUERY',
+        errorClass: 'validation',
+        exitCode: EXIT.USAGE,
+        detail: { provided: opts.query ?? null },
+        suggestion: `${cmdPrefix()} search -q "deploy failed"`,
+      });
+    }
+
     const maxSessions = parseBoundedInt(opts.maxSessions, 20, 1, 200);
     const top = parseBoundedInt(opts.top, 10, 1, 200);
     const allEntries = await listSessions(opts.source as SessionSource | undefined);
@@ -87,10 +105,14 @@ export async function searchCommand(
         const matchingMessages = session.messages.filter((msg) => msg.content.toLowerCase().includes(query));
         const matchCount = matchingMessages.length;
         if (matchCount > 0) {
+          const matches = findSearchMatches(session.messages, opts.query);
           results.push({
             ...entry,
             matchCount,
-            matches: findSearchMatches(session.messages, opts.query),
+            matches,
+            // it/08: hoist the first match as a top-level snippet so callers
+            // can preview results without walking matches[].
+            snippet: matches[0]?.snippet,
           });
         }
       } catch {
@@ -127,6 +149,8 @@ export async function searchCommand(
           updatedAt: r.updatedAt instanceof Date ? r.updatedAt.toISOString() : r.updatedAt,
           summary: r.summary,
           match_count: r.matchCount,
+          // it/08: top-level snippet preview (50 chars before + match + 50 chars after).
+          snippet: r.snippet,
           matches: r.matches.map((match) => ({
             message_index: match.messageIndex,
             snippet: match.snippet,

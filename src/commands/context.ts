@@ -7,6 +7,7 @@ import { SessionReaderError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getDefaultTokenBudget } from '../config.js';
+import { resolveSource } from '../utils/validate.js';
 import type { SessionSource, OutputFormat, NormalizedMessage, V2Action } from '../types.js';
 
 export async function contextExportCommand(
@@ -17,6 +18,10 @@ export async function contextExportCommand(
     includeSystemPrompt?: boolean;
     includeToolResults?: boolean;
     format?: 'messages' | 'summary';
+    /** M4: when set, the cross-tool resume hint targets this source instead
+     * of the session's original source — so an agent can hand a Claude
+     * session off to Codex/Gemini/etc. without rewriting the suggestion. */
+    targetSource?: string;
     output?: OutputFormat;
     json?: boolean;
     timing?: boolean;
@@ -97,11 +102,37 @@ export async function contextExportCommand(
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
       const prefix = cmdPrefix();
+      // M4: cross-tool handoff. If the caller asked for --target-source <X>,
+      // suggest spawning the new session on X (validated alias-aware) while
+      // keeping the original session's resume path intact. Otherwise default
+      // to the original source.
+      const targetSource = resolveSource(opts.targetSource) ?? session.source;
+      const isCrossTool = targetSource !== session.source;
+      const resumeCmd = `${prefix} send --new --source ${targetSource} -f prompt.md`;
+      const sameToolResume = `${prefix} send ${session.id} -f prompt.md --source ${session.source}`;
       const actions: V2Action[] = [
-        { command: `${prefix} send --new --source ${session.source} -f prompt.md`, description: 'Start new session with this context' },
+        {
+          command: resumeCmd,
+          description: isCrossTool
+            ? `Hand off to ${targetSource} as a new session`
+            : 'Start a new session with this context',
+        },
+        { command: sameToolResume, description: `Resume in original tool (${session.source})` },
         { command: `${prefix} read ${session.id} --tokens 4000`, description: 'Read full session messages' },
       ];
-      emit(success(result, { actions }), {
+
+      const nextAction = {
+        resume: resumeCmd,
+        target_source: targetSource,
+        original_source: session.source,
+        cross_tool: isCrossTool,
+        read: `${prefix} read ${session.id} --tokens 4000`,
+        tip: isCrossTool
+          ? `Cross-tool handoff: paste current_task + active_files into prompt.md, then run resume to spawn a ${targetSource} session.`
+          : 'Write your prompt to prompt.md, then run resume to spawn a new session with this context.',
+      };
+
+      emit(success(result, { meta: { next_action: nextAction }, actions }), {
         format: outputFormat,
         timing: opts.timing,
       });

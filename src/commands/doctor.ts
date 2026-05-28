@@ -87,19 +87,57 @@ export async function doctorCommand(opts?: {
       warnings.push('zed: zstd support unavailable; compressed Zed messages cannot be parsed');
     }
 
+    // dc/07: examples so agents reading doctor output can self-discover the
+    // canonical next commands without re-fetching `--help`. These mirror the
+    // examples in cli.ts so the two stay in sync visually.
+    const examples = [
+      { command: 'sessionr list --cwd all', description: 'List sessions across all directories' },
+      { command: 'sessionr read <id> --tokens 4000', description: 'Read first page of a session' },
+      { command: 'sessionr search -q "deploy"', description: 'Find sessions by content' },
+      { command: 'sessionr send <id> -f prompt.md --async', description: 'Resume a session in the background' },
+      { command: 'sessionr context <id> --tokens 8000', description: 'Export context for cross-tool handoff' },
+    ];
+
+    const usableSources = sources.filter((s) => s.session_count > 0).map((s) => s.name);
+    const missingBins = sources.filter((s) => !s.spawn_bin_resolvable).map((s) => s.name);
+
     const result = {
       node_version: process.version,
       sessionr_version: SESSIONR_VERSION,
       cwd: process.cwd(),
       sources,
+      // dc/07: surface high-leverage follow-ups inside the result so callers
+      // that only read `.result` (not `.actions`) still see them.
+      examples,
       ...(warnings.length > 0 ? { warnings } : {}),
     };
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
-      emit(success(result, { meta: { cwd: process.cwd() } }), {
-        format: outputFormat,
-        timing: opts?.timing,
-      });
+      const actions = [
+        ...(usableSources.length > 0
+          ? [{
+              command: `sessionr list ${usableSources[0]}`,
+              description: `List sessions from ${usableSources[0]} (has ${sources.find((s) => s.name === usableSources[0])?.session_count ?? 0} sessions)`,
+            }]
+          : []),
+        { command: 'sessionr list --cwd all', description: 'List sessions across every directory' },
+        { command: 'sessionr help --output json', description: 'Full machine-readable command help' },
+      ];
+      const nextAction = {
+        list: 'sessionr list --cwd all',
+        help: 'sessionr help --output json',
+        tip:
+          missingBins.length > 0
+            ? `Spawn binaries missing for: ${missingBins.join(', ')}. Install before sessionr send to those sources.`
+            : 'All spawn binaries on PATH. Use sessionr send <id> --async for long-running resume.',
+      };
+      emit(
+        success(result, { meta: { cwd: process.cwd(), next_action: nextAction }, actions }),
+        {
+          format: outputFormat,
+          timing: opts?.timing,
+        },
+      );
     } else {
       // Text path retained verbatim from v2.9; full text polish is Phase 3.
       process.stdout.write(formatText(sources, warnings) + '\n');

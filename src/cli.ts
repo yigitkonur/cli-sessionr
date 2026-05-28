@@ -103,6 +103,7 @@ program
   .option('-n, --limit <n>', 'Max sessions to list', '20')
   .option('--offset <n>', 'Skip first N sessions (for pagination)', '0')
   .option('-q, --search <query>', 'Search sessions by content')
+  .option('--max-sessions <n>', 'Max sessions to scan for --search (default 50, max 200)', '50')
   .option('--cwd <mode>', 'Filter by cwd: auto | current | all | <path>', 'auto')
   .option('--json', '[deprecated] Use --output json')
   .addHelpText('after', `
@@ -110,8 +111,9 @@ Examples:
   $ sessionr list                               # recent sessions
   $ sessionr list claude -n 5                   # 5 most recent Claude sessions
   $ sessionr list -q "deploy script"            # search across recent sessions
-  $ sessionr list --output json | jq '.sessions[].id'`)
-  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; json?: boolean }) => {
+  $ sessionr list -q "deploy" --max-sessions 100
+  $ sessionr list --output json | jq '.result.sessions[].id'`)
+  .action(async (source: string | undefined, opts: { limit?: string; offset?: string; search?: string; maxSessions?: string; cwd?: string; json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
     await listCommand(resolveSource(source), {
@@ -124,6 +126,11 @@ program
   .command('doctor')
   .description('Diagnose session source setup')
   .option('--json', '[deprecated] Use --output json')
+  .addHelpText('after', `
+Examples:
+  $ sessionr doctor                             # diagnose all sources + spawn bins
+  $ sessionr doctor --output json | jq '.result.sources'
+  $ sessionr doctor --output json | jq '.result.warnings // empty'`)
   .action(async (opts: { json?: boolean }) => {
     warnDeprecatedJson(opts.json);
     const parentOpts = program.opts();
@@ -195,20 +202,19 @@ Examples:
         return;
       }
 
-      if (readOpts.ifChanged && sessionId) {
-        const { loadSession } = await import('./discovery.js');
-        const { computeETag } = await import('./etag.js');
-        try {
-          const s = await loadSession(sessionId, readOpts.source as import('./types.js').SessionSource | undefined);
-          const etag = computeETag(s);
-          if (etag === readOpts.ifChanged) {
-            process.exitCode = 42;
-            return;
-          }
-        } catch {
-          // proceed normally if session load fails
-        }
-      }
+      // Phase 2 review carry-forward (NOTE): the legacy --if-changed
+      // short-circuit that previously lived here was deleted. The real
+      // etag check happens inside readCommand (see emitUnchanged() in
+      // src/commands/read.ts) and uses the view-aware etag that encodes
+      // preset/budget/range/anchor/search/page/format — the legacy block
+      // computed the session-level etag without those parameters, so it
+      // could short-circuit a different *view* of the same session even
+      // though the response would have differed. It also performed a
+      // wasted loadSession() on every --if-changed call. Removed.
+      //
+      // er/07: any error raised inside the etag path now surfaces through
+      // the normal SessionReaderError envelope in readCommand instead of
+      // being swallowed by the catch{} that used to live here.
 
       // Forward parent --timing into read so meta.timing_ms appears in the
       // v2 envelope. Phase 1 carry-forward.
@@ -365,12 +371,20 @@ program
   .option('--cwd <dir>', 'Working directory (default: current)')
   .option('--tokens <n>', 'Token budget for response')
   .option('-p, --preset <name>', SEND_PRESET_HELP, 'standard')
+  // ds/02: --dry-run prints the {bin, args, cwd} that WOULD be spawned and
+  // exits — no child process is launched, no session file is touched.
+  .option('--dry-run', 'Print the spawn plan and exit (no child process)')
+  // ds/02: cap accidental fan-out of brand-new sessions. Default 1.
+  .option('--max-new-per-run <n>', 'Cap on new sessions per invocation (default: 1)')
+  // ds/03: configurable slop window for detectNewSession. Default 2000 ms.
+  .option('--detect-timeout-ms <n>', 'Slop window (ms) for new-session detection (default: 2000)')
   .addHelpText('after', `
 Examples:
   $ sessionr send 8e46722b -m "follow up"       # resume sync
   $ sessionr send 8e46722b -f prompt.md         # resume from file
   $ sessionr send --new -s claude -f prompt.md  # new session
-  $ sessionr send 8e46722b -m "go" --async      # background job`)
+  $ sessionr send 8e46722b -m "go" --async      # background job
+  $ sessionr send 8e46722b -m "hi" --dry-run    # print spawn plan, no exec`)
   .action(
     async (
       sessionId: string | undefined,
@@ -383,13 +397,20 @@ Examples:
         cwd?: string;
         tokens?: string;
         preset?: string;
+        dryRun?: boolean;
+        maxNewPerRun?: string;
+        detectTimeoutMs?: string;
       },
     ) => {
       // oc/05: pass message + file through unvalidated. sendCommand resolves
       // them AFTER the formatter is initialised so JSON callers get a v2
       // envelope on stdout instead of raw text on stderr.
       const parentOpts = program.opts();
-      const sendOpts: SendOptions = {
+      // SendOptions intentionally omits dryRun/maxNewPerRun/detectTimeoutMs
+      // (those are Phase 3 extensions kept local to send.ts via SendOptionsX
+      // so we don't touch src/types.ts). The assertion narrows back to a
+      // shape send.ts knows.
+      const sendOpts = {
         message: opts.message,
         file: opts.file,
         source: resolveSource(opts.source),
@@ -399,7 +420,10 @@ Examples:
         tokens: parseOptionalBounded('--tokens', opts.tokens, 1),
         preset: opts.preset,
         output: parentOpts.output as OutputFormat | undefined,
-      };
+        dryRun: opts.dryRun,
+        maxNewPerRun: parseOptionalBounded('--max-new-per-run', opts.maxNewPerRun, 0),
+        detectTimeoutMs: parseOptionalBounded('--detect-timeout-ms', opts.detectTimeoutMs, 1),
+      } as SendOptions;
       await sendCommand(sessionId, sendOpts);
     },
   );
@@ -413,11 +437,13 @@ program
   .option('--include-system-prompt', 'Include system messages')
   .option('--include-tool-results', 'Include tool results')
   .option('--format <fmt>', 'Output format: messages or summary', 'messages')
+  .option('--target-source <source>', `Cross-tool handoff target (${SOURCES})`)
   .addHelpText('after', `
 Examples:
   $ sessionr context 8e46722b --tokens 8000     # export handoff context
   $ sessionr context 8e46722b --format summary  # compact summary
-  $ sessionr context 8e46722b --include-tool-results`)
+  $ sessionr context 8e46722b --include-tool-results
+  $ sessionr context 8e46722b --target-source codex  # hand off to codex`)
   .action(
     async (
       sessionId: string,
@@ -427,6 +453,7 @@ Examples:
         includeSystemPrompt?: boolean;
         includeToolResults?: boolean;
         format?: string;
+        targetSource?: string;
       },
     ) => {
       const parentOpts = program.opts();
@@ -435,6 +462,7 @@ Examples:
         tokens: parseOptionalBounded('--tokens', opts.tokens, 1),
         includeSystemPrompt: opts.includeSystemPrompt,
         includeToolResults: opts.includeToolResults,
+        targetSource: opts.targetSource,
         format: opts.format as 'messages' | 'summary' | undefined,
         output: parentOpts.output as OutputFormat | undefined,
         timing: Boolean(parentOpts.timing),
@@ -640,6 +668,19 @@ try {
       const parentOpts = program.opts();
       const format = (parentOpts.output as OutputFormat | undefined) ?? 'json';
       const msg = err.message.replace(/^error:\s*/i, '');
+      // er/11: derive a suggestion from the error code or the message.
+      // Commander includes a "Did you mean X?" line for typo'd flags; surface
+      // it directly. For known codes (unknown-option, missing-argument), add
+      // a hint that points at `sessionr --output json help`.
+      let suggestion: string | undefined;
+      const didYouMean = msg.match(/\(Did you mean.*?\)/);
+      if (didYouMean) {
+        suggestion = didYouMean[0].replace(/^\(|\)$/g, '');
+      } else if (err.code === 'commander.unknownOption' || err.code === 'commander.unknownCommand') {
+        suggestion = 'sessionr --output json help    # list valid commands and options';
+      } else if (err.code === 'commander.missingArgument' || err.code === 'commander.missingMandatoryOptionValue') {
+        suggestion = 'sessionr <command> --help     # show required arguments';
+      }
       const { failure } = await import('./output/envelope.js');
       const { emit } = await import('./output/emit.js');
       emit(
@@ -647,6 +688,8 @@ try {
           class: 'validation',
           code: 'USAGE_ERROR',
           message: msg,
+          ...(suggestion ? { suggestion } : {}),
+          detail: { commander_code: err.code },
           retryable: false,
         }),
         { format, timing: Boolean(parentOpts.timing) },

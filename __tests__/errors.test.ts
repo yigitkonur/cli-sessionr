@@ -23,6 +23,7 @@ describe('SessionReaderError', () => {
   it('has structured fields', () => {
     const err = new SessionReaderError('test', {
       code: 'TEST',
+      errorClass: 'validation',
       exitCode: EXIT.USAGE,
       detail: { foo: 'bar' },
       suggestion: 'do something',
@@ -35,15 +36,11 @@ describe('SessionReaderError', () => {
     expect(err.retry).toBe(true);
   });
 
-  it('defaults class to "internal" when errorClass is not provided', () => {
-    const err = new SessionReaderError('x');
-    expect(err.class).toBe('internal');
-  });
-
-  it('accepts an errorClass option and sets the class field', () => {
+  it('sets the class field from the required errorClass option (Phase 3 er/03)', () => {
     const err = new SessionReaderError('bad input', {
       code: 'INVALID',
       errorClass: 'validation',
+      exitCode: EXIT.USAGE,
     });
     expect(err.class).toBe('validation');
   });
@@ -51,6 +48,8 @@ describe('SessionReaderError', () => {
   it('toJSON produces machine-readable object', () => {
     const err = new SessionReaderError('oops', {
       code: 'FAIL',
+      errorClass: 'internal',
+      exitCode: EXIT.ERROR,
       detail: { x: 1 },
       suggestion: 'fix it',
     });
@@ -63,7 +62,11 @@ describe('SessionReaderError', () => {
   });
 
   it('toJSON omits empty detail', () => {
-    const err = new SessionReaderError('msg', { code: 'X' });
+    const err = new SessionReaderError('msg', {
+      code: 'X',
+      errorClass: 'internal',
+      exitCode: EXIT.ERROR,
+    });
     const json = err.toJSON();
     expect(json.detail).toBeUndefined();
   });

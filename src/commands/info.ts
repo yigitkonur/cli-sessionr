@@ -45,14 +45,23 @@ export async function infoCommand(
         duration_ms: session.stats.durationMs,
       };
       const actions: V2Action[] = [
-        { command: `${prefix} read ${session.id}`, description: 'Read session messages' },
+        { command: `${prefix} read ${session.id} --tokens 4000`, description: 'Read session messages (first page)' },
         { command: `${prefix} stats ${session.id}`, description: 'Full statistics (tools, tokens, files)' },
         { command: `${prefix} send ${session.id} -f prompt.md --source ${session.source}`, description: 'Resume session' },
         { command: `${prefix} context ${session.id} --tokens 8000`, description: 'Export context for agent handoff' },
         { command: `${prefix} tag ${session.id} --add important`, description: 'Tag this session' },
         { command: `${prefix} prune --older-than 7d --dry-run`, description: 'Preview cleanup of old sessions' },
       ];
-      emit(success({ session: sessionPayload }, { actions }), {
+      // it/07: agents asking for cheap metadata almost always want the next
+      // read; surface the canonical follow-up command on meta so they don't
+      // have to scan actions[].
+      const nextAction = {
+        read: `${prefix} read ${session.id} --tokens 4000`,
+        stats: `${prefix} stats ${session.id}`,
+        resume: `${prefix} send ${session.id} -f prompt.md --source ${session.source}`,
+        tip: 'info is metadata only; use read for messages and stats for tool/file usage.',
+      };
+      emit(success({ session: sessionPayload }, { meta: { next_action: nextAction }, actions }), {
         format: outputFormat,
         timing: opts.timing,
       });

@@ -2,17 +2,53 @@ import { listSessionsScoped, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
-import { exitCodeForError, SessionReaderError } from '../errors.js';
+import { EXIT, exitCodeForError, SessionReaderError } from '../errors.js';
 import { cmdPrefix } from '../util/invocation.js';
 import type { SessionSource, OutputFormat, SessionListEntry, V2Meta } from '../types.js';
 
 const SOURCES_LIST = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed', 'factory'];
 
-function parseBoundedInt(value: string | undefined, fallback: number, min: number, max: number): number {
-  if (!value) return fallback;
-  const parsed = parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, parsed));
+// dc/06: strict numeric validation for --limit / --offset. Reject anything
+// outside [min,max] with INVALID_RANGE so callers see a clean envelope-coded
+// error instead of being silently clamped (which silently produced wrong-sized
+// pages and broke downstream pagination math).
+function parseBoundedIntStrict(
+  flag: string,
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  if (value === undefined) return fallback;
+  if (typeof value === 'string' && value.trim() === '') {
+    throw new SessionReaderError(`${flag}: must be an integer in [${min}, ${max}]`, {
+      code: 'INVALID_RANGE',
+      exitCode: EXIT.USAGE,
+      errorClass: 'validation',
+      detail: { argument: flag, provided: value, min, max },
+      suggestion: `sessionr list ${flag} 20`,
+    });
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) {
+    throw new SessionReaderError(`${flag}: must be an integer in [${min}, ${max}]`, {
+      code: 'INVALID_RANGE',
+      exitCode: EXIT.USAGE,
+      errorClass: 'validation',
+      detail: { argument: flag, provided: value, min, max },
+      suggestion: `sessionr list ${flag} 20`,
+    });
+  }
+  if (parsed < min || parsed > max) {
+    throw new SessionReaderError(`${flag}: ${parsed} out of range [${min}, ${max}]`, {
+      code: 'INVALID_RANGE',
+      exitCode: EXIT.USAGE,
+      errorClass: 'validation',
+      detail: { argument: flag, provided: parsed, min, max },
+      suggestion: `sessionr list ${flag} 20`,
+    });
+  }
+  return parsed;
 }
 
 /**
@@ -46,8 +82,8 @@ export async function listCommand(
   });
 
   try {
-    const limit = parseBoundedInt(opts?.limit, 20, 1, 1000);
-    const offset = parseBoundedInt(opts?.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+    const limit = parseBoundedIntStrict('--limit', opts?.limit, 20, 0, 1000);
+    const offset = parseBoundedIntStrict('--offset', opts?.offset, 0, 0, 1000);
 
     // Resolve cwd scope mode. Accept `auto|current|all|<path>` and forward
     // unchanged to listSessionsScoped() — discovery.ts owns the semantics.
@@ -60,11 +96,18 @@ export async function listCommand(
     allEntries = allEntries.filter((e) => !e.isEmpty);
 
     // Content search across sessions
+    // it/09: surface scanned_sessions + search_truncated on meta so agents
+    // never wonder why a list-q only returned N — the response now carries
+    // the cap and whether more sessions exist than were searched.
     let searchMeta: Record<string, unknown> | undefined;
+    let searchTruncated = false;
+    let scannedSessions = 0;
     if (opts?.search) {
       const query = opts.search.toLowerCase();
-      const maxSessions = parseBoundedInt(opts.maxSessions, 50, 1, 200);
+      const maxSessions = parseBoundedIntStrict('--max-sessions', opts.maxSessions, 50, 1, 200);
       const searchableEntries = allEntries.slice(0, maxSessions);
+      scannedSessions = searchableEntries.length;
+      searchTruncated = allEntries.length > searchableEntries.length;
       const matched: typeof allEntries = [];
       for (const entry of searchableEntries) {
         try {
@@ -79,9 +122,10 @@ export async function listCommand(
       }
       searchMeta = {
         query: opts.search,
-        sessions_scanned: searchableEntries.length,
+        sessions_scanned: scannedSessions,
         sessions_available: allEntries.length,
-        truncated: allEntries.length > searchableEntries.length,
+        truncated: searchTruncated,
+        max_sessions: maxSessions,
       };
       allEntries = matched;
     }
@@ -91,6 +135,11 @@ export async function listCommand(
     const prefix = cmdPrefix();
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      // it/05: cursor returns both the runnable command AND the raw numeric
+      // tokens (offset / limit) so agents can compute their own pagination
+      // without re-parsing the command string.
+      const nextOffset = offset + limit;
+      const prevOffset = Math.max(0, offset - limit);
       const result: Record<string, unknown> = {
         sessions: entries.map(serializeEntry),
         total_available: allEntries.length,
@@ -100,35 +149,75 @@ export async function listCommand(
         available_sources: SOURCES_LIST,
         cursor: {
           next: hasMore
-            ? `${prefix} list${source ? ' ' + source : ''} --offset ${offset + limit} --limit ${limit}`
+            ? {
+                command: `${prefix} list${source ? ' ' + source : ''} --offset ${nextOffset} --limit ${limit}`,
+                offset: nextOffset,
+                limit,
+              }
             : null,
           prev: offset > 0
-            ? `${prefix} list${source ? ' ' + source : ''} --offset ${Math.max(0, offset - limit)} --limit ${limit}`
+            ? {
+                command: `${prefix} list${source ? ' ' + source : ''} --offset ${prevOffset} --limit ${limit}`,
+                offset: prevOffset,
+                limit,
+              }
             : null,
           first: offset > 0
-            ? `${prefix} list${source ? ' ' + source : ''} --offset 0 --limit ${limit}`
+            ? {
+                command: `${prefix} list${source ? ' ' + source : ''} --offset 0 --limit ${limit}`,
+                offset: 0,
+                limit,
+              }
             : null,
         },
       };
+
+      // it/07: emit the most-likely next command(s) inline on meta so agents
+      // don't have to scan actions[] to know what to do next. it/09: surface
+      // search_truncated + scanned_sessions at the top level (mirrors the
+      // nested .search.* fields).
+      const nextAction: Record<string, unknown> = {};
+      if (entries.length > 0) {
+        nextAction.read = `${prefix} read ${entries[0].id} --tokens 4000`;
+        nextAction.info = `${prefix} info ${entries[0].id}`;
+        nextAction.tip = 'Use info first for cheap metadata, then read with a token budget.';
+      } else if (opts?.search) {
+        nextAction.tip = 'No matches. Increase --max-sessions or try sessionr search -q "<term>".';
+      } else {
+        nextAction.tip = 'Try --cwd all to widen the search, or sessionr send --new -s claude.';
+      }
 
       const meta: V2Meta = {
         cwd_scope: scopeMeta.cwd_scope,
         cwd: scopeMeta.cwd,
         ...(scopeMeta.reason ? { cwd_scope_reason: scopeMeta.reason } : {}),
-        ...(searchMeta ? { search: searchMeta } : {}),
+        ...(searchMeta
+          ? {
+              search: searchMeta,
+              search_truncated: searchTruncated,
+              scanned_sessions: scannedSessions,
+            }
+          : {}),
+        next_action: nextAction,
       };
 
+      // dc/08: emit several useful tips, not just the lone "read latest"
+      // action. Order from highest-leverage to lowest so an agent can
+      // walk the list top-down.
       const actions: Array<{ command: string; description: string }> = [];
       if (entries.length > 0) {
         actions.push(
-          { command: `${prefix} read ${entries[0].id}`, description: 'Read most recent session' },
+          { command: `${prefix} read ${entries[0].id} --tokens 4000`, description: 'Read most recent session (first page)' },
+          { command: `${prefix} info ${entries[0].id}`, description: 'Cheap metadata for the most recent session' },
           { command: `${prefix} stats ${entries[0].id}`, description: 'Full statistics (tools, tokens, files)' },
         );
       }
       actions.push(
-        { command: `${prefix} list --search "keyword"`, description: 'Search recent sessions by content' },
+        { command: `${prefix} list --search "keyword"`, description: 'Search recent sessions by content (top 50)' },
         { command: `${prefix} search -q "keyword" --max-sessions 200`, description: 'Search deeper with ranked snippets' },
-        { command: `${prefix} send --new -s claude -f prompt.md`, description: 'Start new session' },
+        { command: `${prefix} prune --older-than 30d --dry-run`, description: 'Preview cleanup of old sessions' },
+        { command: `${prefix} doctor`, description: 'Diagnose source / CLI binary setup' },
+        { command: `${prefix} send --new -s claude -f prompt.md`, description: 'Start a new session' },
       );
 
       emit(success(result, { meta, actions }), {

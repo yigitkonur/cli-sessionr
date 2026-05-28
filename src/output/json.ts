@@ -36,11 +36,15 @@ export function createJsonFormatter(): Formatter {
       messages: NormalizedMessage[],
       from: number,
       to: number,
-      _preset: VerbosityPreset,
+      preset: VerbosityPreset,
       meta?: SliceMeta,
     ): string {
+      // oc/12: forward the preset so the formatter's emitted messages match
+      // the preset-aware dedup contract used by read.ts / jsonl.ts.
       const result: Record<string, unknown> = {
-        messages: messages.map((m) => serializeForJson(serializeMessage(m))),
+        messages: messages.map((m) =>
+          serializeForJson(serializeMessage(m, { preset: preset.name })),
+        ),
       };
       const effectiveMeta = meta
         ? serializeForJson(meta)

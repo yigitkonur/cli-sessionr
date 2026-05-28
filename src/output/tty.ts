@@ -20,6 +20,40 @@ function shortenPath(p: string): string {
   return p.startsWith(home) ? '~' + p.slice(home.length) : p;
 }
 
+/**
+ * oc/10: TTY-only path shortener. EXPORTED so other modules can opt in,
+ * but JSON/JSONL emitters MUST NOT call this — machine output always uses
+ * absolute paths so cross-command joins (list → info → read) dedup
+ * correctly on a single key. The `~` prefix is also lossy when $HOME is
+ * unusual (CI runners, container layers, root-owned homes).
+ */
+export function shortenForTty(p: string): string {
+  return shortenPath(p);
+}
+
+/**
+ * oc/18: deterministic TTY detection that honors the standard env vars.
+ *
+ *   NO_COLOR=<anything>   → false (no colors / not a TTY for rendering)
+ *   FORCE_COLOR=<truthy>  → true  (caller insists on color output)
+ *   SESSIONR_AGENT=1      → false (agent harness — never assume TTY)
+ *   else                  → process.stdout.isTTY ?? false
+ *
+ * Existing call sites (`process.stdout.isTTY ?? false`) lie in tmux/CI/
+ * supervisor environments where isTTY toggles based on PTY allocation,
+ * not on whether the consumer wants color. Routing through this helper
+ * gives every formatter a single, env-aware answer.
+ */
+export function isInteractiveTty(): boolean {
+  // SESSIONR_AGENT is the documented escape hatch for agent harnesses that
+  // happen to be wrapped in a PTY — they want machine output regardless.
+  if (process.env.SESSIONR_AGENT) return false;
+  if (process.env.NO_COLOR) return false;
+  // FORCE_COLOR is the chalk-canonical opt-in; anything truthy counts.
+  if (process.env.FORCE_COLOR && process.env.FORCE_COLOR !== '0') return true;
+  return process.stdout.isTTY ?? false;
+}
+
 export function createTtyFormatter(): Formatter {
   return {
     stats(session: NormalizedSession): string {

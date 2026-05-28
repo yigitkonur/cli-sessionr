@@ -11,8 +11,35 @@ import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '.
 import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
+import { which } from '../utils/which.js';
 import { cmdPrefix } from '../util/invocation.js';
 import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning, V2Action, V2Meta } from '../types.js';
+
+// it/12: per-source spawn binary, mirroring src/commands/doctor.ts. Looked up
+// once via which() and cached so we don't fork a child every read.
+const SPAWN_BINS: Record<SessionSource, string> = {
+  claude: 'claude',
+  codex: 'codex',
+  gemini: 'gemini',
+  copilot: 'copilot',
+  'cursor-agent': 'cursor-agent',
+  commandcode: 'commandcode',
+  goose: 'goose',
+  opencode: 'opencode',
+  kiro: 'kiro',
+  zed: 'zed',
+  factory: 'factory',
+};
+
+const _spawnBinCache = new Map<SessionSource, boolean>();
+function isSpawnBinAvailable(source: SessionSource): boolean {
+  const cached = _spawnBinCache.get(source);
+  if (cached !== undefined) return cached;
+  const bin = SPAWN_BINS[source];
+  const found = bin ? which(bin) !== null : false;
+  _spawnBinCache.set(source, found);
+  return found;
+}
 
 const VALID_ROLES = ['user', 'assistant', 'system', 'tool_use', 'tool_result'] as const;
 const VALID_ANCHORS = ['head', 'tail', 'search'] as const;
@@ -83,13 +110,20 @@ function buildSessionSummary(session: NormalizedSession, tokenBudget: number | u
 
 function injectNextAction(meta: SliceMeta): SliceMeta {
   const hint = getResumeHint(meta.source, meta.session_id);
+  // it/12: hint.verified is a STATIC capability flag (does this CLI support
+  // resume?) — by itself it's misleading because it stays `true` even on
+  // machines where the spawn binary isn't installed. AND it with a runtime
+  // PATH lookup so callers can trust `verified:true` means "you can run this
+  // exact command now without a NOT_FOUND".
+  const binAvailable = isSpawnBinAvailable(meta.source);
   return {
     ...meta,
     next_action: {
       resume: hint.resume,
       resume_async: hint.resume_async,
       direct: hint.direct,
-      verified: hint.verified,
+      verified: Boolean(hint.verified && binAvailable),
+      runtime_bin_available: binAvailable,
       tip: hint.tip,
     },
   };
@@ -220,8 +254,14 @@ function computeDetailHint(
     });
   }
 
+  // it/06: surface the CURRENT preset's fit info alongside each upgrade
+  // option's. currentReturnedTokens is what the slicer actually produced,
+  // so by definition it fits in the budget — but agents asking "does it
+  // fit?" deserve an explicit boolean instead of having to remember that.
   return {
     current_preset: currentPreset.name,
+    current_estimated_tokens: currentReturnedTokens,
+    current_will_fit_in_budget: currentReturnedTokens <= currentBudget,
     hidden_tool_calls: hiddenToolCalls,
     truncated_results: truncatedResults,
     thinking_hidden: thinkingHidden,
@@ -333,6 +373,8 @@ export async function readCommand(
           outputFormat,
           timing: opts?.timing,
           notice: 'session is empty (no user/assistant messages)',
+          preset,
+          detail,
         });
       } else {
         process.stdout.write(`Session ${session.id} (${session.source}) is empty — no messages.\n`);
@@ -344,7 +386,7 @@ export async function readCommand(
     if (opts?.page != null) {
       const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, preset);
       let meta = injectNextAction(result.meta);
-      meta = annotateMeta(meta, tokenBudget, preset);
+      meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
       meta = attachETag(meta, session, {
         preset,
         tokenBudget,
@@ -370,6 +412,8 @@ export async function readCommand(
           includeSummary: shouldIncludeSummary(opts),
           outputFormat,
           timing: opts?.timing,
+          preset,
+          detail,
         });
       } else {
         process.stdout.write(
@@ -417,7 +461,7 @@ export async function readCommand(
     );
 
     let meta = injectNextAction(sliceResult.meta);
-    meta = annotateMeta(meta, tokenBudget, preset);
+    meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
     meta = attachETag(meta, session, {
       preset,
       tokenBudget,
@@ -436,11 +480,11 @@ export async function readCommand(
 
     let outputMessages = sliceResult.messages;
     if (detail === 'meta') {
-      outputMessages = outputMessages.map((m) => ({
-        ...m,
-        content: '',
-        blocks: [],
-      }));
+      // M3: do NOT pre-blank blocks here. serializeMessage(m, {detail:'meta'})
+      // is the canonical owner of the meta-detail shape — it preserves the
+      // tool name + tool_use_id on tool messages (so agents can join /
+      // re-fetch) and strips everything else. Wiping blocks here would
+      // strip the very fields serializeMessage needs to surface.
     } else if (detail === 'skeleton') {
       outputMessages = outputMessages.map((m) => ({
         ...m,
@@ -458,6 +502,8 @@ export async function readCommand(
         includeSummary: shouldIncludeSummary(opts),
         outputFormat,
         timing: opts?.timing,
+        preset,
+        detail,
       });
     } else {
       process.stdout.write(
@@ -532,7 +578,7 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
       preset,
     );
     let meta = injectNextAction(result.meta);
-    meta = annotateMeta(meta, tokenBudget, preset);
+    meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts.preset, detail });
     meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
 
     emitReadEnvelope({
@@ -543,15 +589,42 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
       includeSummary: true,
       outputFormat: 'jsonl',
       timing: opts.timing,
+      preset,
+      detail,
     });
   }
 }
 
-function annotateMeta(meta: SliceMeta, tokenBudget: number, preset: VerbosityPreset): SliceMeta {
+// H6: callers may pass --preset AND --detail; --detail always wins. We
+// surface the actually-used preset on meta.preset so an agent can detect
+// drift between what it asked for and what the renderer applied. The
+// optional meta.preset_requested + meta.preset_source fields tell agents
+// WHY (detail-override vs user-provided vs default).
+function annotateMeta(
+  meta: SliceMeta,
+  tokenBudget: number,
+  preset: VerbosityPreset,
+  args?: { requestedPreset?: string; detail?: string },
+): SliceMeta {
+  const extra: Record<string, unknown> = {};
+  if (args?.detail) {
+    extra.preset_source = 'detail-override';
+    extra.detail = args.detail;
+    if (args.requestedPreset && args.requestedPreset !== preset.name) {
+      extra.preset_requested = args.requestedPreset;
+      extra.preset_override_reason =
+        `--detail ${args.detail} overrides --preset ${args.requestedPreset}`;
+    }
+  } else if (args?.requestedPreset) {
+    extra.preset_source = 'user';
+  } else {
+    extra.preset_source = 'default';
+  }
   return {
     ...meta,
     budget: tokenBudget,
     preset: preset.name,
+    ...extra,
   };
 }
 
@@ -599,6 +672,10 @@ interface EmitReadArgs {
   outputFormat: OutputFormat;
   timing?: boolean;
   notice?: string;
+  /** Phase 3 (oc/12): preset name routes the serializer's content/blocks dedup. */
+  preset?: VerbosityPreset;
+  /** Phase 3 (M3): detail=meta surfaces tool_use_id + "Tool: <name>" for tool msgs. */
+  detail?: DetailLevel;
 }
 
 /**
@@ -608,7 +685,12 @@ interface EmitReadArgs {
  * recommendations agents can run next.
  */
 function emitReadEnvelope(args: EmitReadArgs): void {
-  const serializedMessages = args.messages.map((m) => serializeForJson(serializeMessage(m)));
+  // oc/12 + M3: pass preset/detail so serializeMessage emits ONE channel
+  // (content vs blocks) and tool messages in --detail meta keep their
+  // tool_use_id + "Tool: <name>" identity.
+  const serializedMessages = args.messages.map((m) =>
+    serializeForJson(serializeMessage(m, { preset: args.preset?.name, detail: args.detail })),
+  );
   const result: Record<string, unknown> = {
     messages: serializedMessages,
   };

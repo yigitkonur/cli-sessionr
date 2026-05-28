@@ -55,8 +55,11 @@ const PRESETS: Record<PresetName, VerbosityPreset> = {
 export function getPreset(name: string): VerbosityPreset {
   const preset = PRESETS[name as PresetName];
   if (!preset) {
+    // er/05: structured INVALID_PRESET error so callers see a typed v2
+    // envelope (validation class, USAGE exit) instead of a bare Error.
     throw new SessionReaderError(`Unknown verbosity preset "${name}"`, {
       code: 'INVALID_PRESET',
+      errorClass: 'validation',
       exitCode: EXIT.USAGE,
       detail: { provided: name, valid: Object.keys(PRESETS) },
       suggestion: 'sessionr read <id> --preset standard',
@@ -81,6 +84,7 @@ export function getPresetForDetail(detail: DetailLevel): VerbosityPreset {
   if (!presetName) {
     throw new SessionReaderError(`Unknown detail level "${detail}"`, {
       code: 'INVALID_DETAIL',
+      errorClass: 'validation',
       exitCode: EXIT.USAGE,
       detail: { provided: detail, valid: DETAIL_LEVELS },
       suggestion: 'sessionr read <id> --detail condensed',

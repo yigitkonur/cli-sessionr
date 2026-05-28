@@ -21,6 +21,37 @@ import type { SessionSource, SendOptions, OutputFormat, SliceMeta } from '../typ
 const JOBS_DIR = join(homedir(), '.sessionreader', 'jobs');
 
 /**
+ * ds/03 — `--detect-timeout-ms` ceiling for detectNewSession's slop window.
+ * Default 2000 ms. The slop tolerates filesystem mtime drift (NFS, slow
+ * disks) and clock skew between the agent host and the tool's writer.
+ *
+ * TODO(v3.1): make detect-timeout-ms configurable via env
+ * SESSIONR_DETECT_TIMEOUT_MS so CI environments with slow filesystems can
+ * tune it without re-shipping.
+ */
+const DEFAULT_DETECT_TIMEOUT_MS = 2_000;
+
+/**
+ * ds/02 — default cap on how many NEW sessions a single command can spawn
+ * if it loops. Today `send` only spawns one child per invocation, but the
+ * cap is shipped so a future batch/auto-retry mode can't fan out fifty
+ * brand-new sessions by accident. `--max-new-per-run` overrides at run
+ * time; setting it to 0 disables new sessions entirely.
+ */
+const DEFAULT_MAX_NEW_PER_RUN = 1;
+
+/**
+ * Phase 3 extension fields for SendOptions. Kept local so we don't touch
+ * src/types.ts (outside the allow-list). cli.ts populates these via type
+ * assertion when it wires the new CLI flags through.
+ */
+type SendOptionsX = SendOptions & {
+  dryRun?: boolean;
+  maxNewPerRun?: number;
+  detectTimeoutMs?: number;
+};
+
+/**
  * Resolve the user-supplied prompt from `--message` / `--file`. All three
  * validation branches (conflicting, file unreadable, missing) throw a
  * structured `SessionReaderError` (validation class) so the top-level
@@ -95,13 +126,16 @@ function assertSpawnable(cmd: RunCommand | undefined | null): asserts cmd is Run
 
 export async function sendCommand(
   sessionId: string | undefined,
-  opts: SendOptions,
+  opts: SendOptionsX,
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
-  const formatter = createFormatter({ output: opts.output, isTTY });
-  // emit() needs the raw format string to choose JSONL vs pretty JSON.
-  // The formatter resolves text/table for TTY; for the v2 error path we
-  // route through emit() so the error envelope shape matches Phase 0.
+  // Creating the formatter here is the validation chokepoint for --output
+  // (oc/05); it throws INVALID_OUTPUT for unknown formats before any work.
+  // The instance itself is not used by runSync/runAsync — those write the
+  // v2 envelope through emit() directly. Phase 2 review carry-forward: the
+  // `formatter` parameter passed to runSync/runAsync was dead weight and is
+  // now removed.
+  createFormatter({ output: opts.output, isTTY });
   const format: OutputFormat = opts.output ?? (isTTY ? 'text' : 'json');
 
   try {
@@ -144,16 +178,56 @@ export async function sendCommand(
       });
     }
 
+    // ds/02: enforce --max-new-per-run BEFORE building the command so a
+    // configured cap of 0 (or a misconfigured loop) cannot fan out new
+    // sessions even when --new is passed. `send` itself only spawns once
+    // per invocation; this guard protects future batch/retry callers.
+    const maxNew = opts.maxNewPerRun ?? DEFAULT_MAX_NEW_PER_RUN;
+    if (isNew && maxNew <= 0) {
+      throw new SessionReaderError(
+        `--max-new-per-run is ${maxNew}; refusing to create a new session.`,
+        {
+          code: 'MAX_NEW_EXCEEDED',
+          exitCode: EXIT.USAGE,
+          errorClass: 'validation',
+          detail: { max_new_per_run: maxNew },
+          suggestion: 'sessionr send <existing-id> -m "..."  OR  --max-new-per-run 1',
+        },
+      );
+    }
+
     // Build the command (with safety guard against malformed RunCommand shapes).
     const cmd = isNew
       ? buildNewCommand(source, message, cwd)
       : buildResumeCommand(source, resolvedSessionId!, message);
     assertSpawnable(cmd);
 
+    // ds/02: --dry-run short-circuits BEFORE any spawn so an agent can probe
+    // the exact `{bin, args, cwd}` it would launch without side effects.
+    // The result is a normal v2 success envelope with `result.dry_run: true`.
+    if (opts.dryRun) {
+      emit(
+        {
+          ok: true,
+          schema_version: 'v2' as const,
+          result: {
+            dry_run: true,
+            would_spawn: { bin: cmd.bin, args: cmd.args, cwd },
+            source,
+            session_id: resolvedSessionId,
+            is_new_session: isNew,
+            max_new_per_run: maxNew,
+          },
+        },
+        { format },
+      );
+      return;
+    }
+
     if (opts.async) {
-      await runAsync(cmd, resolvedSessionId, source, cwd, { ...opts, message }, messageCountBefore, isNew, formatter);
+      await runAsync(cmd, resolvedSessionId, source, cwd, { ...opts, message }, messageCountBefore, isNew);
     } else {
-      await runSync(cmd, resolvedSessionId, source, cwd, { ...opts, message }, messageCountBefore, isNew, formatter);
+      await runSync(cmd, resolvedSessionId, source, cwd, { ...opts, message }, messageCountBefore, isNew);
     }
   } catch (err) {
     const sre =
@@ -211,21 +285,27 @@ async function runSync(
   sessionId: string | null,
   source: SessionSource,
   cwd: string,
-  opts: SendOptions,
+  opts: SendOptionsX,
   messageCountBefore: number,
   isNew: boolean,
-  formatter: ReturnType<typeof createFormatter>,
 ): Promise<void> {
   const resolvedSource = source;
 
   // wp/02 + wp/06: anchor the detect-new-session window to a timestamp captured
   // BEFORE the child runs so we never attach to a session created earlier by
-  // another tool. Allow 2s of clock skew slop.
+  // another tool.
+  // TODO(v3.1): make detect-timeout-ms configurable via env
+  // SESSIONR_DETECT_TIMEOUT_MS (today only --detect-timeout-ms is honoured).
   const beforeSendT = Date.now();
+  const detectTimeoutMs = opts.detectTimeoutMs ?? DEFAULT_DETECT_TIMEOUT_MS;
 
   const result = await spawnAndWait(cmd, cwd);
 
   if (result.exitCode !== 0) {
+    // wp/10: distinguish "binary ran and failed" (CHILD_EXIT_NONZERO) from
+    // "binary never launched" (SPAWN_FAILED, raised in spawnAndWait below).
+    // The two map to different agent reactions: the former is a retry-after-
+    // fix; the latter is a doctor/install hint.
     const detail: Record<string, unknown> = {
       tool: cmd.bin,
       exit_code: result.exitCode,
@@ -238,18 +318,21 @@ async function runSync(
       detail.stdout_tail = result.stdoutTail.join('\n');
     }
 
-    throw new SessionReaderError(`Tool exited with code ${result.exitCode}`, {
-      code: 'TOOL_ERROR',
+    throw new SessionReaderError(`Tool ${cmd.bin} exited with code ${result.exitCode}`, {
+      code: 'CHILD_EXIT_NONZERO',
       exitCode: EXIT.ERROR,
+      errorClass: 'internal',
       detail,
-      suggestion: `Check ${cmd.bin} output for errors`,
+      suggestion: `Check ${cmd.bin} output for errors (see detail.stderr_tail)`,
     });
   }
 
   // Find the session and get new messages
   let finalSessionId = sessionId;
   if (isNew) {
-    finalSessionId = await detectNewSession(resolvedSource, cwd, beforeSendT);
+    finalSessionId = await detectNewSession(resolvedSource, cwd, beforeSendT, {
+      timeoutMs: detectTimeoutMs,
+    });
   }
 
   if (!finalSessionId) {
@@ -258,7 +341,12 @@ async function runSync(
         code: 'NEW_SESSION_NOT_DETECTED',
         exitCode: EXIT.PARTIAL,
         errorClass: 'partial',
-        detail: { source: resolvedSource, cwd, hint: 'session may take a moment to flush' },
+        detail: {
+          source: resolvedSource,
+          cwd,
+          detect_timeout_ms: detectTimeoutMs,
+          hint: 'session may take a moment to flush; try --detect-timeout-ms 5000',
+        },
         suggestion: `sessionr list --cwd current --source ${resolvedSource} -n 5`,
         retry: true,
       });
@@ -281,17 +369,21 @@ async function runSync(
   let meta: SliceMeta | undefined;
 
   if (tokenBudget && newMessages.length > 0) {
-    const result = sliceByTokenBudget(
+    const sliceResult = sliceByTokenBudget(
       newMessages,
       tokenBudget,
       session.id,
       session.source,
       'tail',
     );
-    outputMessages = result.messages;
-    meta = result.meta;
+    outputMessages = sliceResult.messages;
+    meta = sliceResult.meta;
   }
 
+  // Resolve preset so it participates in validation (er/05) AND so the
+  // serializeMessage call below can pick the right content/blocks channel
+  // (oc/13). Without the preset hand-off, every text-only message paid for
+  // a redundant `blocks` payload in the sync response.
   const preset = getPreset(opts.preset ?? 'standard');
   const from = newMessages.length > 0 ? newMessages[0].index : 0;
   const to = newMessages.length > 0 ? newMessages[newMessages.length - 1].index : 0;
@@ -320,7 +412,11 @@ async function runSync(
     (envelope.meta as Record<string, unknown>).is_new_session = isNew;
   }
 
-  envelope.messages = outputMessages.map(serializeMessage);
+  // oc/13: route through serializeMessage with the resolved preset so text-only
+  // messages don't carry a redundant `blocks` payload. Rich messages emit ONE
+  // channel (content vs blocks) based on the user's preset choice; without
+  // this every send-sync response paid the dual-channel cost flagged in oc/12.
+  envelope.messages = outputMessages.map((m) => serializeMessage(m, { preset: preset.name }));
 
   envelope.actions = [
     {
@@ -337,10 +433,9 @@ async function runAsync(
   sessionId: string | null,
   source: SessionSource,
   cwd: string,
-  opts: SendOptions,
+  opts: SendOptionsX,
   messageCountBefore: number,
   isNew: boolean,
-  formatter: ReturnType<typeof createFormatter>,
 ): Promise<void> {
   try {
     mkdirSync(JOBS_DIR, { recursive: true });
@@ -348,6 +443,7 @@ async function runAsync(
     throw new SessionReaderError(`Failed to prepare async jobs directory: ${(err as Error).message}`, {
       code: 'ASYNC_SETUP_ERROR',
       exitCode: EXIT.ERROR,
+      errorClass: 'internal',
       detail: { jobs_dir: JOBS_DIR, error: (err as Error).message },
       suggestion: 'Ensure the jobs directory is writable',
       cause: err,
@@ -385,9 +481,13 @@ async function runAsync(
       },
     );
   } catch (err) {
+    // wp/10: this catch fires when bash itself (the wrapper) fails to launch
+    // — usually missing bash or sandbox restriction. The tool binary may
+    // also be missing (caught later via spawn 'error' event in spawnAndWait).
     throw new SessionReaderError(`Failed to start async job for ${cmd.bin}: ${(err as Error).message}`, {
-      code: 'ASYNC_SETUP_ERROR',
+      code: 'SPAWN_FAILED',
       exitCode: EXIT.ERROR,
+      errorClass: 'internal',
       detail: { tool: cmd.bin, error: (err as Error).message },
       suggestion: `Ensure ${cmd.bin} is installed and the jobs directory is writable`,
       cause: err,
@@ -399,8 +499,9 @@ async function runAsync(
 
   if (!child?.pid) {
     throw new SessionReaderError(`Failed to spawn ${cmd.bin}`, {
-      code: 'SPAWN_ERROR',
+      code: 'SPAWN_FAILED',
       exitCode: EXIT.ERROR,
+      errorClass: 'internal',
       detail: { tool: cmd.bin },
       suggestion: `Ensure ${cmd.bin} is installed and in PATH`,
     });
@@ -434,6 +535,7 @@ async function runAsync(
     throw new SessionReaderError(`Failed to persist async job: ${(err as Error).message}`, {
       code: 'ASYNC_SETUP_ERROR',
       exitCode: EXIT.ERROR,
+      errorClass: 'internal',
       detail: { job_id: jobId, error: (err as Error).message },
       suggestion: 'Ensure the jobs directory is writable',
       cause: err,
@@ -471,18 +573,27 @@ async function runAsync(
  * that existed prior to spawn (cross-project leakage). Returns null when no
  * fresh session is detected after polling — the caller maps that to a
  * `NEW_SESSION_NOT_DETECTED` partial error.
+ *
+ * ds/03 — the slop tolerance is configurable via `timeoutMs` (default 2000
+ * ms). Slow filesystems (NFS) or clock skew can push session mtime outside
+ * the default window, so agents can raise the budget per-call.
  */
 export async function detectNewSession(
   source: SessionSource,
   cwd: string,
   beforeSendT: number,
-  deps: { listSessions?: typeof listSessions; sleep?: (ms: number) => Promise<void> } = {},
+  deps: {
+    listSessions?: typeof listSessions;
+    sleep?: (ms: number) => Promise<void>;
+    timeoutMs?: number;
+  } = {},
 ): Promise<string | null> {
   const list = deps.listSessions ?? listSessions;
   const wait = deps.sleep ?? sleep;
   const attempts = 10;
   const delayMs = 200;
-  const slopMs = 2_000; // tolerance for filesystem mtime / clock skew.
+  // TODO(v3.1): also honour env SESSIONR_DETECT_TIMEOUT_MS as the default.
+  const slopMs = deps.timeoutMs ?? DEFAULT_DETECT_TIMEOUT_MS;
   const cutoff = beforeSendT - slopMs;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -557,15 +668,17 @@ export function spawnAndWait(
     };
 
     child.once('error', (err) => {
-      // Drain whatever the OS already delivered before the error fired so the
-      // tail buffer carries diagnostic context for the caller.
+      // wp/10: spawn 'error' fires ONLY when the OS rejects exec (binary
+      // missing, EACCES, ENOENT). The child binary running and exiting
+      // non-zero goes through the 'close' branch below as CHILD_EXIT_NONZERO.
       stdoutTail.flush();
       stderrTail.flush();
       settle(
         reject,
         new SessionReaderError(`Failed to spawn ${cmd.bin}: ${err.message}`, {
-          code: 'SPAWN_ERROR',
+          code: 'SPAWN_FAILED',
           exitCode: EXIT.ERROR,
+          errorClass: 'internal',
           detail: { tool: cmd.bin, error: err.message },
           suggestion: `Ensure ${cmd.bin} is installed and in PATH`,
         }),

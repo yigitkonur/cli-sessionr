@@ -205,6 +205,8 @@ describe('jsonl formatter — error()', () => {
     const fmt = createJsonlFormatter();
     const err = new SessionReaderError('boom', {
       code: 'BOOM',
+      errorClass: 'internal',
+      exitCode: 1,
       detail: { reason: 'test' },
     });
     const out = fmt.error(err);

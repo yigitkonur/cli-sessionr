@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { cmdPrefix } from '../util/invocation.js';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
@@ -6,6 +7,25 @@ import { emit } from '../output/emit.js';
 import { toExternalSession } from '../output/serialize.js';
 import { exitCodeForError, SessionReaderError } from '../errors.js';
 import type { SessionSource, OutputFormat, V2Action } from '../types.js';
+
+/**
+ * M5: dedupe filesModified by resolving relative paths against the session's
+ * cwd and keeping unique absolute paths. Without this, parsers that record
+ * the same file under both `src/foo.ts` and `/repo/src/foo.ts` produce
+ * double-counted entries in the stats payload.
+ */
+function dedupFilesModified(files: string[], cwd: string | undefined): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of files) {
+    if (!raw) continue;
+    const absolute = path.isAbsolute(raw) ? raw : path.resolve(cwd ?? process.cwd(), raw);
+    if (seen.has(absolute)) continue;
+    seen.add(absolute);
+    out.push(absolute);
+  }
+  return out;
+}
 
 export async function statsCommand(
   sessionId: string,
@@ -30,17 +50,40 @@ export async function statsCommand(
       // camelCase key (byRole.toolUse → by_role.tool_use, etc.) AND ISO-encodes
       // dates. This is the single canonical projection — info uses toExternal()
       // selectively on subobjects; stats ships the full session payload.
-      const sessionPayload = toExternalSession(session);
+      const sessionPayload = toExternalSession(session) as Record<string, unknown>;
+
+      // M5: rewrite stats.files_modified with dedup'd absolute paths. We mutate
+      // a fresh copy of the stats subtree so we don't change the typed object
+      // upstream. Files appear ONCE per absolute path regardless of whether
+      // the parser recorded them as relative or absolute.
+      if (sessionPayload.stats && typeof sessionPayload.stats === 'object') {
+        const statsObj = sessionPayload.stats as Record<string, unknown>;
+        if (Array.isArray(statsObj.files_modified)) {
+          statsObj.files_modified = dedupFilesModified(
+            statsObj.files_modified as string[],
+            session.metadata.cwd,
+          );
+        }
+      }
+
       const prefix = cmdPrefix();
       const actions: V2Action[] = [
-        { command: `${prefix} read ${session.id}`, description: 'Read session messages' },
+        { command: `${prefix} read ${session.id} --tokens 8000 --include-summary`, description: 'Read session with summary' },
         { command: `${prefix} send ${session.id} -f prompt.md --source ${session.source}`, description: 'Resume session' },
         { command: `${prefix} context ${session.id} --tokens 8000`, description: 'Export context for agent handoff' },
         { command: `${prefix} diff ${session.id} <other-id>`, description: 'Compare with another session' },
         { command: `${prefix} tag ${session.id} --add important`, description: 'Tag this session' },
         { command: `${prefix} prune --older-than 7d --dry-run`, description: 'Preview cleanup of old sessions' },
       ];
-      emit(success({ session: sessionPayload }, { actions }), {
+      // it/07: the most useful follow-up for stats is a budgeted read with the
+      // summary attached so the agent has narrative + numbers in one fetch.
+      const nextAction = {
+        read: `${prefix} read ${session.id} --tokens 8000 --include-summary`,
+        context: `${prefix} context ${session.id} --tokens 8000`,
+        resume: `${prefix} send ${session.id} -f prompt.md --source ${session.source}`,
+        tip: 'stats is read-only; combine with read --include-summary to see the messages behind the numbers.',
+      };
+      emit(success({ session: sessionPayload }, { meta: { next_action: nextAction }, actions }), {
         format: outputFormat,
         timing: opts.timing,
       });
