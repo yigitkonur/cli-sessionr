@@ -232,15 +232,20 @@ sessionr send --new --source claude -m "review this: $(sessionr context <codex-s
 sessionr send <codex-session> -m "apply these comments: $(sessionr read <claude-session> --role assistant)"
 ```
 
-## output
+## output (v3 envelope)
 
 everything is json when piped, colored text when interactive. override with `--output json|jsonl|text|table`.
 
-every json response has `api_version: 1` and an `actions` array telling the agent what to do next:
+since v3, **every command returns one canonical envelope** so an agent writes a single parser: check `ok`, then read `result` or `error`. see [MIGRATION.md](./MIGRATION.md) for the full contract and the v2→v3 changes.
 
 ```json
 {
-  "api_version": 1,
+  "ok": true,
+  "schema_version": "v2",
+  "result": {
+    "session": { "id": "abc123", "...": "..." },
+    "messages": [ ... ]
+  },
   "meta": {
     "session_id": "abc123",
     "total_messages": 45,
@@ -248,38 +253,47 @@ every json response has `api_version: 1` and an `actions` array telling the agen
     "token_budget": 4000,
     "has_more_before": true,
     "cursor_before": 29,
+    "etag": "a1b2c3d4e5f60718",
     "next_action": {
-      "description": "Continue this Claude Code session",
-      "interactive": "claude -r abc123",
-      "non_interactive": "claude -p -r abc123 \"your follow-up\"",
-      "verified": true
+      "resume": "sessionr send abc123 -f prompt.md --source claude",
+      "direct": "claude -r abc123 -p \"$(cat prompt.md)\"",
+      "verified": true,
+      "runtime_bin_available": true
     }
   },
-  "messages": [...]
+  "actions": [ { "command": "sessionr stats abc123", "description": "..." } ]
 }
 ```
 
-your agent never has to guess what to do next. the response tells it.
+your agent never has to guess what to do next. the response tells it. keys are snake_case everywhere (the one exception: a `tool_use` block's `input` payload is passed through verbatim — those are the tool's own arguments).
+
+poll cheaply with the etag: `sessionr read abc123 --if-changed <etag>` → exit 42 + a tiny body when nothing changed.
 
 ## exit codes
 
 | code | meaning |
 |------|---------|
 | 0 | ok |
-| 1 | error |
-| 2 | bad usage |
+| 1 | internal error |
+| 2 | bad usage / validation |
 | 3 | not found |
-| 42 | no changes (etag match) |
+| 4 | auth required (reserved) |
+| 5 | rate-limited / transient (reserved) |
+| 10 | partial result (truncated by token budget) |
+| 42 | no changes (`--if-changed` match) |
 
-structured errors too:
+structured errors too — `ok: false` + a typed `error`:
 
 ```json
 {
+  "ok": false,
+  "schema_version": "v2",
   "error": {
+    "class": "not_found",
     "code": "SESSION_NOT_FOUND",
     "message": "Session not found: abc123",
-    "suggestion": "sessionr list --output json",
-    "retry": false
+    "suggestion": "sessionr list --cwd current  (or --cwd all)",
+    "retryable": false
   }
 }
 ```

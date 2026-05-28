@@ -322,4 +322,6 @@ export interface SendOptions {
   output?: OutputFormat;
   tokens?: number;
   preset?: string;
+  /** Forwarded from cli.ts so meta.timing_ms appears, like every other command. */
+  timing?: boolean;
 }

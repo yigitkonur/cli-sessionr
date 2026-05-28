@@ -14,7 +14,7 @@ import { estimateSessionTokens } from '../tokens.js';
 import { SessionReaderError, EXIT, exitCodeForError } from '../errors.js';
 import { resolveSourceAlias } from '../parsers/registry.js';
 import { cmdPrefix } from '../util/invocation.js';
-import { failure } from '../output/envelope.js';
+import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
 import type { SessionSource, SendOptions, OutputFormat, SliceMeta } from '../types.js';
 
@@ -388,44 +388,47 @@ async function runSync(
   const from = newMessages.length > 0 ? newMessages[0].index : 0;
   const to = newMessages.length > 0 ? newMessages[newMessages.length - 1].index : 0;
 
-  const envelope: Record<string, unknown> = {
-    api_version: 1,
-    meta: meta ?? {
-      session_id: session.id,
-      source: session.source,
+  // Send-specific pagination/meta. Reuse the slice meta when present
+  // (large responses) and always stamp the send counters on top.
+  const sendMeta: Record<string, unknown> = {
+    ...(meta ?? {
       total_messages: session.stats.totalMessages,
-      message_count_before: messageCountBefore,
-      message_count_after: session.stats.totalMessages,
-      new_messages: newMessages.length,
       total_tokens_estimate: estimateSessionTokens(session.messages),
       returned_tokens_estimate: estimateSessionTokens(outputMessages),
       range: { from, to },
-      is_new_session: isNew,
-    },
+    }),
+    message_count_before: messageCountBefore,
+    message_count_after: session.stats.totalMessages,
+    new_messages: newMessages.length,
+    is_new_session: isNew,
   };
-
-  // Add send-specific fields to meta
-  if (meta) {
-    (envelope.meta as Record<string, unknown>).message_count_before = messageCountBefore;
-    (envelope.meta as Record<string, unknown>).message_count_after = session.stats.totalMessages;
-    (envelope.meta as Record<string, unknown>).new_messages = newMessages.length;
-    (envelope.meta as Record<string, unknown>).is_new_session = isNew;
-  }
 
   // oc/13: route through serializeMessage with the resolved preset so text-only
   // messages don't carry a redundant `blocks` payload. Rich messages emit ONE
   // channel (content vs blocks) based on the user's preset choice; without
   // this every send-sync response paid the dual-channel cost flagged in oc/12.
-  envelope.messages = outputMessages.map((m) => serializeMessage(m, { preset: preset.name }));
+  const sendResult = {
+    session_id: session.id,
+    source: session.source,
+    is_new_session: isNew,
+    message_count_before: messageCountBefore,
+    message_count_after: session.stats.totalMessages,
+    new_messages: newMessages.length,
+    messages: outputMessages.map((m) => serializeMessage(m, { preset: preset.name })),
+  };
 
-  envelope.actions = [
+  const actions = [
     {
       command: `${cmdPrefix()} read ${session.id} --after ${messageCountBefore}`,
       description: 'Re-read new messages',
     },
   ];
 
-  console.log(JSON.stringify(envelope, dateReplacer, 2));
+  // oc/07 + oc/08: send sync now emits the canonical v2 envelope via emit()
+  // like every other command. Previously it hand-wrote a legacy meta+messages
+  // shape on console.log, bypassing the contract — caught in v3 review.
+  const format: OutputFormat = opts.output ?? (process.stdout.isTTY ? 'text' : 'json');
+  emit(success(sendResult, { meta: sendMeta, actions }), { format, timing: opts.timing });
 }
 
 async function runAsync(
@@ -544,26 +547,27 @@ async function runAsync(
 
   child.unref();
 
+  // oc/07 + oc/08: async send now emits the canonical v2 envelope (dropping
+  // the old `data` wrapper) via emit() like every other command. Previously it
+  // hand-wrote a legacy wrapped shape on console.log — caught in v3 review.
   const result = {
-    api_version: 1,
-    data: {
-      job_id: job.id,
-      session_id: sessionId,
-      source,
-      status: 'running',
-      pid: child.pid,
-      started_at: job.started_at,
-      is_new_session: isNew,
-      message_count_before: messageCountBefore,
-    },
-    actions: [
-      { command: `${cmdPrefix()} job ${jobId}`, description: 'Check job status' },
-      { command: `${cmdPrefix()} wait ${jobId}`, description: 'Wait for completion' },
-      { command: `${cmdPrefix()} cancel ${jobId}`, description: 'Cancel job' },
-    ],
+    job_id: job.id,
+    session_id: sessionId,
+    source,
+    status: 'running',
+    pid: child.pid,
+    started_at: job.started_at,
+    is_new_session: isNew,
+    message_count_before: messageCountBefore,
   };
+  const actions = [
+    { command: `${cmdPrefix()} job ${jobId}`, description: 'Check job status' },
+    { command: `${cmdPrefix()} wait ${jobId}`, description: 'Wait for completion' },
+    { command: `${cmdPrefix()} cancel ${jobId}`, description: 'Cancel job' },
+  ];
 
-  console.log(JSON.stringify(result, dateReplacer, 2));
+  const format: OutputFormat = opts.output ?? (process.stdout.isTTY ? 'text' : 'json');
+  emit(success(result, { actions }), { format, timing: opts.timing });
   process.exitCode = EXIT.OK;
 }
 
@@ -727,9 +731,4 @@ export function tapOutput(stream: NodeJS.ReadableStream): { lines: string[]; flu
       buffered = '';
     },
   };
-}
-
-function dateReplacer(_key: string, value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString();
-  return value;
 }

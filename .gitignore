@@ -7,3 +7,4 @@ dist/
 to-delete/
 .verify-runs/
 scripts/shims/
+*.err

@@ -421,6 +421,7 @@ Examples:
         tokens: parseOptionalBounded('--tokens', opts.tokens, 1),
         preset: opts.preset,
         output: parentOpts.output as OutputFormat | undefined,
+        timing: Boolean(parentOpts.timing),
         dryRun: opts.dryRun,
         maxNewPerRun: parseOptionalBounded('--max-new-per-run', opts.maxNewPerRun, 0),
         detectTimeoutMs: parseOptionalBounded('--detect-timeout-ms', opts.detectTimeoutMs, 1),
