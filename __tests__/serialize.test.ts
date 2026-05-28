@@ -140,6 +140,34 @@ describe('serializeMessage — rich-message channel routing', () => {
     expect(verbose).not.toHaveProperty('content');
     expect(verbose).toHaveProperty('blocks');
   });
+
+  // Regression guard (Phase 3 review NICE_TO_HAVE): externalizeBlock snake-cases
+  // the block ENVELOPE keys (toolUseId → tool_use_id, isError → is_error) but
+  // MUST pass the tool_use `input` payload through verbatim — those are
+  // arbitrary user-tool arguments and renaming their keys would silently
+  // corrupt the tool call an agent reads back. A future refactor that routes
+  // blocks through the recursive toExternal() walker would break this with a
+  // green suite otherwise.
+  it('tool_use input keys survive verbatim (no snake-casing of tool args)', () => {
+    const msg = makeMessage({
+      role: 'tool_use',
+      content: 'Tool: TaskCreate',
+      blocks: [
+        toolUseBlock('TaskCreate', 'call_camel', {
+          activeForm: 'Running tests',     // camelCase tool arg — must NOT become active_form
+          maxOutputTokens: 16000,          // camelCase — must NOT become max_output_tokens
+          subject: 'Run the suite',
+        }),
+      ],
+    });
+    const out = serializeMessage(msg, { preset: 'verbose' });
+    const blocks = out.blocks as Array<{ input: Record<string, unknown> }>;
+    const inputKeys = Object.keys(blocks[0].input).sort();
+    expect(inputKeys).toEqual(['activeForm', 'maxOutputTokens', 'subject']);
+    expect(blocks[0].input).not.toHaveProperty('active_form');
+    expect(blocks[0].input).not.toHaveProperty('max_output_tokens');
+    expect(blocks[0].input.maxOutputTokens).toBe(16000);
+  });
 });
 
 // ── 3. detail=meta: tool identity preserved (M3) ──────────────────────────

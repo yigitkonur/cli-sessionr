@@ -94,6 +94,8 @@ export async function pruneCommand(
   const outputFormat: OutputFormat =
     opts.output ?? (opts.json ? 'json' : (isTTY ? 'text' : 'json'));
 
+  const startedAt = Date.now();
+
   try {
     const durationMs = parseDuration(opts.olderThan);
     const cutoff = new Date(Date.now() - durationMs);
@@ -128,6 +130,10 @@ export async function pruneCommand(
           cwd: e.cwd,
         })),
         count: toDelete.length,
+        // er/12: always surface how long the scan took, even when 0ms.
+        // Callers diffing prune runs over time rely on the field always
+        // being present (an integer), never absent.
+        duration_ms: Date.now() - startedAt,
       };
 
       if (outputFormat === 'json' || outputFormat === 'jsonl') {

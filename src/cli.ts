@@ -15,6 +15,7 @@ import { pruneCommand } from './commands/prune.js';
 import { sendCommand } from './commands/send.js';
 import { doctorCommand } from './commands/doctor.js';
 import { jobStatusCommand, jobWaitCommand, jobCancelCommand, jobListCommand } from './commands/job.js';
+import { docsCommand } from './commands/docs.js';
 import { PRESET_NAMES, DETAIL_LEVELS } from './config.js';
 import { SessionReaderError, EXIT, exitCodeForError } from './errors.js';
 import { parseBounded, resolveSource, SOURCES_LIST } from './utils/validate.js';
@@ -540,6 +541,23 @@ Examples:
   .action(async (jobId: string) => {
     const parentOpts = program.opts();
     await jobCancelCommand(jobId, {
+      output: parentOpts.output as OutputFormat | undefined,
+      timing: Boolean(parentOpts.timing),
+    });
+  });
+
+program
+  .command('docs')
+  .argument('[topic]', 'Reference topic to print (omit to list all topics)')
+  .description('Print bundled use-sessionr reference docs (offline, no network)')
+  .addHelpText('after', `
+Examples:
+  $ sessionr docs                               # list available topics
+  $ sessionr docs commands                      # print the commands reference
+  $ sessionr docs --output json | jq '.result.topics'`)
+  .action(async (topic: string | undefined) => {
+    const parentOpts = program.opts();
+    await docsCommand(topic, {
       output: parentOpts.output as OutputFormat | undefined,
       timing: Boolean(parentOpts.timing),
     });
