@@ -15,14 +15,26 @@ export const SOURCES_LIST = [
   'factory',
 ] as const satisfies readonly SessionSource[];
 
+// dc/05: alias map — let agents use the names they think in (`cc` for
+// Claude Code, `gpt`/`openai`/`oai` for Codex/OpenAI). Aliases are
+// normalised to canonical SessionSource names before any downstream check
+// runs, so the rest of the codebase only ever sees a canonical value.
 const SOURCE_ALIASES: Partial<Record<string, SessionSource>> = {
   cc: 'claude',
+  'claude-code': 'claude',
   cli: 'copilot',
   'copilot-cli': 'copilot',
   cx: 'codex',
+  gpt: 'codex',
+  openai: 'codex',
+  oai: 'codex',
   droid: 'factory',
   gm: 'gemini',
 };
+
+export const SOURCE_ALIASES_LIST = Object.entries(SOURCE_ALIASES).map(
+  ([alias, canonical]) => `${alias}→${canonical}`,
+);
 
 export function resolveSource(s?: string): SessionSource | undefined {
   if (!s) return undefined;
@@ -32,9 +44,45 @@ export function resolveSource(s?: string): SessionSource | undefined {
 
   throw new SessionReaderError(`Unknown source "${s}".`, {
     code: 'INVALID_SOURCE',
+    errorClass: 'validation',
     exitCode: EXIT.USAGE,
-    detail: { provided: s, valid: [...SOURCES_LIST] },
-    suggestion: `sessionr list <source> (valid: ${SOURCES_LIST.join(', ')})`,
+    detail: {
+      provided: s,
+      valid: [...SOURCES_LIST],
+      aliases: SOURCE_ALIASES_LIST,
+    },
+    suggestion: `Use one of: ${SOURCES_LIST.join(', ')} (aliases: ${SOURCE_ALIASES_LIST.join(', ')})`,
+  });
+}
+
+/**
+ * Validate one of a fixed set of role names (er/08). Throws a properly-
+ * coded INVALID_ROLE error (not INVALID_RANGE) when an unknown role is
+ * supplied, e.g. `--role badrolename`. Centralising the check here lets
+ * non-read callers (context, search, ...) reuse the same error code.
+ */
+export const VALID_ROLES = [
+  'user',
+  'assistant',
+  'system',
+  'tool_use',
+  'tool_result',
+] as const;
+
+export function validateRoles(raw: string): string[] {
+  const roles = raw
+    .split(',')
+    .map((r) => r.trim())
+    .filter(Boolean);
+  const unknown = roles.filter((r) => !(VALID_ROLES as readonly string[]).includes(r));
+  if (unknown.length === 0) return roles;
+
+  throw new SessionReaderError(`Unknown role(s): ${unknown.join(', ')}`, {
+    code: 'INVALID_ROLE',
+    errorClass: 'validation',
+    exitCode: EXIT.USAGE,
+    detail: { provided: roles, unknown, valid: [...VALID_ROLES] },
+    suggestion: 'sessionr read <id> --role user,assistant',
   });
 }
 
@@ -68,8 +116,15 @@ function isKnownSource(s: string): s is SessionSource {
 }
 
 function invalidArg(name: string, raw: string | number, reason: string): SessionReaderError {
+  // er/06: when the reason names a numeric bound (`must be >= N` or
+  // `must be <= N`), use INVALID_RANGE so the error code semantically
+  // matches "value outside accepted range" rather than the generic
+  // INVALID_ARG bucket. The canonical example is `--tokens 0`, which used
+  // to be silently accepted; now it bubbles up with INVALID_RANGE.
+  const isRangeBound = /must be (>=|<=)/.test(reason);
   return new SessionReaderError(`${name}: ${reason}`, {
-    code: 'INVALID_ARG',
+    code: isRangeBound ? 'INVALID_RANGE' : 'INVALID_ARG',
+    errorClass: 'validation',
     exitCode: EXIT.USAGE,
     detail: { argument: name, provided: raw, reason },
   });

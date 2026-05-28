@@ -1,3 +1,15 @@
+// ── Re-exports (v2 envelope contract) ──────────────────────────────────────
+// Callers may import these directly from './output/envelope.js'; re-exported
+// here so the rest of the codebase can keep a single import target.
+export type {
+  ErrorClass,
+  V2Action,
+  V2Envelope,
+  V2Error,
+  V2Meta,
+} from './output/envelope.js';
+export { SCHEMA_VERSION, success, failure } from './output/envelope.js';
+
 // ── Source Types ────────────────────────────────────────────────────────────
 
 export type SessionSource =
@@ -216,10 +228,17 @@ export interface SliceMeta {
     resume_async: string;
     direct: string | null;
     verified: boolean;
+    /** it/12: true when the spawn binary for `source` is actually on PATH. */
+    runtime_bin_available?: boolean;
     tip: string;
   };
   detail_hint?: {
     current_preset: string;
+    /** it/06: estimated tokens for the CURRENT preset (so agents can compare
+     * against upgrade_options without re-summing). */
+    current_estimated_tokens?: number;
+    /** it/06: true when the current preset's render fits inside token_budget. */
+    current_will_fit_in_budget?: boolean;
     hidden_tool_calls: number;
     truncated_results: number;
     thinking_hidden: boolean;
@@ -260,6 +279,8 @@ export interface ReadOptions {
   page?: number;
   includeSummary?: boolean;
   batch?: string;
+  /** Phase 1 carry-forward: forwarded from cli.ts so meta.timing_ms appears. */
+  timing?: boolean;
 }
 
 // ── Job Types (Write Path) ─────────────────────────────────────────────────
@@ -291,11 +312,16 @@ export interface Job {
 
 export interface SendOptions {
   source?: string;
-  message: string;
+  /** Inline prompt; mutually exclusive with `file`. Validated in sendCommand. */
+  message?: string;
+  /** Path to a file whose contents form the prompt; validated in sendCommand. */
+  file?: string;
   async?: boolean;
   new?: boolean;
   cwd?: string;
   output?: OutputFormat;
   tokens?: number;
   preset?: string;
+  /** Forwarded from cli.ts so meta.timing_ms appears, like every other command. */
+  timing?: boolean;
 }

@@ -3,13 +3,43 @@ import { homedir } from 'node:os';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { serializeMessage } from '../output/serialize.js';
+import { success, failure } from '../output/envelope.js';
+import { emit } from '../output/emit.js';
+import { computeETag } from '../etag.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
 import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
+import { which } from '../utils/which.js';
 import { cmdPrefix } from '../util/invocation.js';
-import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning } from '../types.js';
+import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning, V2Action, V2Meta } from '../types.js';
+
+// it/12: per-source spawn binary, mirroring src/commands/doctor.ts. Looked up
+// once via which() and cached so we don't fork a child every read.
+const SPAWN_BINS: Record<SessionSource, string> = {
+  claude: 'claude',
+  codex: 'codex',
+  gemini: 'gemini',
+  copilot: 'copilot',
+  'cursor-agent': 'cursor-agent',
+  commandcode: 'commandcode',
+  goose: 'goose',
+  opencode: 'opencode',
+  kiro: 'kiro',
+  zed: 'zed',
+  factory: 'factory',
+};
+
+const _spawnBinCache = new Map<SessionSource, boolean>();
+function isSpawnBinAvailable(source: SessionSource): boolean {
+  const cached = _spawnBinCache.get(source);
+  if (cached !== undefined) return cached;
+  const bin = SPAWN_BINS[source];
+  const found = bin ? which(bin) !== null : false;
+  _spawnBinCache.set(source, found);
+  return found;
+}
 
 const VALID_ROLES = ['user', 'assistant', 'system', 'tool_use', 'tool_result'] as const;
 const VALID_ANCHORS = ['head', 'tail', 'search'] as const;
@@ -20,8 +50,9 @@ function validateRoles(raw: string): string[] {
   if (unknown.length > 0) {
     throw new SessionReaderError(`Unknown role(s): ${unknown.join(', ')}`, {
       code: 'INVALID_ROLE', exitCode: EXIT.USAGE,
+      errorClass: 'validation',
       detail: { provided: roles, unknown, valid: [...VALID_ROLES] },
-      suggestion: `sessionr read <id> --role user,assistant`,
+      suggestion: `${cmdPrefix()} read <id> --role user,assistant`,
     });
   }
   return roles;
@@ -32,8 +63,9 @@ function validateAnchor(raw: string | undefined): 'head' | 'tail' | 'search' {
   if (!(VALID_ANCHORS as readonly string[]).includes(raw)) {
     throw new SessionReaderError(`Invalid --anchor "${raw}"`, {
       code: 'INVALID_ANCHOR', exitCode: EXIT.USAGE,
+      errorClass: 'validation',
       detail: { provided: raw, valid: [...VALID_ANCHORS] },
-      suggestion: `sessionr read <id> --anchor head|tail|search`,
+      suggestion: `${cmdPrefix()} read <id> --anchor head|tail|search`,
     });
   }
   return raw as 'head' | 'tail' | 'search';
@@ -78,35 +110,58 @@ function buildSessionSummary(session: NormalizedSession, tokenBudget: number | u
 
 function injectNextAction(meta: SliceMeta): SliceMeta {
   const hint = getResumeHint(meta.source, meta.session_id);
+  // it/12: hint.verified is a STATIC capability flag (does this CLI support
+  // resume?) — by itself it's misleading because it stays `true` even on
+  // machines where the spawn binary isn't installed. AND it with a runtime
+  // PATH lookup so callers can trust `verified:true` means "you can run this
+  // exact command now without a NOT_FOUND".
+  const binAvailable = isSpawnBinAvailable(meta.source);
   return {
     ...meta,
     next_action: {
       resume: hint.resume,
       resume_async: hint.resume_async,
       direct: hint.direct,
-      verified: hint.verified,
+      verified: Boolean(hint.verified && binAvailable),
+      runtime_bin_available: binAvailable,
       tip: hint.tip,
     },
   };
 }
 
-function emitUnchanged(session: NormalizedSession, etag: string): void {
+/**
+ * it/02 — emit a v2 envelope when --if-changed matches. The result mirrors
+ * the canonical success shape so callers can branch on `ok` + a tiny payload
+ * (`unchanged: true` and the etag) instead of parsing a separate envelope.
+ */
+function emitUnchanged(
+  session: NormalizedSession,
+  etag: string,
+  outputFormat: OutputFormat,
+  timing: boolean | undefined,
+): void {
   const shortSid = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
-  console.log(JSON.stringify({
-    api_version: 1,
-    unchanged: true,
-    etag,
-    meta: {
-      session_id: session.id,
-      source: session.source,
-      total_messages: session.stats.totalMessages,
-      updated_at: session.metadata.updatedAt,
-    },
-    actions: [
-      { command: `sessionr read ${shortSid} --if-changed ${etag}`, description: 'Poll again' },
-      { command: `sessionr read ${shortSid}`, description: 'Bypass etag and fetch' },
-    ],
-  }, dateReplacer, 2));
+  const prefix = cmdPrefix();
+  emit(
+    success(
+      {
+        unchanged: true,
+        etag,
+        session_id: session.id,
+        source: session.source,
+        total_messages: session.stats.totalMessages,
+        updated_at: dateToIso(session.metadata.updatedAt),
+      },
+      {
+        meta: { etag },
+        actions: [
+          { command: `${prefix} read ${shortSid} --if-changed ${etag}`, description: 'Poll again' },
+          { command: `${prefix} read ${shortSid}`, description: 'Bypass etag and fetch' },
+        ],
+      },
+    ),
+    { format: outputFormat, timing },
+  );
   process.exitCode = EXIT.NO_CHANGES;
 }
 
@@ -141,6 +196,7 @@ function computeDetailHint(
 
   if (hiddenToolCalls === 0 && truncatedResults === 0 && !thinkingHidden) return undefined;
 
+  const prefix = cmdPrefix();
   const upgradeOptions: Array<{
     preset: string;
     estimated_tokens: number;
@@ -194,12 +250,18 @@ function computeDetailHint(
       estimated_tokens: roundedEst,
       will_fit_in_current_budget: roundedEst <= currentBudget,
       delta_vs_current_tokens: roundedEst - currentReturnedTokens,
-      command: `sessionr read ${sessionId} --preset ${name} --tokens ${Math.max(roundedEst + 2000, currentBudget)}`,
+      command: `${prefix} read ${sessionId} --preset ${name} --tokens ${Math.max(roundedEst + 2000, currentBudget)}`,
     });
   }
 
+  // it/06: surface the CURRENT preset's fit info alongside each upgrade
+  // option's. currentReturnedTokens is what the slicer actually produced,
+  // so by definition it fits in the budget — but agents asking "does it
+  // fit?" deserve an explicit boolean instead of having to remember that.
   return {
     current_preset: currentPreset.name,
+    current_estimated_tokens: currentReturnedTokens,
+    current_will_fit_in_budget: currentReturnedTokens <= currentBudget,
     hidden_tool_calls: hiddenToolCalls,
     truncated_results: truncatedResults,
     thinking_hidden: thinkingHidden,
@@ -214,6 +276,9 @@ export async function readCommand(
   opts?: ReadOptions,
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
+  const outputFormat: OutputFormat =
+    (opts?.output as OutputFormat | undefined) ??
+    (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
   const formatter = createFormatter({
     output: opts?.output as OutputFormat | undefined,
     json: opts?.json,
@@ -246,8 +311,9 @@ export async function readCommand(
     if (requestedAnchor === 'search' && !opts?.search) {
       throw new SessionReaderError('--anchor search requires --search <query>', {
         code: 'INVALID_ANCHOR_USAGE',
+        errorClass: 'validation',
         exitCode: EXIT.USAGE,
-        suggestion: 'sessionr read <id> --anchor search --search "<term>"',
+        suggestion: `${cmdPrefix()} read <id> --anchor search --search "<term>"`,
       });
     }
 
@@ -264,15 +330,15 @@ export async function readCommand(
     if (opts?.tokens != null && (!Number.isFinite(opts.tokens) || opts.tokens <= 0)) {
       throw new SessionReaderError('--tokens must be > 0', {
         code: 'INVALID_TOKEN_BUDGET',
+        errorClass: 'validation',
         exitCode: EXIT.USAGE,
         detail: { provided: opts.tokens },
-        suggestion: 'sessionr read <id> --tokens 4000',
+        suggestion: `${cmdPrefix()} read <id> --tokens 4000`,
       });
     }
     const rawBudget = opts?.tokens ?? getDefaultTokenBudget();
     const tokenBudget = Math.min(rawBudget, MAX_CHUNK_BUDGET);
 
-    const outputFormat = opts?.output ?? (opts?.json ? 'json' : (isTTY ? 'text' : 'json'));
     const summary = buildSessionSummary(session, tokenBudget, preset);
 
     // Empty session — emit a clean envelope instead of throwing InvalidRangeError.
@@ -298,11 +364,20 @@ export async function readCommand(
       const meta = injectNextAction(emptyMeta);
 
       if (outputFormat === 'json' || outputFormat === 'jsonl') {
-        const envelope = buildJsonEnvelope(session, [], meta, summary, shouldIncludeSummary(opts));
-        envelope.notice = 'session is empty (no user/assistant messages)';
-        console.log(JSON.stringify(envelope, dateReplacer, 2));
+        emitReadEnvelope({
+          session,
+          messages: [],
+          meta,
+          summary,
+          includeSummary: shouldIncludeSummary(opts),
+          outputFormat,
+          timing: opts?.timing,
+          notice: 'session is empty (no user/assistant messages)',
+          preset,
+          detail,
+        });
       } else {
-        console.log(`Session ${session.id} (${session.source}) is empty — no messages.`);
+        process.stdout.write(`Session ${session.id} (${session.source}) is empty — no messages.\n`);
       }
       return;
     }
@@ -311,16 +386,39 @@ export async function readCommand(
     if (opts?.page != null) {
       const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, preset);
       let meta = injectNextAction(result.meta);
-      meta = annotateMeta(meta, tokenBudget, preset);
+      meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
+      meta = attachETag(meta, session, {
+        preset,
+        tokenBudget,
+        anchor: undefined,
+        search: opts?.search,
+        page: opts.page,
+        format: outputFormat,
+      });
       meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
 
-      if (outputFormat === 'json') {
-        const envelope = buildJsonEnvelope(session, result.messages, meta, summary, shouldIncludeSummary(opts));
-        console.log(JSON.stringify(envelope, dateReplacer, 2));
-      } else if (outputFormat === 'jsonl') {
-        console.log(buildJsonlRead(session, result.messages, meta, summary, shouldIncludeSummary(opts)));
+      // it/01+02: short-circuit when caller's --if-changed etag matches.
+      if (opts?.ifChanged && meta.etag === opts.ifChanged) {
+        emitUnchanged(session, meta.etag, outputFormat, opts?.timing);
+        return;
+      }
+
+      if (outputFormat === 'json' || outputFormat === 'jsonl') {
+        emitReadEnvelope({
+          session,
+          messages: result.messages,
+          meta,
+          summary,
+          includeSummary: shouldIncludeSummary(opts),
+          outputFormat,
+          timing: opts?.timing,
+          preset,
+          detail,
+        });
       } else {
-        console.log(formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta));
+        process.stdout.write(
+          formatter.read(session, result.messages, meta.range.from, meta.range.to, preset, meta) + '\n',
+        );
       }
       return;
     }
@@ -352,7 +450,7 @@ export async function readCommand(
       ? 'search' as const
       : (requestedAnchor ?? 'head');
 
-    const result = sliceByTokenBudget(
+    const sliceResult = sliceByTokenBudget(
       sliced,
       tokenBudget,
       session.id,
@@ -362,17 +460,31 @@ export async function readCommand(
       preset,
     );
 
-    let meta = injectNextAction(result.meta);
-    meta = annotateMeta(meta, tokenBudget, preset);
-    meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
+    let meta = injectNextAction(sliceResult.meta);
+    meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
+    meta = attachETag(meta, session, {
+      preset,
+      tokenBudget,
+      anchor,
+      search: opts?.search,
+      page: undefined,
+      format: outputFormat,
+    });
+    meta.detail_hint = computeDetailHint(sliceResult.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
 
-    let outputMessages = result.messages;
+    // it/01+02: short-circuit when caller's --if-changed etag matches.
+    if (opts?.ifChanged && meta.etag === opts.ifChanged) {
+      emitUnchanged(session, meta.etag, outputFormat, opts?.timing);
+      return;
+    }
+
+    let outputMessages = sliceResult.messages;
     if (detail === 'meta') {
-      outputMessages = outputMessages.map((m) => ({
-        ...m,
-        content: '',
-        blocks: [],
-      }));
+      // M3: do NOT pre-blank blocks here. serializeMessage(m, {detail:'meta'})
+      // is the canonical owner of the meta-detail shape — it preserves the
+      // tool name + tool_use_id on tool messages (so agents can join /
+      // re-fetch) and strips everything else. Wiping blocks here would
+      // strip the very fields serializeMessage needs to surface.
     } else if (detail === 'skeleton') {
       outputMessages = outputMessages.map((m) => ({
         ...m,
@@ -381,14 +493,21 @@ export async function readCommand(
       }));
     }
 
-    if (outputFormat === 'json') {
-      const envelope = buildJsonEnvelope(session, outputMessages, meta, summary, shouldIncludeSummary(opts));
-      console.log(JSON.stringify(envelope, dateReplacer, 2));
-    } else if (outputFormat === 'jsonl') {
-      console.log(buildJsonlRead(session, outputMessages, meta, summary, shouldIncludeSummary(opts)));
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      emitReadEnvelope({
+        session,
+        messages: outputMessages,
+        meta,
+        summary,
+        includeSummary: shouldIncludeSummary(opts),
+        outputFormat,
+        timing: opts?.timing,
+        preset,
+        detail,
+      });
     } else {
-      console.log(
-        formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta),
+      process.stdout.write(
+        formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta) + '\n',
       );
     }
 
@@ -397,13 +516,31 @@ export async function readCommand(
       process.exitCode = EXIT.PARTIAL;
     }
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    console.error(formatter.error(error));
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const isSre = err instanceof SessionReaderError;
+      emit(
+        failure({
+          class: isSre ? err.class : 'internal',
+          code: isSre ? err.code : 'READ_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+          ...(isSre && Object.keys(err.detail).length > 0 ? { detail: err.detail } : {}),
+          ...(isSre && err.suggestion ? { suggestion: err.suggestion } : {}),
+          retryable: isSre ? err.retry : false,
+        }),
+        { format: outputFormat, timing: opts?.timing },
+      );
+    } else {
+      const error = err instanceof Error ? err : new Error(String(err));
+      process.stderr.write(formatter.error(error) + '\n');
+    }
     process.exitCode = exitCodeForError(err);
   }
 }
 
 async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void> {
+  // --batch streams one v2 envelope per session as JSONL. Each line is a
+  // complete envelope (ok + schema_version + result containing the session
+  // payload) so consumers can pipe through `jq -c '.result'` uniformly.
   const rawIds = await readFile(opts.batch!, 'utf-8');
   const ids = rawIds.split(/\r?\n/).map((id) => id.trim()).filter(Boolean);
   const detail = opts.detail as DetailLevel | undefined;
@@ -415,104 +552,245 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
     : getPreset(presetName!);
   const rawBudget = opts.tokens ?? getDefaultTokenBudget();
   const tokenBudget = Math.min(rawBudget, MAX_CHUNK_BUDGET);
-  const lines: string[] = [
-    jsonlLine({ type: 'meta', api_version: 1, count: ids.length, budget: tokenBudget, preset: preset.name }),
-  ];
 
-  for (const id of ids) {
-    const session = await loadSession(id, opts.source as SessionSource | undefined);
-    let messages = session.messages;
-    if (opts.role) {
-      const roles = opts.role.split(',').map((r) => r.trim());
-      messages = filterByRole(messages, roles);
-    }
-
-    const result = sliceByTokenBudget(
-      messages,
-      tokenBudget,
-      session.id,
-      session.source,
-      (opts.search ? 'search' : (opts.anchor ?? 'head')) as 'head' | 'tail' | 'search',
-      opts.search,
-      preset,
-    );
-    let meta = injectNextAction(result.meta);
-    meta = annotateMeta(meta, tokenBudget, preset);
-    meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
-
-    lines.push(jsonlLine({ type: 'session', ...buildSessionSummary(session, tokenBudget, preset) }));
-    lines.push(jsonlLine({ type: 'meta', ...meta }));
-    for (const message of result.messages) {
-      lines.push(jsonlLine({ type: 'message', session_id: session.id, ...serializeMessage(message) }));
+  // HIGH-2 (adversarial review): validate --role ONCE up front. Previously the
+  // batch path split the roles raw and let filterByRole silently drop every
+  // message for an invalid role, yielding ok:true + empty messages with no
+  // error. validateRoles throws INVALID_ROLE; we emit it as a single JSONL
+  // error line (M5 framing) and stop — a bad role is a whole-batch usage error.
+  let validatedRoles: string[] | undefined;
+  if (opts.role) {
+    try {
+      validatedRoles = validateRoles(opts.role);
+    } catch (err) {
+      emitBatchError(err, 'READ_BATCH_FAILED');
+      process.exitCode = exitCodeForError(err);
+      return;
     }
   }
 
-  console.log(lines.join('\n'));
+  // Emit a batch header as the first JSONL envelope so consumers can sanity-
+  // check the run before unrolling individual session envelopes.
+  emit(
+    success({ batch_header: true, count: ids.length, budget: tokenBudget, preset: preset.name }),
+    { format: 'jsonl' },
+  );
+
+  let anyError = false;
+  for (const id of ids) {
+    // MEDIUM-5 (adversarial review): a missing session mid-batch used to throw
+    // out to the outer catch, which emitted a multi-line pretty-JSON failure
+    // AFTER the JSONL lines — an unparseable mixed stream. Now every session
+    // (success OR failure) is exactly one JSONL line and the batch continues.
+    try {
+      const session = await loadSession(id, opts.source as SessionSource | undefined);
+      let messages = session.messages;
+      if (validatedRoles) {
+        messages = filterByRole(messages, validatedRoles);
+      }
+
+      const result = sliceByTokenBudget(
+        messages,
+        tokenBudget,
+        session.id,
+        session.source,
+        (opts.search ? 'search' : (opts.anchor ?? 'head')) as 'head' | 'tail' | 'search',
+        opts.search,
+        preset,
+      );
+      let meta = injectNextAction(result.meta);
+      meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts.preset, detail });
+      meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
+
+      emitReadEnvelope({
+        session,
+        messages: result.messages,
+        meta,
+        summary: buildSessionSummary(session, tokenBudget, preset),
+        includeSummary: true,
+        outputFormat: 'jsonl',
+        timing: opts.timing,
+        preset,
+        detail,
+      });
+    } catch (err) {
+      anyError = true;
+      emitBatchError(err, 'SESSION_NOT_FOUND', { session_id: id });
+    }
+  }
+
+  // If any session failed, surface a non-zero exit so scripted callers notice,
+  // while still having emitted a clean JSONL line for every id.
+  if (anyError && (process.exitCode === undefined || process.exitCode === 0)) {
+    process.exitCode = EXIT.NOT_FOUND;
+  }
 }
 
-function annotateMeta(meta: SliceMeta, tokenBudget: number, preset: VerbosityPreset): SliceMeta {
+/** Emit a single-line JSONL v2 failure envelope (keeps batch framing uniform). */
+function emitBatchError(err: unknown, fallbackCode: string, extraDetail?: Record<string, unknown>): void {
+  const isSre = err instanceof SessionReaderError;
+  const detail = {
+    ...(isSre && Object.keys(err.detail).length > 0 ? err.detail : {}),
+    ...(extraDetail ?? {}),
+  };
+  emit(
+    failure({
+      class: isSre ? err.class : 'internal',
+      code: isSre ? err.code : fallbackCode,
+      message: err instanceof Error ? err.message : String(err),
+      ...(Object.keys(detail).length > 0 ? { detail } : {}),
+      ...(isSre && err.suggestion ? { suggestion: err.suggestion } : {}),
+      retryable: isSre ? err.retry : false,
+    }),
+    { format: 'jsonl' },
+  );
+}
+
+// H6: callers may pass --preset AND --detail; --detail always wins. We
+// surface the actually-used preset on meta.preset so an agent can detect
+// drift between what it asked for and what the renderer applied. The
+// optional meta.preset_requested + meta.preset_source fields tell agents
+// WHY (detail-override vs user-provided vs default).
+function annotateMeta(
+  meta: SliceMeta,
+  tokenBudget: number,
+  preset: VerbosityPreset,
+  args?: { requestedPreset?: string; detail?: string },
+): SliceMeta {
+  const extra: Record<string, unknown> = {};
+  if (args?.detail) {
+    extra.preset_source = 'detail-override';
+    extra.detail = args.detail;
+    if (args.requestedPreset && args.requestedPreset !== preset.name) {
+      extra.preset_requested = args.requestedPreset;
+      extra.preset_override_reason =
+        `--detail ${args.detail} overrides --preset ${args.requestedPreset}`;
+    }
+  } else if (args?.requestedPreset) {
+    extra.preset_source = 'user';
+  } else {
+    extra.preset_source = 'default';
+  }
   return {
     ...meta,
     budget: tokenBudget,
     preset: preset.name,
+    ...extra,
   };
+}
+
+/**
+ * Compute the response ETag and inject it into SliceMeta. it/01 + it/03:
+ * the etag must encode every view-affecting parameter (preset, budget,
+ * range, anchor, search, page, format) so two different views of the same
+ * session produce different etags and --if-changed polling stays correct.
+ */
+function attachETag(
+  meta: SliceMeta,
+  session: NormalizedSession,
+  args: {
+    preset: VerbosityPreset;
+    tokenBudget: number;
+    anchor?: string;
+    search?: string;
+    page?: number;
+    format: string;
+  },
+): SliceMeta {
+  const etag = computeETag(session, {
+    preset: args.preset.name,
+    tokenBudget: args.tokenBudget,
+    from: meta.range.from,
+    to: meta.range.to,
+    anchor: args.anchor,
+    search: args.search,
+    page: args.page,
+    format: args.format,
+  });
+  return { ...meta, etag };
 }
 
 function shouldIncludeSummary(opts?: ReadOptions): boolean {
   return opts?.includeSummary === true || opts?.page == null || opts.page === 1;
 }
 
-function buildJsonEnvelope(
-  session: NormalizedSession,
-  messages: NormalizedMessage[],
-  meta: SliceMeta,
-  summary?: SessionSummary,
-  includeSummary = true,
-): Record<string, unknown> {
-  const envelope: Record<string, unknown> = {
-    api_version: 1,
-    meta,
+interface EmitReadArgs {
+  session: NormalizedSession;
+  messages: NormalizedMessage[];
+  meta: SliceMeta;
+  summary?: SessionSummary;
+  includeSummary: boolean;
+  outputFormat: OutputFormat;
+  timing?: boolean;
+  notice?: string;
+  /** Phase 3 (oc/12): preset name routes the serializer's content/blocks dedup. */
+  preset?: VerbosityPreset;
+  /** Phase 3 (M3): detail=meta surfaces tool_use_id + "Tool: <name>" for tool msgs. */
+  detail?: DetailLevel;
+}
+
+/**
+ * Build a v2 envelope for read responses. `result` contains the session
+ * summary + serialized messages; `meta` carries the SliceMeta (pagination,
+ * etag, partial flag, etc.). `actions` are deterministic per-session
+ * recommendations agents can run next.
+ */
+function emitReadEnvelope(args: EmitReadArgs): void {
+  // oc/12 + M3: pass preset/detail so serializeMessage emits ONE channel
+  // (content vs blocks) and tool messages in --detail meta keep their
+  // tool_use_id + "Tool: <name>" identity.
+  const serializedMessages = args.messages.map((m) =>
+    serializeForJson(serializeMessage(m, { preset: args.preset?.name, detail: args.detail })),
+  );
+  const result: Record<string, unknown> = {
+    messages: serializedMessages,
   };
-  if (meta.next_action) envelope.next_action = meta.next_action;
-  envelope.actions = buildActions(meta);
-  if (summary && includeSummary) envelope.session = summary;
-  envelope.messages = messages.map(serializeMessage);
+  if (args.summary && args.includeSummary) result.session = args.summary;
+  if (args.notice) result.notice = args.notice;
 
-  return envelope;
+  const meta: V2Meta = { ...args.meta } as unknown as V2Meta;
+  meta.session_id = args.meta.session_id;
+  meta.source = args.meta.source;
+  // Note: SliceMeta already lives flat under meta — V2Meta extends Record
+  // so all its keys (range, anchor, cursor, partial, etag, next_action,
+  // detail_hint, etc.) survive intact.
+
+  const actions = buildActions(args.meta);
+
+  emit(success(serializeForJson(result), { meta: serializeForJson(meta) as V2Meta, actions }), {
+    format: args.outputFormat,
+    timing: args.timing,
+  });
 }
 
-function buildJsonlRead(
-  session: NormalizedSession,
-  messages: NormalizedMessage[],
-  meta: SliceMeta,
-  summary?: SessionSummary,
-  includeSummary = true,
-): string {
-  const lines: string[] = [jsonlLine({ type: 'meta', api_version: 1, ...meta })];
-  if (meta.next_action) lines.push(jsonlLine({ type: 'next_action', ...meta.next_action }));
-  lines.push(jsonlLine({ type: 'actions', actions: buildActions(meta) }));
-  if (summary && includeSummary) lines.push(jsonlLine({ type: 'session', ...summary }));
-  for (const message of messages) {
-    lines.push(jsonlLine({ type: 'message', session_id: session.id, ...serializeMessage(message) }));
-  }
-  return lines.join('\n');
-}
-
-function buildActions(meta: SliceMeta): Array<{ command: string; description: string }> {
+function buildActions(meta: SliceMeta): V2Action[] {
   const sid = meta.session_id;
   const shortSid = sid.length > 8 ? sid.slice(0, 8) : sid;
+  const prefix = cmdPrefix();
   return [
-    { command: `sessionr stats ${shortSid}`, description: 'Full statistics (tools, tokens, files)' },
-    { command: `sessionr context ${shortSid} --tokens 8000`, description: 'Export context for agent handoff' },
-    { command: `sessionr diff ${shortSid} <other-id>`, description: 'Compare with another session' },
+    { command: `${prefix} stats ${shortSid}`, description: 'Full statistics (tools, tokens, files)' },
+    { command: `${prefix} context ${shortSid} --tokens 8000`, description: 'Export context for agent handoff' },
+    { command: `${prefix} diff ${shortSid} <other-id>`, description: 'Compare with another session' },
   ];
 }
 
-function jsonlLine(obj: unknown): string {
-  return JSON.stringify(obj, dateReplacer);
+function dateToIso(d: Date | string | undefined): string | undefined {
+  if (!d) return undefined;
+  return d instanceof Date ? d.toISOString() : d;
 }
 
-function dateReplacer(_key: string, value: unknown): unknown {
+// Recursive walk: convert Date instances to ISO strings so plain JSON.stringify
+// in emit() produces valid output. Phase 0's emit() does not register a Date
+// replacer; commands own date safety.
+function serializeForJson(value: unknown): unknown {
   if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(serializeForJson);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = serializeForJson(v);
+    }
+    return out;
+  }
   return value;
 }

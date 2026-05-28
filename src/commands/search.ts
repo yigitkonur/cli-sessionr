@@ -1,8 +1,16 @@
 import { listSessions, loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
-import { exitCodeForError } from '../errors.js';
+import { success, failure } from '../output/envelope.js';
+import { emit } from '../output/emit.js';
+import { EXIT, exitCodeForError, SessionReaderError } from '../errors.js';
 import { cmdPrefix } from '../util/invocation.js';
-import type { SessionSource, OutputFormat, SessionListEntry } from '../types.js';
+import type {
+  SessionSource,
+  OutputFormat,
+  SessionListEntry,
+  V2Action,
+  V2Meta,
+} from '../types.js';
 
 interface SearchMatch {
   messageIndex: number;
@@ -13,19 +21,24 @@ interface SearchMatch {
 interface SearchResult extends SessionListEntry {
   matchCount: number;
   matches: SearchMatch[];
+  /** it/08: a single quick-preview snippet so callers don't have to drill into matches[]. */
+  snippet?: string;
 }
 
 function findSearchMatches(
   messages: { index: number; content: string }[],
   query: string,
   maxMatches = 5,
-  snippetRadius = 60,
+  snippetRadius = 50,
 ): SearchMatch[] {
   const lowerQuery = query.toLowerCase();
   const found: SearchMatch[] = [];
   for (const msg of messages) {
     const idx = msg.content.toLowerCase().indexOf(lowerQuery);
     if (idx === -1) continue;
+    // it/08: snippet = ~50 chars before + match + ~50 chars after, with
+    // whitespace collapsed and ellipses for trimmed edges so it stays one
+    // line in tools that don't word-wrap.
     const from = Math.max(0, idx - snippetRadius);
     const to = Math.min(msg.content.length, idx + query.length + snippetRadius);
     const snippet =
@@ -38,11 +51,25 @@ function findSearchMatches(
   return found;
 }
 
-function parseBoundedInt(value: string | undefined, fallback: number, min: number, max: number): number {
-  if (!value) return fallback;
-  const parsed = parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, parsed));
+// MEDIUM-6 (adversarial review): was a silent clamp (Math.min/Math.max) that
+// turned `--top 0` into 1 and `--max-sessions nope` into the default with
+// ok:true/exit 0. An agent passing a bad value got wrong-sized results and no
+// signal. Now strict: out-of-range or non-integer throws INVALID_RANGE (exit 2)
+// like the equivalent guard in list.ts.
+function parseBoundedIntStrict(flag: string, value: string | undefined, fallback: number, min: number, max: number): number {
+  if (value === undefined) return fallback;
+  const trimmed = typeof value === 'string' ? value.trim() : value;
+  const parsed = Number(trimmed);
+  if (trimmed === '' || !Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new SessionReaderError(`${flag}: must be an integer in [${min}, ${max}]`, {
+      code: 'INVALID_RANGE',
+      exitCode: EXIT.USAGE,
+      errorClass: 'validation',
+      detail: { argument: flag, provided: value, min, max },
+      suggestion: `sessionr search -q "<query>" ${flag} ${fallback}`,
+    });
+  }
+  return parsed;
 }
 
 export async function searchCommand(
@@ -54,10 +81,11 @@ export async function searchCommand(
     cwd?: string;
     json?: boolean;
     output?: OutputFormat;
+    timing?: boolean;
   },
 ): Promise<void> {
   const isTTY = process.stdout.isTTY ?? false;
-  const outputFormat = opts.output ?? (opts.json ? 'json' : (isTTY ? 'text' : 'json'));
+  const outputFormat: OutputFormat = opts.output ?? (opts.json ? 'json' : (isTTY ? 'text' : 'json'));
   const formatter = createFormatter({
     output: opts.output,
     json: opts.json,
@@ -65,8 +93,21 @@ export async function searchCommand(
   });
 
   try {
-    const maxSessions = parseBoundedInt(opts.maxSessions, 20, 1, 200);
-    const top = parseBoundedInt(opts.top, 10, 1, 200);
+    // search-without-query validation: commander already enforces `-q` is
+    // present (requiredOption) but accepts empty strings, which would scan
+    // every session and return every result. Reject those upfront.
+    if (typeof opts.query !== 'string' || opts.query.trim() === '') {
+      throw new SessionReaderError('search requires a non-empty --query', {
+        code: 'INVALID_QUERY',
+        errorClass: 'validation',
+        exitCode: EXIT.USAGE,
+        detail: { provided: opts.query ?? null },
+        suggestion: `${cmdPrefix()} search -q "deploy failed"`,
+      });
+    }
+
+    const maxSessions = parseBoundedIntStrict('--max-sessions', opts.maxSessions, 20, 1, 200);
+    const top = parseBoundedIntStrict('--top', opts.top, 10, 1, 200);
     const allEntries = await listSessions(opts.source as SessionSource | undefined);
     const entries = allEntries.slice(0, maxSessions);
     const query = opts.query.toLowerCase();
@@ -78,10 +119,14 @@ export async function searchCommand(
         const matchingMessages = session.messages.filter((msg) => msg.content.toLowerCase().includes(query));
         const matchCount = matchingMessages.length;
         if (matchCount > 0) {
+          const matches = findSearchMatches(session.messages, opts.query);
           results.push({
             ...entry,
             matchCount,
-            matches: findSearchMatches(session.messages, opts.query),
+            matches,
+            // it/08: hoist the first match as a top-level snippet so callers
+            // can preview results without walking matches[].
+            snippet: matches[0]?.snippet,
           });
         }
       } catch {
@@ -94,30 +139,34 @@ export async function searchCommand(
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
       const prefix = cmdPrefix();
-      const actions: Array<{ command: string; description: string }> = [];
+      const actions: V2Action[] = [];
       if (topResults.length > 0) {
-        actions.push(
-          { command: `${prefix} read ${topResults[0].id} --search "${opts.query}" --tokens 4000`, description: 'Read top match with context' },
-        );
+        actions.push({
+          command: `${prefix} read ${topResults[0].id} --search "${opts.query}" --tokens 4000`,
+          description: 'Read top match with context',
+        });
       }
       if (allEntries.length > maxSessions) {
-        actions.push(
-          { command: `${prefix} search -q "${opts.query}" --max-sessions ${maxSessions + 20}`, description: 'Search more sessions' },
-        );
+        actions.push({
+          command: `${prefix} search -q "${opts.query}" --max-sessions ${maxSessions + 20}`,
+          description: 'Search more sessions',
+        });
       }
 
       const result: Record<string, unknown> = {
-        api_version: 1,
         query: opts.query,
         sessions_scanned: entries.length,
-        sessions_available: allEntries.length,
         results: topResults.map((r) => ({
           id: r.id,
           source: r.source,
           cwd: r.cwd,
-          updatedAt: r.updatedAt,
+          // HIGH-3 (adversarial review): was camelCase `updatedAt` — the only
+          // non-snake_case key in the search result block. Match the contract.
+          updated_at: r.updatedAt instanceof Date ? r.updatedAt.toISOString() : r.updatedAt,
           summary: r.summary,
           match_count: r.matchCount,
+          // it/08: top-level snippet preview (50 chars before + match + 50 chars after).
+          snippet: r.snippet,
           matches: r.matches.map((match) => ({
             message_index: match.messageIndex,
             snippet: match.snippet,
@@ -125,20 +174,39 @@ export async function searchCommand(
           })),
         })),
         total_matches: topResults.length,
-        actions,
       };
-      console.log(JSON.stringify(result, dateReplacer, 2));
+
+      const meta: V2Meta = {
+        sessions_available: allEntries.length,
+        top,
+        max_sessions: maxSessions,
+      };
+
+      emit(success(result, { meta, actions }), {
+        format: outputFormat,
+        timing: opts.timing,
+      });
     } else {
-      console.log(formatter.list(topResults));
+      process.stdout.write(formatter.list(topResults) + '\n');
     }
   } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
-    console.error(formatter.error(error));
+    if (outputFormat === 'json' || outputFormat === 'jsonl') {
+      const isSre = err instanceof SessionReaderError;
+      emit(
+        failure({
+          class: isSre ? err.class : 'internal',
+          code: isSre ? err.code : 'SEARCH_FAILED',
+          message: err instanceof Error ? err.message : String(err),
+          ...(isSre && Object.keys(err.detail).length > 0 ? { detail: err.detail } : {}),
+          ...(isSre && err.suggestion ? { suggestion: err.suggestion } : {}),
+          retryable: isSre ? err.retry : false,
+        }),
+        { format: outputFormat, timing: opts.timing },
+      );
+    } else {
+      const error = err instanceof Error ? err : new Error(String(err));
+      process.stderr.write(formatter.error(error) + '\n');
+    }
     process.exitCode = exitCodeForError(err);
   }
-}
-
-function dateReplacer(_key: string, value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString();
-  return value;
 }
