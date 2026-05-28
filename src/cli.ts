@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Must be first: installs the node:sqlite ExperimentalWarning filter before any
+// parser can lazily load node:sqlite and pollute stderr (oc/04 clean-stderr).
+import './util/suppress-experimental-warnings.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

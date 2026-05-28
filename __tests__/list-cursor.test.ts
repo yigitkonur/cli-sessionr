@@ -4,21 +4,30 @@
  * their own pagination math. The Phase 2 envelope migration accidentally
  * collapsed these to bare command strings.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe as vitestDescribe, it, expect } from 'vitest';
 import { execSync, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
 const CLI = join(process.cwd(), 'dist', 'cli.js');
-
-beforeAll(() => {
-  execSync('npm run build', { stdio: 'ignore' });
-}, 60_000);
 
 function runJson(args: string[]): Record<string, unknown> {
   const r = spawnSync('node', [CLI, ...args], { encoding: 'utf8' });
   if (!r.stdout) throw new Error(`No stdout. stderr=${r.stderr}`);
   return JSON.parse(r.stdout) as Record<string, unknown>;
 }
+
+// Cursor next/prev/offset only exist with enough sessions to paginate (the
+// offset test needs ≥6). On CI (empty home) there are none → skip the file.
+execSync('npm run build', { stdio: 'ignore' });
+const ENOUGH_SESSIONS: boolean = (() => {
+  try {
+    const env = runJson(['--output', 'json', 'list', '--cwd', 'all', '-n', '2']);
+    return ((env.result as { total_available?: number } | undefined)?.total_available ?? 0) >= 6;
+  } catch {
+    return false;
+  }
+})();
+const describe = ENOUGH_SESSIONS ? vitestDescribe : vitestDescribe.skip;
 
 describe('list cursor shape', () => {
   // Long timeouts: --cwd all scans every session directory; on a developer
