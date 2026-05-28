@@ -7,6 +7,7 @@
       {
         "preset": "conventionalcommits",
         "releaseRules": [
+          { "breaking": true, "release": "major" },
           { "type": "feat", "release": "minor" },
           { "type": "fix", "release": "patch" },
           { "type": "perf", "release": "patch" },
@@ -17,14 +18,8 @@
           { "type": "test", "release": false },
           { "type": "style", "release": false },
           { "type": "build", "release": false },
-          { "type": "ci", "release": false },
-          { "subject": "*BREAKING*", "release": "major" }
-        ],
-        "parserOpts": {
-          "noteKeywords": ["BREAKING CHANGE", "BREAKING-CHANGE", "BREAKING"],
-          "headerPattern": "^\\W*\\s*(\\w+)(?:\\(([^)]+)\\))?:\\s+(.+)$",
-          "headerCorrespondence": ["type", "scope", "subject"]
-        }
+          { "type": "ci", "release": false }
+        ]
       }
     ],
     [
