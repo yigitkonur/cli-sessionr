@@ -1,3 +1,33 @@
+## [3.0.0](https://github.com/yigitkonur/cli-sessionr/compare/v2.9.0...v3.0.0) (2026-05-28)
+
+### ⚠ BREAKING CHANGES
+
+* **send:** every command now emits the v2 envelope
+{ ok, schema_version: "v2", result | error, meta, actions }. The v2.x shapes
+are gone: no top-level api_version, no `data` wrapper on send/job, error uses
+`class` + `retryable` (was `retry`), and all keys are snake_case. See
+MIGRATION.md. This is the sessionr 3.0.0 release.
+* Phase 2 — close 13 HIGH agent-readiness issues + envelope sweep
+* Phase 1 — close 12 CRITICAL agent-readiness issues
+
+### Features
+
+* **envelope:** v3 canonical envelope + emit + --timing wiring ([1b31f3c](https://github.com/yigitkonur/cli-sessionr/commit/1b31f3cd6321e504fa31af4afe1cca67d3a0b347))
+* Phase 1 — close 12 CRITICAL agent-readiness issues ([a7070f5](https://github.com/yigitkonur/cli-sessionr/commit/a7070f5ccc959cbb28e24681f105c9e96714ab17))
+* Phase 2 — close 13 HIGH agent-readiness issues + envelope sweep ([b5918d4](https://github.com/yigitkonur/cli-sessionr/commit/b5918d4ba8470e578fd90789efda669a65bf4603))
+* Phase 3 — close ~45 MEDIUM issues + 5 of my audit findings ([ae7cd55](https://github.com/yigitkonur/cli-sessionr/commit/ae7cd55ee827b09527e4c85c7f562e6e26a63f99))
+
+### Bug Fixes
+
+* **ci:** enable npm OIDC trusted publishing (npm>=11.5.1, token-free) ([7b9e2df](https://github.com/yigitkonur/cli-sessionr/commit/7b9e2df029197b2452918f2c97c81e2291fd7404))
+* **ci:** suppress node:sqlite ExperimentalWarning + skip real-session tests on CI ([4251010](https://github.com/yigitkonur/cli-sessionr/commit/42510103d197de6e2e49893a731ca7f1121e0e54))
+* close all 8 Codex adversarial-review findings (H1-H3, M4-M7, L8) ([7711194](https://github.com/yigitkonur/cli-sessionr/commit/7711194d4308ac4e4165f354dd951217fa6c746a))
+* **envelope:** canonical snake_case via toExternal() — close H2/Phase 2 BLOCKING ([d21ced2](https://github.com/yigitkonur/cli-sessionr/commit/d21ced2b6f7b0a05acce00a1e1502f1b0e6a9bb5))
+* **errors:** set errorClass on existing SessionReaderError subclasses ([92e715d](https://github.com/yigitkonur/cli-sessionr/commit/92e715dfe69ab6bc2ecc4a74d7fa3f3b9c745b52))
+* **prune:** validate --output upfront so unknown formats hit oc/03 envelope ([6732875](https://github.com/yigitkonur/cli-sessionr/commit/6732875fe0ff1cceba31d8f8ddfa407c60012807))
+* **release:** detect breaking changes so the v3 hard break bumps major ([0687c1b](https://github.com/yigitkonur/cli-sessionr/commit/0687c1b581a702c82e206f57d252dfcd733ac4eb))
+* **send:** route success paths through the v2 envelope (final-review blocker) ([3b5cfc0](https://github.com/yigitkonur/cli-sessionr/commit/3b5cfc0424d7b1bea921f6322e43fb916eb7fbd8))
+
 ## [2.9.0](https://github.com/yigitkonur/cli-sessionr/compare/v2.8.1...v2.9.0) (2026-05-15)
 
 ### Features
