@@ -1,7 +1,0 @@
-{
-  "error": {
-    "code": "USAGE_ERROR",
-    "message": "missing required argument 'session-id'",
-    "retry": false
-  }
-}

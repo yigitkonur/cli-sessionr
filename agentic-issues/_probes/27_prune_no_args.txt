@@ -1,7 +1,0 @@
-{
-  "error": {
-    "code": "USAGE_ERROR",
-    "message": "required option '--older-than <duration>' not specified",
-    "retry": false
-  }
-}

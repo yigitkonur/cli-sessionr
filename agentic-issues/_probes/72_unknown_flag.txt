@@ -1,7 +1,0 @@
-{
-  "error": {
-    "code": "USAGE_ERROR",
-    "message": "unknown option '--bogus'",
-    "retry": false
-  }
-}

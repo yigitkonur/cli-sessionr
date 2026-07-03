@@ -1,7 +1,0 @@
-{
-  "error": {
-    "code": "UNKNOWN_ERROR",
-    "message": "Cannot read properties of undefined (reading 'bin')",
-    "retry": false
-  }
-}

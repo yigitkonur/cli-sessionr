@@ -1,8 +1,0 @@
-{
-  "error": {
-    "code": "MISSING_SOURCE",
-    "message": "--source is required when creating a new session",
-    "suggestion": "sessionr send --new --source claude -f prompt.md",
-    "retry": false
-  }
-}
