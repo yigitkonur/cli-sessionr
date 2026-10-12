@@ -69,6 +69,36 @@ export function serializeMessage(
     content: m.content,
   };
 
+  if (m.source !== undefined) {
+    msg.source = m.source;
+  }
+  if (m.rawLineIndex !== undefined) {
+    msg.raw_line_index = m.rawLineIndex;
+  }
+  if (m.kind !== undefined) {
+    msg.kind = m.kind;
+  }
+  if (m.compactionMeta !== undefined) {
+    msg.compaction_meta = m.compactionMeta;
+    if (m.kind === 'compaction') {
+      if (m.compactionMeta.trigger !== undefined) {
+        msg.trigger = m.compactionMeta.trigger;
+      }
+      if (m.compactionMeta.preTokens !== undefined) {
+        msg.pre_tokens = m.compactionMeta.preTokens;
+      }
+      if (m.compactionMeta.postTokens !== undefined) {
+        msg.post_tokens = m.compactionMeta.postTokens;
+      }
+      if (
+        m.compactionMeta.summary !== undefined &&
+        (resolved.preset === 'verbose' || resolved.preset === 'full' || !resolved.preset)
+      ) {
+        msg.summary = m.compactionMeta.summary;
+      }
+    }
+  }
+
   // M3 — `--detail meta`: emit a thin per-message stub so agents can
   // enumerate without paying for decoded content. For tool_use /
   // tool_result we PRESERVE two load-bearing fields:
@@ -233,6 +263,30 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   toolResult: 'tool_result',
   cacheRead: 'cache_read',
   cacheCreation: 'cache_creation',
+  turnIndex: 'turn_index',
+  userMessageId: 'user_message_id',
+  startIndex: 'start_index',
+  endIndex: 'end_index',
+  finalMessageIndex: 'final_message_index',
+  filesChanged: 'files_changed',
+  errorCount: 'error_count',
+  pendingToolCalls: 'pending_tool_calls',
+  contextWindowSize: 'context_window_size',
+  contextWindow: 'context_window',
+  contextTokens: 'context_tokens',
+  reasoningEffort: 'reasoning_effort',
+  rateLimits: 'rate_limits',
+  usedPercent: 'used_percent',
+  windowMinutes: 'window_minutes',
+  resetsAt: 'resets_at',
+  cacheWrite: 'cache_write',
+  preTokens: 'pre_tokens',
+  postTokens: 'post_tokens',
+  compactionMeta: 'compaction_meta',
+  compactions: 'compactions',
+  exitCode: 'exit_code',
+  startedAt: 'started_at',
+  messageIndex: 'message_index',
 };
 
 /**

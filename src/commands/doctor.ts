@@ -58,8 +58,8 @@ export async function doctorCommand(opts?: {
     const sources: DoctorSource[] = [];
 
     for (const adapter of getAdapters()) {
-      const dataDir = adapter.getDataDir();
-      const spawnBin = SPAWN_BINS[adapter.name];
+      const dataDir = typeof adapter.getDataDir === 'function' ? adapter.getDataDir() : '';
+      const spawnBin = (SPAWN_BINS as Record<string, string>)[adapter.name] ?? adapter.name;
       const spawnBinPath = which(spawnBin);
       let sessionCount = 0;
 
@@ -70,7 +70,7 @@ export async function doctorCommand(opts?: {
       }
 
       sources.push({
-        name: adapter.name,
+        name: adapter.name as SessionSource,
         data_dir: dataDir,
         data_dir_exists: fs.existsSync(dataDir),
         session_count: sessionCount,

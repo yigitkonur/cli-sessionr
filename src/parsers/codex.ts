@@ -9,6 +9,8 @@ import type {
   SessionMetadata,
   SessionStats,
   SessionListEntry,
+  CodexRateLimits,
+  CodexRateLimitTier,
 } from '../types.js';
 
 import {
@@ -19,6 +21,7 @@ import {
   findFiles,
 } from './common.js';
 import { registerSource } from './registry.js';
+import { deriveContextWindow } from '../turns.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -102,6 +105,25 @@ function extractAssistantText(content: unknown): string {
     .filter(Boolean)
     .join('\n')
     .trim();
+}
+
+function extractRateLimits(raw: unknown): CodexRateLimits | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+
+  const parseTier = (tier: unknown): CodexRateLimitTier | undefined => {
+    if (!tier || typeof tier !== 'object') return undefined;
+    const t = tier as Record<string, unknown>;
+    const usedPercent = typeof t.used_percent === 'number' ? t.used_percent : typeof t.usedPercent === 'number' ? t.usedPercent : 0;
+    const windowMinutes = typeof t.window_minutes === 'number' ? t.window_minutes : typeof t.windowMinutes === 'number' ? t.windowMinutes : 0;
+    const resetsAt = typeof t.resets_at === 'string' ? t.resets_at : typeof t.resetsAt === 'string' ? t.resetsAt : '';
+    return { usedPercent, windowMinutes, resetsAt };
+  };
+
+  const primary = parseTier(obj.primary);
+  const secondary = parseTier(obj.secondary);
+  if (!primary && !secondary) return undefined;
+  return { primary, secondary };
 }
 
 // ── Reasoning summary (ported from agentlytics) ─────────────────────────────
@@ -313,6 +335,9 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
   let gitBranch: string | undefined;
   let gitRepo: string | undefined;
   let currentModel: string | null = null;
+  let contextWindow: number | undefined;
+  let reasoningEffort: string | undefined;
+  let latestRateLimits: CodexRateLimits | undefined;
   let firstTimestamp: Date | undefined;
   let lastTimestamp: Date | undefined;
 
@@ -332,21 +357,37 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
         if (typeof git.branch === 'string') gitBranch = git.branch;
         if (typeof git.repository_url === 'string') gitRepo = git.repository_url;
       }
+      if (p.rate_limits) {
+        latestRateLimits = extractRateLimits(p.rate_limits);
+      }
     }
 
     // Extract model from turn_context and token_count events via recursive search
     if (event.type === 'turn_context' && event.payload) {
       const m = extractModel(event.payload);
       if (m) currentModel = m;
+      const p = event.payload as Record<string, unknown>;
+      if (typeof p.context_window === 'number') {
+        contextWindow = p.context_window;
+      }
+      if (typeof p.reasoning_effort === 'string') {
+        reasoningEffort = p.reasoning_effort;
+      }
     }
     if (
       event.type === 'event_msg' &&
       event.payload &&
       (event.payload as Record<string, unknown>).type === 'token_count'
     ) {
-      const info = (event.payload as Record<string, unknown>).info;
+      const info = (event.payload as Record<string, unknown>).info as Record<string, unknown> | undefined;
       const m = extractModel(info) || extractModel(event.payload);
       if (m) currentModel = m;
+      if (info && typeof (info as any).model_context_window === 'number') {
+        contextWindow = (info as any).model_context_window;
+      }
+      if (info && (info as any).rate_limits) {
+        latestRateLimits = extractRateLimits((info as any).rate_limits);
+      }
     }
   }
 
@@ -360,6 +401,9 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     updatedAt: lastTimestamp ?? now,
     fileBytes: fileStats.bytes,
     rawLineCount: fileStats.lines,
+    contextWindow: contextWindow ?? (currentModel ? deriveContextWindow(currentModel) : undefined),
+    reasoningEffort,
+    rateLimits: latestRateLimits,
   };
 
   // ── 2. Token delta accumulation (proper pipeline from agentlytics) ────
@@ -368,6 +412,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheRead = 0;
+  let latestContextTokens: number | undefined;
 
   for (const event of events) {
     if (
@@ -382,6 +427,10 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
       const lastUsage = normalizeRawUsage(info.last_token_usage);
       const totalUsage = normalizeRawUsage(info.total_token_usage);
 
+      if (info.last_token_usage && typeof (info.last_token_usage as any).context_tokens === 'number') {
+        latestContextTokens = (info.last_token_usage as any).context_tokens;
+      }
+
       let rawUsage = lastUsage;
       if (!rawUsage && totalUsage) rawUsage = subtractRawUsage(totalUsage, previousTotals);
       if (totalUsage) previousTotals = totalUsage;
@@ -393,6 +442,9 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
       totalInputTokens += delta.inputTokens;
       totalOutputTokens += delta.outputTokens;
       totalCacheRead += delta.cacheRead;
+      if (latestContextTokens === undefined) {
+        latestContextTokens = delta.inputTokens + delta.cacheRead;
+      }
     }
   }
 
@@ -421,6 +473,44 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     const event = events[lineIdx];
     const ts = event.timestamp ? new Date(event.timestamp) : (lastTimestamp ?? now);
 
+    // ── compaction events ──────────────────────────────────────────────
+
+    if (
+      event.type === 'compacted' ||
+      event.type === 'context_compaction' ||
+      (event.type === 'event_msg' &&
+        event.payload &&
+        ((event.payload as Record<string, unknown>).type === 'compacted' ||
+          (event.payload as Record<string, unknown>).type === 'context_compaction'))
+    ) {
+      const p = (event.payload ?? {}) as Record<string, unknown>;
+      const trigger = typeof p.trigger === 'string' ? p.trigger : 'token_limit';
+      const preTokens = typeof p.pre_tokens === 'number' ? p.pre_tokens : typeof p.preTokens === 'number' ? p.preTokens : undefined;
+      const postTokens = typeof p.post_tokens === 'number' ? p.post_tokens : typeof p.postTokens === 'number' ? p.postTokens : undefined;
+      const summary = typeof p.summary === 'string' ? p.summary : undefined;
+
+      let content = summary || `Context compacted from ${preTokens ?? '?'} to ${postTokens ?? '?'} tokens`;
+      if (!content.includes('Compacted')) {
+        content = `Compacted historical conversation: ${content}`;
+      }
+
+      pushMessage({
+        role: 'system',
+        timestamp: ts,
+        content,
+        blocks: [{ type: 'text', text: content }],
+        rawLineIndex: lineIdx,
+        kind: 'compaction',
+        compactionMeta: {
+          trigger,
+          preTokens,
+          postTokens,
+          summary,
+        },
+      });
+      continue;
+    }
+
     // ── response_item events ──────────────────────────────────────────
 
     if (event.type === 'response_item' && event.payload) {
@@ -430,6 +520,34 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
 
       // Skip developer role (system instructions injected by the CLI)
       if (pRole === 'developer') continue;
+
+      if (pType === 'context_compaction') {
+        const trigger = typeof p.trigger === 'string' ? p.trigger : 'token_limit';
+        const preTokens = typeof p.pre_tokens === 'number' ? p.pre_tokens : typeof p.preTokens === 'number' ? p.preTokens : undefined;
+        const postTokens = typeof p.post_tokens === 'number' ? p.post_tokens : typeof p.postTokens === 'number' ? p.postTokens : undefined;
+        const summary = typeof p.summary === 'string' ? p.summary : undefined;
+
+        let content = summary || `Context compacted from ${preTokens ?? '?'} to ${postTokens ?? '?'} tokens`;
+        if (!content.includes('Compacted')) {
+          content = `Compacted historical conversation: ${content}`;
+        }
+
+        pushMessage({
+          role: 'system',
+          timestamp: ts,
+          content,
+          blocks: [{ type: 'text', text: content }],
+          rawLineIndex: lineIdx,
+          kind: 'compaction',
+          compactionMeta: {
+            trigger,
+            preTokens,
+            postTokens,
+            summary,
+          },
+        });
+        continue;
+      }
 
       // ── message ─────────────────────────────────────────────────────
 
@@ -564,15 +682,34 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
       continue;
     }
 
-    // ── event_msg fallback (only when no response_items exist) ─────────
+    // ── event_msg processing ──────────────────────────────────────────
 
-    if (event.type === 'event_msg' && !hasResponseItems && event.payload) {
+    if (event.type === 'event_msg' && event.payload) {
       const p = event.payload;
       const pType = p.type as string;
 
-      if (pType === 'token_count' || pType === 'agent_reasoning') continue;
+      if (pType === 'token_count') {
+        const info = (p.info ?? {}) as Record<string, unknown>;
+        const lastUsage = (info.last_token_usage ?? {}) as Record<string, unknown>;
+        const rateLimits = extractRateLimits(info.rate_limits);
+        if (messages.length > 0) {
+          const lastMsg = messages[messages.length - 1];
+          (lastMsg as any).usage = {
+            input_tokens: typeof lastUsage.input_tokens === 'number' ? lastUsage.input_tokens : undefined,
+            output_tokens: typeof lastUsage.output_tokens === 'number' ? lastUsage.output_tokens : undefined,
+            context_tokens: typeof lastUsage.context_tokens === 'number' ? lastUsage.context_tokens : undefined,
+          };
+          if (rateLimits) {
+            (lastMsg as any).rateLimits = rateLimits;
+          }
+        }
+        continue;
+      }
 
-      const text = typeof p.message === 'string' ? p.message : '';
+      if (pType === 'agent_reasoning') continue;
+
+      if (!hasResponseItems) {
+        const text = typeof p.message === 'string' ? p.message : '';
 
       if (pType === 'user_message') {
         if (!text || isBootstrapMessage(text)) continue;
@@ -592,6 +729,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
           blocks: [{ type: 'text', text }],
           rawLineIndex: lineIdx,
         });
+        }
       }
     }
   }
@@ -634,6 +772,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
         input: totalInputTokens,
         output: totalOutputTokens,
         ...(totalCacheRead > 0 ? { cacheRead: totalCacheRead } : {}),
+        ...(latestContextTokens && latestContextTokens > 0 ? { contextTokens: latestContextTokens } : {}),
       }
     : undefined;
 
@@ -643,6 +782,8 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     if (diff > 0) durationMs = diff;
   }
 
+  const compactionsCount = messages.filter((m) => m.kind === 'compaction' || m.compactionMeta !== undefined).length;
+
   const stats: SessionStats = {
     totalMessages: messages.length,
     byRole,
@@ -651,6 +792,8 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     toolFrequency,
     filesModified,
     durationMs,
+    compactions: compactionsCount > 0 ? compactionsCount : undefined,
+    rateLimits: latestRateLimits,
   };
 
   return {
