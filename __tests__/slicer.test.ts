@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sliceByTokenBudget, filterByRole } from '../src/slicer.js';
+import { sliceByTokenBudget, filterByRole, computePendingToolCalls } from '../src/slicer.js';
 import { estimateMessageTokens } from '../src/tokens.js';
 import type { NormalizedMessage } from '../src/types.js';
 
@@ -126,3 +126,98 @@ describe('filterByRole', () => {
     expect(filtered).toHaveLength(6);
   });
 });
+
+describe('Pending tool calls and unresolved tool protection (Issue #6)', () => {
+  it('computes pending tool calls across whole session', () => {
+    const msgs: NormalizedMessage[] = [
+      makeMsg(1, 'user', 'What is the status?'),
+      makeMsg(2, 'assistant', 'Let me ask you.'),
+      {
+        index: 3,
+        role: 'tool_use',
+        timestamp: new Date(),
+        content: 'Tool: AskUserQuestion',
+        blocks: [
+          {
+            type: 'tool_use',
+            id: 'tu-ask-1',
+            name: 'AskUserQuestion',
+            input: { question: 'Do you want to proceed?' },
+          },
+        ],
+      },
+    ];
+
+    const pending = computePendingToolCalls(msgs);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].id).toBe('tu-ask-1');
+    expect(pending[0].name).toBe('AskUserQuestion');
+    expect(pending[0].input).toEqual({ question: 'Do you want to proceed?' });
+    expect(pending[0].messageIndex).toBe(3);
+  });
+
+  it('resolves tool calls once tool_result is received', () => {
+    const msgs: NormalizedMessage[] = [
+      makeMsg(1, 'user', 'Run tests'),
+      {
+        index: 2,
+        role: 'tool_use',
+        timestamp: new Date(),
+        content: 'Tool: Bash',
+        blocks: [
+          {
+            type: 'tool_use',
+            id: 'tu-bash-1',
+            name: 'Bash',
+            input: { command: 'pnpm test' },
+          },
+        ],
+      },
+      {
+        index: 3,
+        role: 'tool_result',
+        timestamp: new Date(),
+        content: 'Tests passed',
+        blocks: [
+          {
+            type: 'tool_result',
+            toolUseId: 'tu-bash-1',
+            content: 'Tests passed',
+            isError: false,
+          },
+        ],
+      },
+    ];
+
+    const pending = computePendingToolCalls(msgs);
+    expect(pending).toHaveLength(0);
+  });
+
+  it('never trims trailing unresolved tool_use from tail windows', () => {
+    const msgs: NormalizedMessage[] = [
+      makeMsg(1, 'user', 'Initialize setup'),
+      makeMsg(2, 'assistant', 'Starting setup now.'),
+      {
+        index: 3,
+        role: 'tool_use',
+        timestamp: new Date(),
+        content: 'Tool: AskUserQuestion',
+        blocks: [
+          {
+            type: 'tool_use',
+            id: 'tu-ask-trailing',
+            name: 'AskUserQuestion',
+            input: { question: 'Confirm deploy?' },
+          },
+        ],
+      },
+    ];
+
+    const result = sliceByTokenBudget(msgs, 4000, 'sess1', 'claude', 'tail');
+    expect(result.messages).toHaveLength(3);
+    const lastMsg = result.messages[result.messages.length - 1];
+    expect(lastMsg.role).toBe('tool_use');
+    expect(lastMsg.content).toBe('Tool: AskUserQuestion');
+  });
+});
+
