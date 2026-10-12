@@ -240,7 +240,7 @@ function unescapeJsString(raw: string): string {
   for (let i = 0; i < raw.length; i++) {
     if (raw[i] !== '\\') { output += raw[i]; continue; }
     const next = raw[++i];
-    if (next === '\n' || next === ' ' || next === ' ') continue;
+    if (next === '\n' || next === '\u2028' || next === '\u2029') continue;
     if (next === '\r') { if (raw[i + 1] === '\n') i++; continue; }
     if (next === 'x' || next === 'u') {
       const braced = next === 'u' && raw[i + 1] === '{';
@@ -312,7 +312,7 @@ function parseStaticToolArgs(input: string): Record<string, unknown> {
         const value = property[4].trim();
         const literal = /^(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|`((?:[^`\\]|\\[\s\S])*)`)$/s.exec(value);
         if (literal) properties.push([key, unescapeJsString(literal[1] ?? literal[2] ?? literal[3])]);
-        else if (/^(?:-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|true|false|null)$/i.test(value)) properties.push([key, JSON.parse(value)]);
+        else if (/^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)$/.test(value)) properties.push([key, JSON.parse(value)]);
       }
       start = i + 1;
     } else if ('{[('.includes(code[i])) depth++;
@@ -373,27 +373,12 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
   const commandCall = invocations.find((call) => call.name === 'exec_command');
   if (commandCall) {
     const callInput = invocationInput(rawInput, code, commandCall.start);
-    const cmdMatch =
-      callInput.match(
-        /(?:\b(?:cmd|command)|"(?:cmd|command)"|'(?:cmd|command)')\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
-      ) ??
-      callInput.match(
-        /^\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
-      );
-    let cmd: string | undefined;
-    if (cmdMatch) {
-      const rawMatch = cmdMatch[1] ?? cmdMatch[2] ?? cmdMatch[3] ?? '';
-      cmd = unescapeJsString(rawMatch);
-    }
-
-    let workdir: string | undefined;
-    const wdMatch = callInput.match(
-      /workdir\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
-    );
-    if (wdMatch) {
-      const rawWd = wdMatch[1] ?? wdMatch[2] ?? wdMatch[3] ?? '';
-      workdir = unescapeJsString(rawWd);
-    }
+    const staticArgs = parseStaticToolArgs(callInput);
+    const direct = callInput.match(/^\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|`((?:[^`\\]|\\[\s\S])*)`)/);
+    const cmd = direct ? unescapeJsString(direct[1] ?? direct[2] ?? direct[3]) :
+      typeof staticArgs.cmd === 'string' ? staticArgs.cmd :
+        typeof staticArgs.command === 'string' ? staticArgs.command : undefined;
+    const workdir = typeof staticArgs.workdir === 'string' ? staticArgs.workdir : undefined;
 
     return {
       toolName: 'exec_command',

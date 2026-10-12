@@ -809,4 +809,17 @@ describe('Codex exec review regressions', () => {
     expect(addSection.trim().split('\n').every((line) => line.startsWith('+'))).toBe(true);
   });
 
+  it('F2 ignores command-like text and nested properties inside the selected invocation', () => {
+    const input = `await tools.exec_command({note:"cmd:'wrong'", nested:{cmd:"also wrong"}, cmd:dynamicCommand});`;
+    expect(unrollCodexExec(input).args).not.toHaveProperty('cmd');
+    expect(unrollCodexExec(input).args.raw).toBe(input);
+    expect(unrollCodexExec('await tools.exec_command({"cmd":"right", "workdir":"/work"});').args).toMatchObject({ cmd: 'right', workdir: '/work' });
+  });
+
+  it('F4 keeps nonliteral scalar identifiers opaque rather than parsing them as JSON', () => {
+    const input = 'await tools.other_tool({enabled:TRUE, flag:FALSE, value:NULL, count:2});';
+    expect(() => unrollCodexExec(input)).not.toThrow();
+    expect(unrollCodexExec(input).args).toEqual({ count: 2, raw: input });
+  });
+
 });
