@@ -383,3 +383,22 @@ describe('Claude message source classification (Issue #16)', () => {
   });
 });
 
+
+async function parseReview19Records(records: unknown[]) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-review-19-'));
+  const file = path.join(dir, 'session.jsonl');
+  fs.writeFileSync(file, records.map((r) => JSON.stringify(r)).join('\n'));
+  try { return await parseClaudeSession(file); }
+  finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+it('19-A excludes harness peer wrappers but preserves legacy and queued new-turn prompts', async () => {
+  const session = await parseReview19Records([
+    { type: 'user', uuid: 'peer', timestamp: '2026-01-01T00:00:01Z', message: { content: '<agent-message from="worker">done</agent-message>' } },
+    { type: 'user', uuid: 'human', timestamp: '2026-01-01T00:00:02Z', message: { content: 'please fix this' } },
+    { type: 'user', uuid: 'queued', timestamp: '2026-01-01T00:00:03Z', promptSource: 'queued', origin: { kind: 'human' }, message: { content: 'next request' } },
+  ]);
+  expect(session.messages[0].source).toBe('system');
+  expect(session.messages.slice(1).map((m) => m.source)).toEqual(['prompt', 'prompt']);
+  expect(session.stats.byRole.user).toBe(2);
+});
