@@ -354,3 +354,20 @@ it('20-A documents adapter-specific raw line index semantics', () => {
   const types = fs.readFileSync(path.join(__dirname, '..', 'src', 'types.ts'), 'utf8');
   expect(types).toMatch(/Claude: physical zero-based JSONL line; other adapters may use parsed-record indices/);
 });
+
+it('20-B retains physical indices on every exploded assistant block after duplicate UUIDs', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-review-20-'));
+  const file = path.join(dir, 'session.jsonl');
+  const assistant = { type: 'assistant', uuid: 'same', timestamp: '2026-01-01T00:00:02Z', message: { content: [
+    { type: 'text', text: 'before' },
+    { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'true' } },
+    { type: 'tool_result', tool_use_id: 't1', content: 'ok' },
+    { type: 'text', text: 'after' },
+  ] } };
+  fs.writeFileSync(file, [JSON.stringify({ ...assistant, message: { content: [{ type: 'text', text: 'partial' }] } }), '', 'invalid', JSON.stringify(assistant)].join('\n'));
+  try {
+    const session = await parseClaudeSession(file);
+    expect(session.messages.map((m) => m.role)).toEqual(['assistant', 'tool_use', 'tool_result', 'assistant']);
+    expect(session.messages.map((m) => m.rawLineIndex)).toEqual([3, 3, 3, 3]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
