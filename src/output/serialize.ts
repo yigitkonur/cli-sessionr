@@ -216,6 +216,8 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   toolFrequency: 'tool_frequency',
   filesModified: 'files_modified',
   durationMs: 'duration_ms',
+  turnEnds: 'turn_ends',
+  rawLineIndex: 'raw_line_index',
   gitBranch: 'git_branch',
   gitRepo: 'git_repo',
   createdAt: 'created_at',

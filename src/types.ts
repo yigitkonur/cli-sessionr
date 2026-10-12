@@ -96,12 +96,21 @@ export interface SessionStats {
 
 // ── Normalized Session ─────────────────────────────────────────────────────
 
+export interface TurnEndEvent {
+  timestamp: Date;
+  durationMs: number;
+  /** Claude physical JSONL index when available; otherwise parsed-record index. */
+  rawLineIndex: number;
+}
+
 export interface NormalizedSession {
   id: string;
   source: SessionSource;
   filePath: string;
   metadata: SessionMetadata;
   messages: NormalizedMessage[];
+  /** Per-turn completion records, separate from the conversation messages. */
+  turnEnds?: TurnEndEvent[];
   stats: SessionStats;
 }
 

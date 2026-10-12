@@ -10,6 +10,7 @@ import type {
   SessionListEntry,
   SessionMetadata,
   SessionStats,
+  TurnEndEvent,
 } from '../types.js';
 import { readJsonlFile, scanJsonlHead, getFileStats } from './common.js';
 import { registerSource } from './registry.js';
@@ -461,9 +462,39 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
 
 // ── Stats computation ────────────────────────────────────────────────────────
 
+function collectTurnEnds(lines: RawLine[]): TurnEndEvent[] {
+  const turnEnds: TurnEndEvent[] = [];
+  for (const [lineIndex, line] of lines.entries()) {
+    if (
+      line.type === 'system' &&
+      (line.subtype === 'turn_duration' ||
+        line.kind === 'turn_duration' ||
+        line.durationMs !== undefined ||
+        (line as any).duration_ms !== undefined)
+    ) {
+      const dur =
+        typeof line.durationMs === 'number'
+          ? line.durationMs
+          : typeof (line as any).duration_ms === 'number'
+            ? (line as any).duration_ms
+            : undefined;
+      if (typeof dur === 'number' && !isNaN(dur)) {
+        turnEnds.push({
+          timestamp: new Date(line.timestamp),
+          durationMs: dur,
+          rawLineIndex: typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex,
+        });
+      }
+    }
+  }
+
+  return turnEnds;
+}
+
 function computeStats(
   messages: NormalizedMessage[],
   dedupedLines: RawLine[],
+  turnEnds: TurnEndEvent[],
 ): SessionStats {
   const byRole = { user: 0, assistant: 0, system: 0, toolUse: 0, toolResult: 0 };
   const byBlockType: Record<string, number> = {};
@@ -559,33 +590,10 @@ function computeStats(
     }
   }
 
-  // Duration: captured from system/turn_duration records or fallback to message timestamps
-  let turnDurationSum = 0;
-  let hasTurnDuration = false;
-  for (const line of dedupedLines) {
-    if (
-      line.type === 'system' &&
-      (line.subtype === 'turn_duration' ||
-        line.kind === 'turn_duration' ||
-        line.durationMs !== undefined ||
-        (line as any).duration_ms !== undefined)
-    ) {
-      const dur =
-        typeof line.durationMs === 'number'
-          ? line.durationMs
-          : typeof (line as any).duration_ms === 'number'
-            ? (line as any).duration_ms
-            : undefined;
-      if (typeof dur === 'number' && !isNaN(dur)) {
-        turnDurationSum += dur;
-        hasTurnDuration = true;
-      }
-    }
-  }
-
+  // Aggregate the same completion events exposed on the normalized session.
   let durationMs: number | undefined;
-  if (hasTurnDuration) {
-    durationMs = turnDurationSum;
+  if (turnEnds.length > 0) {
+    durationMs = turnEnds.reduce((sum, end) => sum + end.durationMs, 0);
   } else if (messages.length >= 2) {
     const first = messages[0]!.timestamp.getTime();
     const last = messages[messages.length - 1]!.timestamp.getTime();
@@ -674,7 +682,8 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
   const sessionId = meta.sessionId || basename;
 
   // 6. Compute stats from deduplicated raw lines (for token usage)
-  const stats = computeStats(messages, deduped);
+  const turnEnds = collectTurnEnds(deduped);
+  const stats = computeStats(messages, deduped, turnEnds);
 
   const metadata: SessionMetadata = {
     cwd: meta.cwd || path.dirname(filePath),
@@ -692,6 +701,7 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     filePath,
     metadata,
     messages,
+    turnEnds,
     stats,
   };
 }

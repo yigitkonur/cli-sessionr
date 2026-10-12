@@ -387,3 +387,15 @@ it('21-C serializes queued provenance in direct, JSON and JSONL output', async (
   const jsonl = createJsonlFormatter().read(session, session.messages, 1, 1, getPreset('full')).split('\n').map((s) => JSON.parse(s));
   expect(jsonl[1]).toMatchObject({ source: 'queued', origin_kind: 'human' });
 });
+
+it('21-D exposes individual turn ends outside messages and through the external session', async () => {
+  const record = { type: 'system', subtype: 'turn_duration', uuid: 'end-1', timestamp: '2026-01-01T00:00:07Z', durationMs: 6000 };
+  const one = await parseReview21Records([record]);
+  expect(one.turnEnds).toEqual([{ timestamp: new Date(record.timestamp), durationMs: 6000, rawLineIndex: 0 }]);
+  const two = await parseReview21Records([record, { ...record, uuid: 'end-2', timestamp: '2026-01-01T00:00:10Z', durationMs: 3000 }, { type: 'system', subtype: 'stop_hook_summary', uuid: 'hook', timestamp: '2026-01-01T00:00:11Z' }]);
+  expect(two.turnEnds).toHaveLength(2);
+  expect(two.stats.durationMs).toBe(9000);
+  expect(two.messages).toEqual([]);
+  const { toExternalSession } = await import('../src/output/serialize.js');
+  expect(toExternalSession(one).turn_ends).toEqual([{ timestamp: '2026-01-01T00:00:07.000Z', duration_ms: 6000, raw_line_index: 0 }]);
+});
