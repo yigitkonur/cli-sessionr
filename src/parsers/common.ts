@@ -1,11 +1,18 @@
 import * as fs from 'fs';
 import * as readline from 'readline';
 
+export interface ReadJsonlOptions {
+  attachLineIndex?: boolean;
+}
+
 /**
  * Read an entire JSONL file into an array.
  * Invalid lines are silently skipped.
  */
-export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]> {
+export async function readJsonlFile<T = unknown>(
+  filePath: string,
+  options?: ReadJsonlOptions,
+): Promise<T[]> {
   if (!fs.existsSync(filePath)) return [];
 
   return new Promise((resolve) => {
@@ -13,9 +20,20 @@ export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]>
     const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
+    let lineIndex = 0;
+
     rl.on('line', (line) => {
+      const currentPhysicalLine = lineIndex++;
+      const trimmed = line.trim();
+      if (!trimmed) return;
       try {
-        items.push(JSON.parse(line));
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object') {
+          if (options?.attachLineIndex) {
+            (parsed as any).rawLineIndex = currentPhysicalLine;
+          }
+          items.push(parsed as T);
+        }
       } catch {
         // skip invalid lines
       }
@@ -24,6 +42,17 @@ export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]>
     rl.on('close', () => resolve(items));
     rl.on('error', () => resolve(items));
   });
+}
+
+/**
+ * Read a JSONL file preserving the exact 0-based physical file line number in `rawLineIndex`.
+ * Blank lines and invalid JSON increment the physical line counter without skewing
+ * subsequent lines.
+ */
+export async function readJsonlFileWithLineIndex<T = Record<string, unknown>>(
+  filePath: string,
+): Promise<Array<T & { rawLineIndex: number }>> {
+  return readJsonlFile<T & { rawLineIndex: number }>(filePath, { attachLineIndex: true });
 }
 
 /**

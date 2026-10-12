@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { parseCodexSession } from '../src/parsers/codex.js';
 import { parseClaudeSession } from '../src/parsers/claude.js';
@@ -300,3 +302,50 @@ describe('Source aliases', () => {
     expect(adapter!.name).toBe('factory');
   });
 });
+
+describe('Claude rawLineIndex preservation across de-duplication (Issue #15)', () => {
+  it('preserves exact physical file line indices across streaming de-duplication (Issue #15 minimal synthetic example)', async () => {
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:01.000Z', promptSource: 'typed', message: { role: 'user', content: 'hello' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Hel' }] } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello there' }] } }),
+      JSON.stringify({ type: 'user', uuid: 'u2', timestamp: '2026-01-01T00:00:03.000Z', promptSource: 'typed', message: { role: 'user', content: 'thanks' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a2', timestamp: '2026-01-01T00:00:04.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'You are welcome' }] } }),
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-issue-15-'));
+    const filePath = path.join(tmpDir, 'test-synth.jsonl');
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+
+    try {
+      const session = await parseClaudeSession(filePath);
+      expect(session.messages.length).toBe(4);
+      // Acceptance criteria: rawLineIndex 0, 2, 3, 4 (surviving duplicate a1 is on line 2)
+      expect(session.messages.map((m) => m.rawLineIndex)).toEqual([0, 2, 3, 4]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('tracks true 0-based physical file line index across blank and corrupt lines without drift', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-issue-15-drift-'));
+    const filePath = path.join(tmpDir, 'test-drift.jsonl');
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u-1', timestamp: '2026-10-11T12:00:00Z', message: { role: 'user', content: 'Line 0 prompt' } }),
+      '', // Physical line 1: empty line
+      '{"invalid": json_error...', // Physical line 2: malformed JSON
+      JSON.stringify({ type: 'assistant', uuid: 'a-1', timestamp: '2026-10-11T12:00:01Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Line 3 response' }] } }),
+    ].join('\n');
+    fs.writeFileSync(filePath, lines, 'utf8');
+
+    try {
+      const session = await parseClaudeSession(filePath);
+      expect(session.messages.length).toBe(2);
+      expect(session.messages[0].rawLineIndex).toBe(0);
+      expect(session.messages[1].rawLineIndex).toBe(3);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+

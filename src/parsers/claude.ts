@@ -10,7 +10,7 @@ import type {
   SessionMetadata,
   SessionStats,
 } from '../types.js';
-import { readJsonlFile, scanJsonlHead, getFileStats } from './common.js';
+import { readJsonlFile, readJsonlFileWithLineIndex, scanJsonlHead, getFileStats } from './common.js';
 import { registerSource } from './registry.js';
 
 // ── Raw JSONL types ──────────────────────────────────────────────────────────
@@ -65,6 +65,7 @@ interface RawLine {
   model?: string;
   isCompactSummary?: boolean;
   isMeta?: boolean;
+  rawLineIndex?: number;
   message?: RawMessage;
   [key: string]: unknown;
 }
@@ -219,6 +220,7 @@ function shouldSkipLine(line: RawLine): boolean {
 }
 
 function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
+  const actualLineIndex = typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex;
   const results: ExplodedMessage[] = [];
   const ts = new Date(line.timestamp);
   const content = line.message?.content;
@@ -232,7 +234,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
         content: text,
         blocks: [{ type: 'text', text }],
         timestamp: ts,
-        rawLineIndex: lineIndex,
+        rawLineIndex: actualLineIndex,
       });
     }
     return results;
@@ -279,7 +281,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
             content: flushedContent,
             blocks: [...textBlocks],
             timestamp: ts,
-            rawLineIndex: lineIndex,
+            rawLineIndex: actualLineIndex,
           });
           textBlocks.length = 0;
           textContent = '';
@@ -296,7 +298,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
           content: `Tool: ${block.name || 'unknown'}`,
           blocks: [toolBlock],
           timestamp: ts,
-          rawLineIndex: lineIndex,
+          rawLineIndex: actualLineIndex,
         });
         break;
       }
@@ -315,7 +317,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
           content: resultContent,
           blocks: [resultBlock],
           timestamp: ts,
-          rawLineIndex: lineIndex,
+          rawLineIndex: actualLineIndex,
         });
         break;
       }
@@ -342,7 +344,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
       content: flushedContent,
       blocks: [...textBlocks],
       timestamp: ts,
-      rawLineIndex: lineIndex,
+      rawLineIndex: actualLineIndex,
     });
   }
 
@@ -350,6 +352,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
 }
 
 function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
+  const actualLineIndex = typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex;
   const results: ExplodedMessage[] = [];
   const ts = new Date(line.timestamp);
   const content = line.message?.content;
@@ -364,7 +367,7 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
         content,
         blocks: [{ type: 'text', text: content }],
         timestamp: ts,
-        rawLineIndex: lineIndex,
+        rawLineIndex: actualLineIndex,
       });
     }
     return results;
@@ -388,7 +391,7 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
           content: resultContent,
           blocks: [resultBlock],
           timestamp: ts,
-          rawLineIndex: lineIndex,
+          rawLineIndex: actualLineIndex,
         });
         break;
       }
@@ -414,7 +417,7 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
       content: joined,
       blocks: textBlocks.map((t) => ({ type: 'text' as const, text: t })),
       timestamp: ts,
-      rawLineIndex: lineIndex,
+      rawLineIndex: actualLineIndex,
     });
   }
 
@@ -554,8 +557,8 @@ function computeStats(
 // ── Main parser ──────────────────────────────────────────────────────────────
 
 export async function parseClaudeSession(filePath: string): Promise<NormalizedSession> {
-  // 1. Read all JSONL lines
-  const rawLines = await readJsonlFile<RawLine>(filePath);
+  // 1. Read all JSONL lines preserving physical line indices
+  const rawLines = await readJsonlFileWithLineIndex<RawLine>(filePath);
   const { lines: rawLineCount, bytes: fileBytes } = await getFileStats(filePath);
 
   // 2. Deduplicate by UUID (last entry wins)

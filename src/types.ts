@@ -37,7 +37,7 @@ export interface NormalizedMessage {
   content: string;
   /** All content blocks for rich rendering */
   blocks: ContentBlock[];
-  /** Original JSONL line number for debugging */
+  /** Original 0-based JSONL line number in the source file for debugging */
   rawLineIndex?: number;
 }
 
