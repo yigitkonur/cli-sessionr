@@ -224,3 +224,12 @@ describe('Shell edit facts', () => {
     expect(extractTurnFilesChanged(messages)).toEqual({created:['a.ts','b file.ts'],edited:[],deleted:['c.ts','d.ts']});
   });
 });
+
+
+it('reports successful NotebookEdit notebook_path targets', () => {
+  const messages: NormalizedMessage[] = [
+    {...makeMsg(1,'tool_use','NotebookEdit'),blocks:[{type:'tool_use',id:'nb',name:'NotebookEdit',input:{notebook_path:'analysis.ipynb'}}]},
+    {...makeMsg(2,'tool_result','Success'),blocks:[{type:'tool_result',toolUseId:'nb',isError:false,content:'Success'}]},
+  ];
+  expect(extractTurnFilesChanged(messages).edited).toEqual(['analysis.ipynb']);
+});
