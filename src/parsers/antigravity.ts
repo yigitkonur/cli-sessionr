@@ -520,6 +520,8 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
   let hasTokens = false;
   let extractedModel: string | undefined = defaultModel;
   let fallbackCwd: string | undefined;
+  const hasUserInput = steps.some((step) => step?.type === 'USER_INPUT' || step?.type === 'USER_MESSAGE');
+  let sawMissionPrompt = false;
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
@@ -736,10 +738,13 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
             if (tcStat) tcStat.errors++;
           }
         }
+        const isMission = step.type === 'SYSTEM_MESSAGE' && !completion && !hasUserInput && !sawMissionPrompt;
+        if (isMission) sawMissionPrompt = true;
+        const messageContent = isMission ? extractSystemContent(content) : content;
         exploded.push({
-          role: 'system',
-          content,
-          blocks: [{ type: 'text', text: content }],
+          role: isMission ? 'user' : 'system',
+          content: messageContent,
+          blocks: [{ type: 'text', text: messageContent }],
           timestamp: ts,
           rawLineIndex: lineIndex,
         });

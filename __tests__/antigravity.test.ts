@@ -241,4 +241,30 @@ describe('Antigravity transcript regressions', () => {
 
 
 
+
+  it('uses the first non-completion system mission as a prompt only when no real user input exists', async () => {
+    const mission = '<SYSTEM_MESSAGE sender=lead content=Implement the mission\nKeep the scope narrow.</SYSTEM_MESSAGE>';
+    const file = writeTranscript('mission', [
+      { type: 'SYSTEM_MESSAGE', content: '<SYSTEM_MESSAGE sender=8870b007-42b0-4ffa-a47b-9acb5821ef3f/task-9 content=Task finished with result: ok</SYSTEM_MESSAGE>' },
+      { type: 'SYSTEM_MESSAGE', content: mission },
+      { type: 'PLANNER_RESPONSE', content: 'Mission accepted' },
+      { type: 'SYSTEM_MESSAGE', content: 'Later system notification' },
+    ]);
+    const session = await parseAntigravitySession(file);
+    expect(session.messages.filter((m) => m.role === 'user').map((m) => m.content)).toEqual([
+      'Implement the mission\nKeep the scope narrow.',
+    ]);
+    expect(session.messages[0].role).toBe('system');
+    expect(session.messages.at(-1)?.role).toBe('system');
+    for (const type of ['USER_INPUT', 'USER_MESSAGE']) {
+      const realUserFile = writeTranscript('real-user', [
+        { type: 'SYSTEM_MESSAGE', content: mission },
+        { type, content: '<USER_REQUEST>Real user request</USER_REQUEST>' },
+      ]);
+      const realUserSession = await parseAntigravitySession(realUserFile);
+      expect(realUserSession.messages.filter((m) => m.role === 'user').map((m) => m.content)).toEqual(['Real user request']);
+      expect(realUserSession.messages[0].role).toBe('system');
+    }
+  });
+
 });
