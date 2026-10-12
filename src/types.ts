@@ -250,6 +250,18 @@ export interface SliceMeta {
       command: string;
     }>;
   };
+  search?: SearchMeta;
+}
+
+// ── Search Field Types (Issue #10) ──────────────────────────────────────────
+
+export type SearchField = 'content' | 'tool_input' | 'tool_result';
+
+export interface SearchMeta {
+  query: string;
+  matched: boolean;
+  match_index: number | null;
+  fields?: SearchField[];
 }
 
 // ── Output Resolution Options ──────────────────────────────────────────────
@@ -272,6 +284,7 @@ export interface ReadOptions {
   tokens?: number;
   anchor?: string;
   search?: string;
+  searchIn?: string | string[];
   role?: string;
   before?: number;
   after?: number;

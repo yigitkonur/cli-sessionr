@@ -158,6 +158,7 @@ program
   .option('--tokens <n>', 'Token budget (env: SESSIONREADER_MAX_TOKENS)')
   .option('--anchor <anchor>', 'Slice anchor: head, tail, search', 'head')
   .option('--search <query>', 'Search query (sets anchor=search)')
+  .option('--search-in <fields>', 'Search fields: content, tool_input, tool_result (comma-separated, default: content)')
   .option('--role <roles>', 'Filter by role (comma-separated: user, assistant, system, tool_use, tool_result)')
   .option('--page <n>', 'Page number (1-based, from head)')
   .option('--before <cursor>', 'Cursor: show messages before this index')
@@ -192,6 +193,7 @@ Examples:
         tokens: parseOptionalBounded('--tokens', opts.tokens, 1),
         anchor: opts.anchor as 'head' | 'tail' | 'search' | undefined,
         search: opts.search as string | undefined,
+        searchIn: opts.searchIn as string | string[] | undefined,
         role: opts.role as string | undefined,
         page: parseOptionalBounded('--page', opts.page, 1),
         before: parseOptionalBounded('--before', opts.before, 1),
