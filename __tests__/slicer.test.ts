@@ -32,9 +32,9 @@ describe('sliceByTokenBudget', () => {
     const msgs = makeMsgs(5);
     const totalTokens = msgs.reduce((acc, m) => acc + estimateMessageTokens(m), 0);
     const result = sliceByTokenBudget(msgs, totalTokens + 1000, 'sess1', 'claude', 'tail');
-    // trimToAssistantLast trims trailing user(5), keeping 4 messages ending on assistant
-    expect(result.messages).toHaveLength(4);
-    expect(result.messages[result.messages.length - 1].role).toBe('assistant');
+    // Backwards cursor walks must retain the actual end, even a trailing user.
+    expect(result.messages).toHaveLength(5);
+    expect(result.messages[result.messages.length - 1].index).toBe(5);
     expect(result.meta.has_more_before).toBe(false);
   });
 
@@ -124,5 +124,29 @@ describe('filterByRole', () => {
     const msgs = makeMsgs(6);
     const filtered = filterByRole(msgs, ['user', 'assistant']);
     expect(filtered).toHaveLength(6);
+  });
+});
+
+describe('Exclusive cursor semantics (Issue #11)', () => {
+  it('cursor_after matches range.to and agrees with cursor.next.command', () => {
+    const msgs = makeMsgs(20);
+    const singleTokens = estimateMessageTokens(msgs[0]);
+    const budget = singleTokens * 4;
+    const result = sliceByTokenBudget(msgs, budget, 'sess1', 'claude', 'head');
+
+    expect(result.meta.has_more_after).toBe(true);
+    expect(result.meta.cursor_after).toBe(result.meta.range.to);
+    expect(result.meta.cursor?.next?.command).toContain(`--after ${result.meta.cursor_after} --tokens`);
+  });
+
+  it('cursor_before matches range.from and agrees with cursor.prev.command', () => {
+    const msgs = makeMsgs(20);
+    const singleTokens = estimateMessageTokens(msgs[0]);
+    const budget = singleTokens * 4;
+    const result = sliceByTokenBudget(msgs, budget, 'sess1', 'claude', 'tail');
+
+    expect(result.meta.has_more_before).toBe(true);
+    expect(result.meta.cursor_before).toBe(result.meta.range.from);
+    expect(result.meta.cursor?.prev?.command).toContain(`--before ${result.meta.cursor_before} --tokens`);
   });
 });

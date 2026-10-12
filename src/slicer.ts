@@ -124,8 +124,8 @@ export function sliceByPage(
     range: { from: firstIdx, to: lastIdx },
     has_more_before: pageIdx > 0,
     has_more_after: pageIdx < totalPages - 1,
-    cursor_before: pageIdx > 0 ? firstIdx - 1 : null,
-    cursor_after: pageIdx < totalPages - 1 ? lastIdx + 1 : null,
+    cursor_before: pageIdx > 0 ? firstIdx : null,
+    cursor_after: pageIdx < totalPages - 1 ? lastIdx : null,
     cursor: { prev: null, next: null, first: null },
     page: { current: pageIdx + 1, total: totalPages },
   };
@@ -145,14 +145,15 @@ export function sliceByTokenBudget(
   anchor: 'head' | 'tail' | 'search' = 'tail',
   searchQuery?: string,
   preset?: VerbosityPreset,
+  totalSessionMessages = allMessages.length,
 ): SliceResult {
   const totalTokens = estimateSessionTokens(allMessages);
-  const totalMessages = allMessages.length;
+  const totalMessages = totalSessionMessages;
 
-  if (totalMessages === 0) {
+  if (allMessages.length === 0) {
     return {
       messages: [],
-      meta: emptySticeMeta(sessionId, source, budget, anchor),
+      meta: { ...emptySticeMeta(sessionId, source, budget, anchor), total_messages: totalMessages },
     };
   }
 
@@ -163,15 +164,15 @@ export function sliceByTokenBudget(
     centerIdx = allMessages.findIndex(
       (m) => m.content.toLowerCase().includes(query),
     );
-    if (centerIdx === -1) centerIdx = totalMessages - 1;
+    if (centerIdx === -1) centerIdx = allMessages.length - 1;
   } else if (anchor === 'head') {
     centerIdx = 0;
   } else {
-    centerIdx = totalMessages - 1;
+    centerIdx = allMessages.length - 1;
   }
 
   const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor, preset);
-  const trimmed = trimToAssistantLast(selected);
+  const trimmed = anchor === 'tail' ? selected : trimToAssistantLast(selected);
 
   const returnedTokens = preset
     ? estimateRenderedSessionTokens(trimmed, preset)
@@ -190,8 +191,8 @@ export function sliceByTokenBudget(
     range: { from: firstIdx, to: lastIdx },
     has_more_before: firstIdx > 1,
     has_more_after: lastIdx < totalMessages,
-    cursor_before: firstIdx > 1 ? firstIdx - 1 : null,
-    cursor_after: lastIdx < totalMessages ? lastIdx + 1 : null,
+    cursor_before: firstIdx > 1 ? firstIdx : null,
+    cursor_after: lastIdx < totalMessages ? lastIdx : null,
     cursor: { prev: null, next: null, first: null },
     partial: firstIdx > 1 || lastIdx < totalMessages,
   };
