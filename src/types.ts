@@ -26,6 +26,17 @@ export type ContentBlock =
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean };
 
+// ── Message Source ──────────────────────────────────────────────────────────
+
+export type MessageSource =
+  | 'prompt'
+  | 'queued'
+  | 'system'
+  | 'local_command'
+  // Interrupt-to-prompt references are deferred to the turns model (Issue #25).
+  | 'interrupt'
+  | 'task_notification';
+
 // ── Normalized Message ─────────────────────────────────────────────────────
 
 export interface NormalizedMessage {
@@ -39,6 +50,8 @@ export interface NormalizedMessage {
   blocks: ContentBlock[];
   /** Original JSONL line number for debugging */
   rawLineIndex?: number;
+  /** Source classification for origin/provenance */
+  source?: MessageSource;
 }
 
 // ── Session Metadata ───────────────────────────────────────────────────────

@@ -1,0 +1,8 @@
+{"type":"user","uuid":"u-001","timestamp":"2026-02-01T10:00:00Z","message":{"role":"user","content":"Fix the database connection issue"}}
+{"type":"assistant","uuid":"a-001","timestamp":"2026-02-01T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"Checking config..."}]}}
+{"type":"assistant","uuid":"a-001","timestamp":"2026-02-01T10:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"Checking config... Done."},{"type":"tool_use","id":"tu-01","name":"Bash","input":{"command":"psql -c 'SELECT 1'"}}]}}
+{"type":"attachment","uuid":"att-001","timestamp":"2026-02-01T10:00:03Z","attachment":{"type":"queued_command","prompt":"<task-notification>\n<task-id>sub-42</task-id>\n<summary>Worker finished</summary>\n</task-notification>","timestamp":"2026-02-01T10:00:03Z"}}
+{"type":"user","uuid":"u-002","timestamp":"2026-02-01T10:00:04Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-01","content":"1\n(1 row)"}]}}
+{"type":"user","uuid":"u-003","timestamp":"2026-02-01T10:00:05Z","message":{"role":"user","content":"[Request interrupted by user]"}}
+{"type":"user","uuid":"u-004","timestamp":"2026-02-01T10:00:06Z","message":{"role":"user","content":"<command-name>/config</command-name>\n<command-message>config</command-message>"}}
+{"type":"system","subtype":"turn_duration","durationMs":45000,"timestamp":"2026-02-01T10:00:07Z"}
