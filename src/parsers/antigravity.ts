@@ -312,7 +312,10 @@ async function scanTranscriptHead(filePath: string, maxLines = 30): Promise<Head
         const step: AntigravityStep = JSON.parse(trimmed);
         if (!step || typeof step !== 'object') return;
 
-        if (!sawConversation && (step.type === 'USER_INPUT' || step.type === 'PLANNER_RESPONSE')) {
+        const isMission = step.type === 'SYSTEM_MESSAGE' && typeof step.content === 'string' &&
+          step.content.trim().length > 0 && !getTaskCompletion(step.content);
+        if (!sawConversation && (step.type === 'USER_INPUT' || step.type === 'USER_MESSAGE' ||
+          step.type === 'PLANNER_RESPONSE' || step.type === 'ASSISTANT_STEP' || isMission)) {
           sawConversation = true;
         }
 
@@ -341,7 +344,8 @@ async function scanTranscriptHead(filePath: string, maxLines = 30): Promise<Head
           }
         }
 
-        if ((summary && cwd) || count >= maxLines) {
+        // If the head has only metadata, continue until conversation evidence or EOF.
+        if (sawConversation && ((summary && cwd) || count >= maxLines)) {
           rl.close();
           stream.destroy();
         }
@@ -409,15 +413,11 @@ export async function findAntigravitySessions(): Promise<SessionListEntry[]> {
       }
     }
 
-    // Fast head-scan fallback if metadata is missing from history
-    if (!cwd || !summary) {
-      const scanResult = await scanTranscriptHead(transcriptPath, 30);
-      if (!cwd && scanResult.cwd) cwd = scanResult.cwd;
-      if (!summary && scanResult.summary) summary = scanResult.summary;
-      sawConversation = scanResult.sawConversation;
-    } else {
-      sawConversation = true;
-    }
+    // History metadata alone does not prove the transcript contains a conversation.
+    const scanResult = await scanTranscriptHead(transcriptPath, 30);
+    if (!cwd && scanResult.cwd) cwd = scanResult.cwd;
+    if (!summary && scanResult.summary) summary = scanResult.summary;
+    sawConversation = scanResult.sawConversation;
 
     entries.push({
       id: convId,
@@ -426,7 +426,7 @@ export async function findAntigravitySessions(): Promise<SessionListEntry[]> {
       updatedAt,
       summary: summary || undefined,
       filePath: transcriptPath,
-      isEmpty: !sawConversation && stat.size === 0,
+      isEmpty: !sawConversation,
     });
   }
 

@@ -12,6 +12,13 @@ import {
 import { resolveSource, getAdapter } from '../src/parsers/registry.js';
 import { getResumeHint } from '../src/resume.js';
 import { buildResumeCommand } from '../src/runners.js';
+import { listCommand } from '../src/commands/list.js';
+import { listSessionsScoped } from '../src/discovery.js';
+
+vi.mock('../src/discovery.js', () => ({
+  listSessionsScoped: vi.fn(),
+  loadSession: vi.fn(),
+}));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'antigravity-session');
@@ -266,6 +273,42 @@ describe('Antigravity transcript regressions', () => {
       const realUserSession = await parseAntigravitySession(realUserFile);
       expect(realUserSession.messages.filter((m) => m.role === 'user').map((m) => m.content)).toEqual(['Real user request']);
       expect(realUserSession.messages[0].role).toBe('system');
+    }
+  });
+
+
+  it('marks checkpoint-only sessions empty but keeps system missions and later conversation evidence in list', async () => {
+    writeTranscript('checkpoint', [{ type: 'CHECKPOINT', content: 'metadata only' }]);
+    writeTranscript('system-mission', [{ type: 'SYSTEM_MESSAGE', content: 'Agent mission brief' }]);
+    writeTranscript('later-prompt', [
+      ...Array.from({ length: 35 }, () => ({ type: 'CHECKPOINT', content: 'metadata only' })),
+      { type: 'USER_MESSAGE', content: 'Later valid prompt' },
+    ]);
+    fs.writeFileSync(path.join(tempHome, 'history.jsonl'), JSON.stringify({
+      conversationId: 'checkpoint', workspace: '/synthetic/project', display: 'Stale metadata',
+    }) + '\n');
+    const entries = await findAntigravitySessions();
+    expect(entries.find((e) => e.id === 'checkpoint')?.isEmpty).toBe(true);
+    expect(entries.find((e) => e.id === 'system-mission')?.isEmpty).toBe(false);
+    expect(entries.find((e) => e.id === 'later-prompt')?.isEmpty).toBe(false);
+    vi.mocked(listSessionsScoped).mockResolvedValue({
+      sessions: entries, meta: { cwd_scope: 'all', cwd: tempHome },
+    });
+    const chunks: string[] = [];
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    });
+    const previousExitCode = process.exitCode;
+    try {
+      await listCommand('antigravity', { output: 'json', cwd: 'all' });
+      const envelope = JSON.parse(chunks.join(''));
+      expect(envelope.ok).toBe(true);
+      expect(envelope.result.sessions.map((e: { id: string }) => e.id).sort()).toEqual(['later-prompt', 'system-mission']);
+    } finally {
+      stdout.mockRestore();
+      vi.mocked(listSessionsScoped).mockReset();
+      process.exitCode = previousExitCode;
     }
   });
 
