@@ -4,6 +4,7 @@ import * as os from 'os';
 
 import type {
   ContentBlock,
+  MessageSource,
   NormalizedMessage,
   NormalizedSession,
   SessionListEntry,
@@ -22,6 +23,7 @@ type RawType =
   | 'user'
   | 'assistant'
   | 'system'
+  | 'attachment'
   | 'queue-operation'
   | 'file-history-snapshot'
   | 'progress'
@@ -189,6 +191,57 @@ interface ExplodedMessage {
   blocks: ContentBlock[];
   timestamp: Date;
   rawLineIndex: number;
+  source?: MessageSource;
+}
+
+export function classifyUserSource(text: string, line: RawLine): MessageSource {
+  if (line.source && typeof line.source === 'string') {
+    return line.source as MessageSource;
+  }
+  if (line.promptSource && typeof line.promptSource === 'string') {
+    if (line.origin && (line.origin as any).kind === 'task-notification') {
+      return 'task_notification';
+    }
+    if (line.promptSource === 'system') {
+      return 'system';
+    }
+  }
+  if (line.origin && (line.origin as any).kind === 'task-notification') {
+    return 'task_notification';
+  }
+  if (line.type === 'attachment' && (line as any).attachment?.type === 'queued_command') {
+    return 'queued';
+  }
+  const trimmed = text.trim();
+  if (
+    trimmed === '[Request interrupted by user]' ||
+    trimmed.startsWith('[Request interrupted') ||
+    trimmed.startsWith('User interrupted execution')
+  ) {
+    return 'interrupt';
+  }
+  if (trimmed.startsWith('<task-notification') || trimmed.startsWith('<task-id>')) {
+    return 'task_notification';
+  }
+  if (
+    trimmed.startsWith('<command-name>') ||
+    trimmed.startsWith('<command-message>') ||
+    trimmed.startsWith('<command-args>') ||
+    trimmed.startsWith('<local-command-') ||
+    line.subtype === 'local_command' ||
+    /^\/(compact|clear|model|effort|config|copy|export|doctor|cost)(\s|$|<)/.test(trimmed)
+  ) {
+    return 'local_command';
+  }
+  if (
+    line.isMeta ||
+    trimmed.startsWith('<environment_context>') ||
+    trimmed.startsWith('<system-reminder>') ||
+    trimmed.startsWith('This session is being continued from a previous conversation')
+  ) {
+    return 'system';
+  }
+  return 'prompt';
 }
 
 function shouldSkipLine(line: RawLine): boolean {
@@ -365,6 +418,7 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
         blocks: [{ type: 'text', text: content }],
         timestamp: ts,
         rawLineIndex: lineIndex,
+        source: classifyUserSource(content, line),
       });
     }
     return results;
@@ -415,6 +469,7 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
       blocks: textBlocks.map((t) => ({ type: 'text' as const, text: t })),
       timestamp: ts,
       rawLineIndex: lineIndex,
+      source: classifyUserSource(joined, line),
     });
   }
 
@@ -438,7 +493,9 @@ function computeStats(
   for (const msg of messages) {
     switch (msg.role) {
       case 'user':
-        byRole.user++;
+        if (!msg.source || msg.source === 'prompt') {
+          byRole.user++;
+        }
         break;
       case 'assistant':
         byRole.assistant++;
@@ -587,6 +644,7 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     content: e.content,
     blocks: e.blocks,
     rawLineIndex: e.rawLineIndex,
+    ...(e.source ? { source: e.source } : {}),
   }));
 
   // 5. Timestamps for metadata — use raw event timestamps so system lines

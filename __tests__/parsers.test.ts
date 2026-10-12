@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { parseCodexSession } from '../src/parsers/codex.js';
-import { parseClaudeSession } from '../src/parsers/claude.js';
+import { parseClaudeSession, classifyUserSource } from '../src/parsers/claude.js';
 import { parseFactorySession } from '../src/parsers/factory.js';
 import { getAdapter, resolveSourceAlias } from '../src/parsers/registry.js';
 import '../src/parsers/index.js';
@@ -10,6 +12,7 @@ import '../src/parsers/index.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_FIXTURE = path.join(__dirname, 'fixtures', 'codex-session.jsonl');
 const CLAUDE_FIXTURE = path.join(__dirname, 'fixtures', 'claude-session.jsonl');
+const CLAUDE_HARDENED_FIXTURE = path.join(__dirname, 'fixtures', 'claude-hardened-session.jsonl');
 const FACTORY_FIXTURE = path.join(__dirname, 'fixtures', 'factory-session.jsonl');
 
 describe('Codex parser', () => {
@@ -300,3 +303,83 @@ describe('Source aliases', () => {
     expect(adapter!.name).toBe('factory');
   });
 });
+
+describe('Claude message source classification (Issue #16)', () => {
+  it('anchors user source classification preventing false positives on human conversational prompts', () => {
+    const dummyLine = { type: 'user' } as any;
+
+    // Conversational prompts discussing keywords must be classified as 'prompt'
+    expect(classifyUserSource('How do I handle [Request interrupted by user] in my agent loop?', dummyLine)).toBe('prompt');
+    expect(classifyUserSource('Can you show me what <task-notification> looks like?', dummyLine)).toBe('prompt');
+    expect(classifyUserSource('Is /compact command destructive?', dummyLine)).toBe('prompt');
+    expect(classifyUserSource('Why does <command-name> appear in my logs?', dummyLine)).toBe('prompt');
+    expect(classifyUserSource('Why does "This session is being continued from a previous conversation" show up?', dummyLine)).toBe('prompt');
+
+    // Genuine system/interrupt/notification/local-command records
+    expect(classifyUserSource('[Request interrupted by user]', dummyLine)).toBe('interrupt');
+    expect(classifyUserSource('[Request interrupted by user for tool use "Bash"]', dummyLine)).toBe('interrupt');
+    expect(classifyUserSource('User interrupted execution', dummyLine)).toBe('interrupt');
+    expect(classifyUserSource('<task-notification><task-id>task-1</task-id></task-notification>', dummyLine)).toBe('task_notification');
+    expect(classifyUserSource('<command-name>/compact</command-name>', dummyLine)).toBe('local_command');
+    expect(classifyUserSource('/compact', dummyLine)).toBe('local_command');
+    expect(classifyUserSource('<environment_context>cwd</environment_context>', dummyLine)).toBe('system');
+  });
+
+  it('correctly handles the minimal synthetic example from Issue #16', async () => {
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:01.000Z', promptSource: 'typed', origin: { kind: 'human' }, message: { role: 'user', content: 'fix the bug' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] } }),
+      JSON.stringify({ type: 'user', uuid: 'u2', timestamp: '2026-01-01T00:00:03.000Z', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } }),
+      JSON.stringify({ type: 'user', uuid: 'u3', timestamp: '2026-01-01T00:00:04.000Z', message: { role: 'user', content: '<command-name>/model</command-name>\n<command-args>x</command-args>' } }),
+      JSON.stringify({ type: 'user', uuid: 'u4', timestamp: '2026-01-01T00:00:05.000Z', message: { role: 'user', content: '<local-command-stdout>Set model to x</local-command-stdout>' } }),
+      JSON.stringify({ type: 'user', uuid: 'u5', timestamp: '2026-01-01T00:00:06.000Z', promptSource: 'system', origin: { kind: 'task-notification' }, message: { role: 'user', content: '<task-notification><task-id>b1</task-id><status>completed</status></task-notification>' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a2', timestamp: '2026-01-01T00:00:07.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'the background task finished' }] } }),
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-issue-16-'));
+    const filePath = path.join(tmpDir, 'test-synth.jsonl');
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+
+    try {
+      const session = await parseClaudeSession(filePath);
+      // Exactly 1 genuine human prompt counts in stats.byRole.user
+      expect(session.stats.byRole.user).toBe(1);
+
+      // Verify classifications on individual messages
+      const u1 = session.messages.find((m) => m.content === 'fix the bug');
+      expect(u1).toBeDefined();
+      expect(u1!.source).toBe('prompt');
+
+      const u2 = session.messages.find((m) => m.content.includes('[Request interrupted by user]'));
+      expect(u2).toBeDefined();
+      expect(u2!.source).toBe('interrupt');
+
+      const u3 = session.messages.find((m) => m.content.includes('<command-name>'));
+      expect(u3).toBeDefined();
+      expect(u3!.source).toBe('local_command');
+
+      const u4 = session.messages.find((m) => m.content.includes('<local-command-stdout>'));
+      expect(u4).toBeDefined();
+      expect(u4!.source).toBe('local_command');
+
+      const u5 = session.messages.find((m) => m.content.includes('<task-notification>'));
+      expect(u5).toBeDefined();
+      expect(u5!.source).toBe('task_notification');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes non-human prompts from stats.byRole.user in claude-hardened fixture', async () => {
+    const session = await parseClaudeSession(CLAUDE_HARDENED_FIXTURE);
+    // Despite having interrupt and local_command messages,
+    // only the single genuine human prompt counts towards stats.byRole.user
+    expect(session.stats.byRole.user).toBe(1);
+    expect(session.messages[0].source).toBe('prompt');
+    const interruptMsg = session.messages.find((m) => m.source === 'interrupt');
+    expect(interruptMsg).toBeDefined();
+    const cmdMsg = session.messages.find((m) => m.source === 'local_command');
+    expect(cmdMsg).toBeDefined();
+  });
+});
+
