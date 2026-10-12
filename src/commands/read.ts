@@ -9,11 +9,12 @@ import { computeETag } from '../etag.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
 import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount } from '../slicer.js';
+import { segmentTurns, getTurn } from '../turns.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
 import { which } from '../utils/which.js';
 import { cmdPrefix } from '../util/invocation.js';
-import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning, V2Action, V2Meta } from '../types.js';
+import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning, V2Action, V2Meta, Turn } from '../types.js';
 
 // it/12: per-source spawn binary, mirroring src/commands/doctor.ts. Looked up
 // once via which() and cached so we don't fork a child every read.
@@ -423,11 +424,17 @@ export async function readCommand(
       return;
     }
 
-    // Cursor-based pagination: --before / --after override positional from/to
+    // Cursor/turn-based pagination: --turn / --before / --after override positional from/to
     let from: number;
     let to: number;
+    let selectedTurn: Turn | undefined;
 
-    if (opts?.before != null) {
+    if (opts?.turn != null) {
+      const turns = session.turns ?? segmentTurns(session);
+      selectedTurn = getTurn(turns, opts.turn);
+      from = selectedTurn.startIndex;
+      to = selectedTurn.endIndex;
+    } else if (opts?.before != null) {
       to = opts.before;
       from = 1;
     } else if (opts?.after != null) {
@@ -461,6 +468,10 @@ export async function readCommand(
     );
 
     let meta = injectNextAction(sliceResult.meta);
+    if (selectedTurn) {
+      meta.turn = selectedTurn;
+      meta.turns = session.turns ?? segmentTurns(session);
+    }
     meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
     meta = attachETag(meta, session, {
       preset,
