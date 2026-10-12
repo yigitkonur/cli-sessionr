@@ -384,3 +384,11 @@ it('reports two successful edits and a non-zero test exit in the same turn (Issu
   expect(turn.commands[0].exitCode).toBe(2);
   expect(turn.errorCount).toBe(1);
 });
+
+it('reports successful NotebookEdit notebook_path targets', () => {
+  const messages: NormalizedMessage[] = [
+    {...makeMsg(1,'tool_use','NotebookEdit'),blocks:[{type:'tool_use',id:'nb',name:'NotebookEdit',input:{notebook_path:'analysis.ipynb'}}]},
+    {...makeMsg(2,'tool_result','Success'),blocks:[{type:'tool_result',toolUseId:'nb',isError:false,content:'Success'}]},
+  ];
+  expect(extractTurnFilesChanged(messages).edited).toEqual(['analysis.ipynb']);
+});

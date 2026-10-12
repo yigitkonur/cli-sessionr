@@ -242,6 +242,7 @@ export function extractTurnFilesChanged(messages: NormalizedMessage[]): TurnFile
             inp.TargetFile ||
             inp.target_file ||
             inp.file_path ||
+            inp.notebook_path ||
             inp.filePath ||
             inp.path ||
             inp.file ||
