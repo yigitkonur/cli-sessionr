@@ -60,6 +60,8 @@ export function buildResumeCommand(
       });
     case 'factory':
       return { bin: 'droid', args: ['exec', '-s', sessionId, message] };
+    case 'antigravity':
+      return { bin: 'antigravity', args: ['--resume', sessionId, message] };
   }
 
   // Compile-time exhaustiveness check: if a new SessionSource is added without
@@ -120,6 +122,8 @@ export function buildNewCommand(
       });
     case 'factory':
       return { bin: 'droid', args: ['exec', message] };
+    case 'antigravity':
+      return { bin: 'antigravity', args: ['-p', message] };
   }
 
   // Exhaustiveness check — see buildResumeCommand above.

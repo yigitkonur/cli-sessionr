@@ -55,6 +55,10 @@ const TOOL_DIRECTS: Record<SessionSource, ToolDirect | null> = {
     cmd: (id) => `droid exec -s ${id} "$(cat prompt.md)"`,
     verified: true,
   },
+  antigravity: {
+    cmd: (id) => `antigravity --resume ${id} -p "$(cat prompt.md)"`,
+    verified: true,
+  },
 };
 
 export function getResumeHint(source: SessionSource, sessionId: string): ResumeHint {
