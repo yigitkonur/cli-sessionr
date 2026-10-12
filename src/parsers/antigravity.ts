@@ -311,7 +311,7 @@ async function scanTranscriptHead(filePath: string, maxLines = 30): Promise<Head
       if (!trimmed) return;
       try {
         const step: AntigravityStep = JSON.parse(trimmed);
-        if (!step || typeof step !== 'object') return;
+        if (!step || typeof step !== 'object' || Array.isArray(step) || typeof step.type !== 'string') return;
 
         const isMission = step.type === 'SYSTEM_MESSAGE' && typeof step.content === 'string' &&
           step.content.trim().length > 0 && !getTaskCompletion(step.content);
@@ -328,8 +328,8 @@ async function scanTranscriptHead(filePath: string, maxLines = 30): Promise<Head
 
         if (!cwd && step.tool_calls && Array.isArray(step.tool_calls)) {
           for (const tc of step.tool_calls) {
-            if (!tc.args) continue;
-            const argsObj = typeof tc.args === 'string' ? normalizeToolArgs(tc.args) : tc.args;
+            if (!tc || typeof tc !== 'object' || Array.isArray(tc) || !tc.args) continue;
+            const argsObj = normalizeToolArgs(tc.args);
             const directCwd = extractCwdValue(argsObj['Cwd'] || argsObj['cwd']);
             if (directCwd) {
               cwd = directCwd;
@@ -479,9 +479,9 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
 
   if (fs.existsSync(historyPath)) {
     const historyLines = await readJsonlFile<HistoryRecord>(historyPath);
-    const matched = historyLines.find((h) => h.conversationId === conversationId);
+    const matched = historyLines.find((h) => h && typeof h === 'object' && h.conversationId === conversationId);
     if (matched) {
-      if (matched.workspace) historyCwd = matched.workspace;
+      if (typeof matched.workspace === 'string') historyCwd = matched.workspace;
       if (matched.timestamp) historyTimestamp = parseDefensiveTimestamp(matched.timestamp);
     }
   }
@@ -524,14 +524,16 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
+    if (!step || typeof step !== 'object' || Array.isArray(step) || typeof step.type !== 'string') continue;
     const ts = parseDefensiveTimestamp(step.created_at, historyTimestamp || new Date());
     const lineIndex = typeof step.step_index === 'number' ? step.step_index : i;
 
     switch (step.type) {
       case 'USER_INPUT':
       case 'USER_MESSAGE': {
+        if (typeof step.content !== 'string') break;
         pendingToolCalls.length = 0; // Turn isolation: clear abandoned pending tool calls
-        const rawContent = step.content || '';
+        const rawContent = step.content;
         const userPrompt = extractUserPrompt(rawContent);
 
         // Check for model change in settings
@@ -570,10 +572,10 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
         const assistantBlocks: ContentBlock[] = [];
         let textContent = '';
 
-        if (step.thinking && step.thinking.trim()) {
+        if (typeof step.thinking === 'string' && step.thinking.trim()) {
           assistantBlocks.push({ type: 'thinking', text: step.thinking.trim() });
         }
-        if (step.content && step.content.trim()) {
+        if (typeof step.content === 'string' && step.content.trim()) {
           assistantBlocks.push({ type: 'text', text: step.content.trim() });
           textContent = step.content.trim();
         }
@@ -581,7 +583,7 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
         if (assistantBlocks.length > 0) {
           let displayContent = textContent;
           if (!displayContent) {
-            displayContent = '[thinking] ' + (step.thinking || '').trim().slice(0, 200);
+            displayContent = '[thinking] ' + (typeof step.thinking === 'string' ? step.thinking : '').trim().slice(0, 200);
           }
           exploded.push({
             role: 'assistant',
@@ -594,7 +596,8 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
 
         if (Array.isArray(step.tool_calls)) {
           step.tool_calls.forEach((tc, tcIdx) => {
-            const toolName = tc.name || 'unknown';
+            if (!tc || typeof tc !== 'object' || Array.isArray(tc)) return;
+            const toolName = typeof tc.name === 'string' && tc.name ? tc.name : 'unknown';
             const normalizedArgs = normalizeToolArgs(tc.args);
             const callId = `agy-${lineIndex}-${tcIdx}-${toolName}`;
 
@@ -658,7 +661,7 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
         const pending = pendingToolCalls.shift();
         const callId = pending?.id || `agy-generic-${lineIndex}`;
         const toolName = pending?.name || 'unknown';
-        const content = step.content || '';
+        const content = typeof step.content === 'string' ? step.content : '';
         if (pending && step.status === 'RUNNING') {
           const taskId = /task id:?\s*"?([0-9a-f-]{36}\/task-\d+)/i.exec(content)?.[1];
           if (taskId) backgroundTasks.set(taskId, pending);
@@ -667,7 +670,7 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
         const isError =
           step.status === 'ERROR' ||
           step.status === 'INVALID' ||
-          Boolean(step.error) ||
+          (typeof step.error === 'string' && Boolean(step.error)) ||
           /exited with code [1-9]/i.test(content) ||
           content.startsWith('Error:');
 
@@ -694,7 +697,8 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
       }
 
       case 'CHECKPOINT': {
-        const content = step.content || step.error || `[${step.type}]`;
+        const content = (typeof step.content === 'string' && step.content) ||
+          (typeof step.error === 'string' && step.error) || `[${step.type}]`;
         const isCompaction = content.startsWith('# Resuming from a compaction');
         if (isCompaction) {
           exploded.push({
@@ -720,7 +724,8 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
       case 'ERROR_MESSAGE':
       case 'ERROR':
       case 'TASK_NOTIFICATION': {
-        const content = step.content || step.error || `[${step.type}]`;
+        const content = (typeof step.content === 'string' && step.content) ||
+          (typeof step.error === 'string' && step.error) || `[${step.type}]`;
         const completion = step.type === 'SYSTEM_MESSAGE' ? getTaskCompletion(content) : undefined;
         const call = completion && backgroundTasks.get(completion.taskId);
         if (completion && call) {
@@ -737,7 +742,8 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
             if (tcStat) tcStat.errors++;
           }
         }
-        const isMission = step.type === 'SYSTEM_MESSAGE' && !completion && !hasUserInput && !sawMissionPrompt;
+        const isMission = step.type === 'SYSTEM_MESSAGE' && typeof step.content === 'string' &&
+          step.content.trim().length > 0 && !completion && !hasUserInput && !sawMissionPrompt;
         if (isMission) sawMissionPrompt = true;
         const messageContent = isMission ? extractSystemContent(content) : content;
         exploded.push({

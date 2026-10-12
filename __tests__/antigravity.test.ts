@@ -329,6 +329,37 @@ describe('Antigravity transcript regressions', () => {
     expect(entries.find((e) => e.id === 'no-user')?.summary).toBe('Agent mission brief');
   });
 
+
+  it.each([
+    ['generic content', [{ type: 'GENERIC', content: { key: 'value' } }]],
+    ['user content', [{ type: 'USER_INPUT', content: [] }]],
+    ['thinking', [{ type: 'PLANNER_RESPONSE', thinking: {} }]],
+    ['assistant content', [{ type: 'ASSISTANT_STEP', content: 42 }]],
+    ['checkpoint content', [{ type: 'CHECKPOINT', content: {} }]],
+    ['system content', [{ type: 'SYSTEM_MESSAGE', content: {} }]],
+    ['error fields', [{ type: 'ERROR_MESSAGE', error: {} }, { type: 'CHECKPOINT', error: [] }]],
+    ['record shapes', [null, [], 42, 'not a record']],
+    ['tool call shapes', [{ type: 'PLANNER_RESPONSE', tool_calls: [null, 42, [], { name: 42 }, { name: 'run_command', args: [] }] }]],
+  ])('skips malformed %s and retains following valid conversation', async (_label, malformed) => {
+    const file = writeTranscript('malformed', [
+      ...malformed,
+      { type: 'USER_INPUT', content: 'Valid following prompt' },
+      { type: 'PLANNER_RESPONSE', content: 'Valid following response' },
+    ]);
+    const parsing = parseAntigravitySession(file);
+    await expect(parsing).resolves.toMatchObject({ source: 'antigravity' });
+    const session = await parsing;
+    expect(session.messages.slice(-2).map((m) => m.content)).toEqual(['Valid following prompt', 'Valid following response']);
+    for (const message of session.messages) {
+      expect(typeof message.content).toBe('string');
+      for (const block of message.blocks) {
+        if (block.type === 'text' || block.type === 'thinking') expect(typeof block.text).toBe('string');
+        if (block.type === 'tool_use') expect(typeof block.name).toBe('string');
+        if (block.type === 'tool_result') expect(typeof block.content).toBe('string');
+      }
+    }
+  });
+
 });
 
 
