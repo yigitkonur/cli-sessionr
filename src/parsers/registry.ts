@@ -2,10 +2,10 @@ import type { SessionSource, SessionListEntry, NormalizedSession } from '../type
 import { resolveSource } from '../utils/validate.js';
 
 export interface SourceAdapter {
-  name: SessionSource;
+  name: SessionSource | (string & {});
   label: string;
   color: string;
-  getDataDir(): string;
+  getDataDir?(): string;
   find(): Promise<SessionListEntry[]>;
   parse(filePath: string): Promise<NormalizedSession>;
 }
@@ -13,23 +13,38 @@ export interface SourceAdapter {
 const registry: SourceAdapter[] = [];
 
 export function resolveSourceAlias(input: string | undefined): SessionSource | undefined {
-  return resolveSource(input);
+  if (!input) return undefined;
+  const s = input.toLowerCase();
+  const custom = registry.find((a) => a.name.toLowerCase() === s);
+  if (custom) return custom.name as SessionSource;
+  try {
+    return resolveSource(input);
+  } catch {
+    return undefined;
+  }
 }
 
 export function registerSource(adapter: SourceAdapter): void {
   // Replace if already registered (for tests/hot-reload)
-  const idx = registry.findIndex((a) => a.name === adapter.name);
+  const idx = registry.findIndex((a) => a.name.toLowerCase() === adapter.name.toLowerCase());
   if (idx >= 0) registry[idx] = adapter;
   else registry.push(adapter);
 }
 
 export function getAdapters(source?: string): SourceAdapter[] {
+  if (!source) return [...registry];
+  const direct = registry.filter((a) => a.name.toLowerCase() === source.toLowerCase());
+  if (direct.length > 0) return direct;
   const resolved = resolveSourceAlias(source);
-  if (!resolved) return [...registry];
+  if (!resolved) return [];
   return registry.filter((a) => a.name === resolved);
 }
 
 export function getAdapter(source: string): SourceAdapter | undefined {
+  if (!source) return undefined;
+  const s = source.toLowerCase();
+  const direct = registry.find((a) => a.name.toLowerCase() === s);
+  if (direct) return direct;
   const resolved = resolveSourceAlias(source);
   if (!resolved) return undefined;
   return registry.find((a) => a.name === resolved);

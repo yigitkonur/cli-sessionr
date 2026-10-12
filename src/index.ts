@@ -1,4 +1,6 @@
-export { loadSession, listSessions, listSessionsScoped } from './discovery.js';
+export { loadSession, loadSessionByPath, listSessions, listSessionsScoped } from './discovery.js';
+export { read, getStats } from './read.js';
+export { registerSource, getAdapter, getAdapters } from './parsers/registry.js';
 export { parseCodexSession } from './parsers/codex.js';
 export { parseClaudeSession } from './parsers/claude.js';
 export { getPreset, PRESET_NAMES, DETAIL_LEVELS, resolveOutputFormat } from './config.js';
@@ -31,4 +33,7 @@ export type {
   SliceMeta,
   OutputOptions,
   ReadOptions,
+  ReadEnvelope,
+  SessionRef,
+  SourceAdapter,
 } from './types.js';

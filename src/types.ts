@@ -377,6 +377,8 @@ export interface SliceMeta {
   };
   turns?: Turn[];
   turn?: Turn;
+  pending_tool_calls?: PendingToolCall[];
+  pendingToolCalls?: PendingToolCall[];
 }
 
 // ── Output Resolution Options ──────────────────────────────────────────────
@@ -395,20 +397,50 @@ export interface ReadOptions {
   preset?: string;
   detail?: DetailLevel;
   json?: boolean;
-  output?: OutputFormat;
+  output?: OutputFormat | string;
   tokens?: number;
   anchor?: string;
   search?: string;
+  searchIn?: string | string[];
   role?: string;
+  from?: number;
+  to?: number;
   before?: number;
   after?: number;
   ifChanged?: string;
   page?: number;
-  turn?: string;
+  turn?: string | number;
   includeSummary?: boolean;
   batch?: string;
   /** Phase 1 carry-forward: forwarded from cli.ts so meta.timing_ms appears. */
   timing?: boolean;
+}
+
+export type SessionRef =
+  | string
+  | { id: string; source?: string }
+  | { path: string; source?: string };
+
+export interface ReadEnvelope {
+  ok: boolean;
+  sessionId: string;
+  session_id?: string;
+  source: SessionSource;
+  meta: SliceMeta & {
+    totalMessages?: number;
+    range: { from: number; to: number };
+    preset?: VerbosityPreset | string;
+    anchor?: string | null;
+    cursor?: any;
+    turns?: Turn[];
+    turn?: Turn;
+    pendingToolCalls?: PendingToolCall[];
+    pending_tool_calls?: PendingToolCall[];
+    unchanged?: boolean;
+  };
+  messages: NormalizedMessage[];
+  warnings?: string[];
+  summary?: SessionSummary;
 }
 
 // ── Job Types (Write Path) ─────────────────────────────────────────────────
@@ -453,3 +485,5 @@ export interface SendOptions {
   /** Forwarded from cli.ts so meta.timing_ms appears, like every other command. */
   timing?: boolean;
 }
+
+export type { SourceAdapter } from './parsers/registry.js';
