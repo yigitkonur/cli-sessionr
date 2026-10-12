@@ -260,8 +260,7 @@ export type SearchField = 'content' | 'tool_input' | 'tool_result';
 export interface SearchMeta {
   query: string;
   matched: boolean;
-  matchIndex: number | null;
-  match_index?: number | null;
+  match_index: number | null;
   fields?: SearchField[];
 }
 

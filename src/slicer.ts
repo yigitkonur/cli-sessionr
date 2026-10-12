@@ -27,7 +27,7 @@ export function normalizeSearchFields(
 
   const result = new Set<SearchField>();
   for (const item of rawList) {
-    const normalized = item.toLowerCase().replace(/-/g, '_');
+    const normalized = item.trim().toLowerCase().replace(/-/g, '_');
     if (normalized === 'all') {
       result.add('content');
       result.add('tool_input');
@@ -42,6 +42,16 @@ export function normalizeSearchFields(
   }
 
   return result.size > 0 ? result : new Set(['content']);
+}
+
+function inputContainsSearch(value: unknown, queryLower: string): boolean {
+  if (typeof value === 'string') return value.toLowerCase().includes(queryLower);
+  if (Array.isArray(value)) return value.some((item) => inputContainsSearch(item, queryLower));
+  if (value && typeof value === 'object') {
+    return Object.entries(value).some(([key, item]) =>
+      key.toLowerCase().includes(queryLower) || inputContainsSearch(item, queryLower));
+  }
+  return value != null && String(value).toLowerCase().includes(queryLower);
 }
 
 export function messageMatchesSearch(
@@ -70,8 +80,7 @@ export function messageMatchesSearch(
         if (b.type === 'tool_use') {
           const input = b.input ?? (b as any).args;
           if (input != null) {
-            const raw = typeof input === 'string' ? input : JSON.stringify(input);
-            if (raw.toLowerCase().includes(queryLower)) {
+            if (inputContainsSearch(input, queryLower)) {
               return true;
             }
           }
@@ -269,7 +278,7 @@ export function sliceByTokenBudget(
   const totalTokens = estimateSessionTokens(allMessages);
   const totalMessages = totalSessionMessages ?? allMessages.length;
 
-  if (allMessages.length === 0) {
+  if (allMessages.length === 0 && !(anchor === 'search' && searchQuery !== undefined)) {
     return {
       messages: [],
       meta: emptySliceMeta(sessionId, source, budget, anchor, totalMessages),
@@ -305,7 +314,6 @@ export function sliceByTokenBudget(
         search: {
           query: searchQuery,
           matched: false,
-          matchIndex: null,
           match_index: null,
           fields: Array.from(searchFields),
         },
@@ -319,7 +327,7 @@ export function sliceByTokenBudget(
   }
 
   const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor, preset);
-  const trimmed = trimToAssistantLast(selected);
+  const trimmed = anchor === 'search' ? selected : trimToAssistantLast(selected);
 
   const returnedTokens = preset
     ? estimateRenderedSessionTokens(trimmed, preset)
@@ -349,7 +357,6 @@ export function sliceByTokenBudget(
     meta.search = {
       query: searchQuery,
       matched: true,
-      matchIndex: matchedMessage.index,
       match_index: matchedMessage.index,
       fields: Array.from(searchFields),
     };

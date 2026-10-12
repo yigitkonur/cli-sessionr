@@ -141,3 +141,50 @@ describe('readCommand validation', () => {
     expect(process.exitCode).toBe(EXIT.PARTIAL);
   });
 });
+
+vi.mock('node:fs/promises', () => ({ readFile: vi.fn().mockResolvedValue('sess-test\n') }));
+describe('search envelope regression', () => {
+  afterEach(() => { vi.restoreAllMocks(); process.exitCode = undefined; });
+  const tools: NormalizedMessage[] = [makeMessage(1, 'needle'), makeMessage(2), { ...makeMessage(3), role: 'tool_use', content: 'Tool: Bash', blocks: [{ type: 'tool_use', id: 'call', name: 'Bash', input: { command: 'needle' } }] }];
+  async function run(options: Parameters<typeof readCommand>[3]) {
+    const out = captureStdout(); await readCommand('sess-test', undefined, undefined, { output: 'json', ...options });
+    const text = out.chunks.join(''); out.restore(); return options?.batch ? JSON.parse(text.trim().split('\n').at(-1)!) : JSON.parse(text);
+  }
+  it.each([false, true])('honors tool-input search and canonical metadata (batch=%s)', async (batch) => {
+    vi.mocked(loadSession).mockResolvedValue(makeSession(tools));
+    const body = await run({ search: 'needle', searchIn: 'tool_input', ...(batch ? { batch: 'ids.txt' } : {}) });
+    expect(body.meta.search).toMatchObject({ matched: true, match_index: 3, fields: ['tool_input'] });
+    expect(body.meta.search).not.toHaveProperty('matchIndex');
+    expect(body.result.messages.map((m: NormalizedMessage) => m.index)).toContain(3);
+  });
+  it('rejects invalid batch search fields', async () => {
+    vi.mocked(loadSession).mockResolvedValue(makeSession(tools));
+    const body = await run({ batch: 'ids.txt', search: 'needle', searchIn: 'invalid' });
+    expect(body.ok).toBe(false);
+    expect(process.exitCode).toBe(EXIT.USAGE);
+  });
+  it.each([false, true])('marks empty search results explicitly (empty-session=%s)', async (empty) => {
+    vi.mocked(loadSession).mockResolvedValue(makeSession(empty ? [] : tools));
+    const body = await run({ search: 'missing', ...(empty ? {} : { role: 'system' }) });
+    expect(body, JSON.stringify(body)).toHaveProperty('meta.search');
+    expect(body.meta.search).toMatchObject({ matched: false, match_index: null });
+    expect(body.result.notice).toContain('no matches');
+  });
+  it('prints a no-match text notice only once across stdout and stderr', async () => {
+    vi.mocked(loadSession).mockResolvedValue(makeSession(tools));
+    const err: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => { err.push(String(chunk)); return true; }) as typeof process.stderr.write);
+    const out = captureStdout();
+    await readCommand('sess-test', undefined, undefined, { output: 'text', search: 'missing' });
+    const notices = (out.chunks.join('') + err.join('')).match(/yielded no matches/g) ?? [];
+    out.restore();
+    expect(notices).toHaveLength(1);
+  });
+  it('search fields participate in conditional-read ETags', async () => {
+    vi.mocked(loadSession).mockResolvedValue(makeSession(tools));
+    const content = await run({ search: 'needle', searchIn: 'content' });
+    const input = await run({ search: 'needle', searchIn: 'tool_input', ifChanged: content.meta.etag });
+    expect(input.result.unchanged).not.toBe(true);
+    expect(input.meta.etag).not.toBe(content.meta.etag);
+  });
+});

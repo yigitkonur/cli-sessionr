@@ -307,6 +307,19 @@ export async function readCommand(
   });
 
   try {
+    if (opts?.searchIn) {
+      if (!opts?.search) {
+        throw new SessionReaderError('--search-in requires --search <query>', {
+          code: 'INVALID_SEARCH_USAGE',
+          errorClass: 'validation',
+          exitCode: EXIT.USAGE,
+          detail: { provided: opts.searchIn },
+          suggestion: `${cmdPrefix()} read <id> --search "<query>" --search-in ${opts.searchIn}`,
+        });
+      }
+      validateSearchIn(opts.searchIn);
+    }
+
     if (opts?.batch) {
       await readBatchCommand(opts, isTTY);
       return;
@@ -339,19 +352,6 @@ export async function readCommand(
       });
     }
 
-    if (opts?.searchIn) {
-      if (!opts?.search) {
-        throw new SessionReaderError('--search-in requires --search <query>', {
-          code: 'INVALID_SEARCH_USAGE',
-          errorClass: 'validation',
-          exitCode: EXIT.USAGE,
-          detail: { provided: opts.searchIn },
-          suggestion: `${cmdPrefix()} read <id> --search "<query>" --search-in ${opts.searchIn}`,
-        });
-      }
-      validateSearchIn(opts.searchIn);
-    }
-
     // Resolve preset: --detail > --preset > auto (verbose for agents, standard for TTY)
     const detail = opts?.detail as DetailLevel | undefined;
     const presetName = detail
@@ -380,7 +380,7 @@ export async function readCommand(
     // Sessions can be opened without any user/assistant exchange (Factory "New Session",
     // Claude blank sessions, etc.); list filters them out, but a direct ID paste can
     // still land here.
-    if (totalMessages === 0) {
+    if (totalMessages === 0 && !opts?.search) {
       const emptyMeta: SliceMeta = {
         session_id: session.id,
         source: session.source,
@@ -426,7 +426,7 @@ export async function readCommand(
         preset,
         tokenBudget,
         anchor: undefined,
-        search: opts?.search,
+        search: opts?.search == null ? undefined : JSON.stringify([opts.search, Array.from(normalizeSearchFields(opts.searchIn)).sort()]),
         page: opts.page,
         format: outputFormat,
       });
@@ -473,7 +473,7 @@ export async function readCommand(
       to = toStr ? parseInt(toStr, 10) : messages.length;
     }
 
-    if (from < 1 || to > totalMessages || from > to) {
+    if ((from < 1 || to > totalMessages || from > to) && !(messages.length === 0 && opts?.search)) {
       throw new InvalidRangeError(from, to, totalMessages);
     }
 
@@ -503,7 +503,7 @@ export async function readCommand(
       preset,
       tokenBudget,
       anchor,
-      search: opts?.search,
+      search: opts?.search == null ? undefined : JSON.stringify([opts.search, Array.from(normalizeSearchFields(opts.searchIn)).sort()]),
       page: undefined,
       format: outputFormat,
     });
@@ -528,10 +528,6 @@ export async function readCommand(
         content: m.content.slice(0, 60) + (m.content.length > 60 ? '...' : ''),
         blocks: [{ type: 'text' as const, text: m.content.slice(0, 60) + (m.content.length > 60 ? '...' : '') }],
       }));
-    }
-
-    if (outputMessages.length === 0 && meta.search && !meta.search.matched) {
-      warnings.push(`Search query "${meta.search.query}" yielded no matches.`);
     }
 
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
@@ -586,7 +582,7 @@ export async function readCommand(
           ...(isSre && err.suggestion ? { suggestion: err.suggestion } : {}),
           retryable: isSre ? err.retry : false,
         }),
-        { format: outputFormat, timing: opts?.timing },
+        { format: opts?.batch ? 'jsonl' : outputFormat, timing: opts?.timing },
       );
     } else {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -656,6 +652,8 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
         (opts.search ? 'search' : (opts.anchor ?? 'head')) as 'head' | 'tail' | 'search',
         opts.search,
         preset,
+        opts.searchIn,
+        session.stats.totalMessages,
       );
       let meta = injectNextAction(result.meta);
       meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts.preset, detail });
@@ -664,6 +662,7 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
       emitReadEnvelope({
         session,
         messages: result.messages,
+        notice: meta.search && !meta.search.matched ? `Search query "${meta.search.query}" yielded no matches.` : undefined,
         meta,
         summary: buildSessionSummary(session, tokenBudget, preset),
         includeSummary: true,

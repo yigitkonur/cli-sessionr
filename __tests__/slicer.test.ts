@@ -78,7 +78,7 @@ describe('sliceByTokenBudget', () => {
     const result = sliceByTokenBudget(msgs, budget, 'sess1', 'claude', 'search', 'nonexistent query');
     expect(result.messages.length).toBe(0);
     expect(result.meta.search?.matched).toBe(false);
-    expect(result.meta.search?.matchIndex).toBeNull();
+    expect(result.meta.search?.match_index).toBeNull();
     expect(result.meta.search?.query).toBe('nonexistent query');
   });
 
@@ -172,7 +172,7 @@ describe('Search multi-field filtering (Issue #10)', () => {
   it('finds match in content by default', () => {
     const result = sliceByTokenBudget(toolMsgs, 4000, 'sess1', 'claude', 'search', 'deployment');
     expect(result.meta.search?.matched).toBe(true);
-    expect(result.meta.search?.matchIndex).toBe(2);
+    expect(result.meta.search?.match_index).toBe(2);
   });
 
   it('fails to find tool_input string if searching only content', () => {
@@ -184,12 +184,30 @@ describe('Search multi-field filtering (Issue #10)', () => {
   it('finds string inside tool_input when tool_input field is specified', () => {
     const result = sliceByTokenBudget(toolMsgs, 4000, 'sess1', 'claude', 'search', 'staging --force', undefined, 'tool_input');
     expect(result.meta.search?.matched).toBe(true);
-    expect(result.meta.search?.matchIndex).toBe(3);
+    expect(result.meta.search?.match_index).toBe(3);
   });
 
   it('finds string inside tool_result when tool_result field is specified', () => {
     const result = sliceByTokenBudget(toolMsgs, 4000, 'sess1', 'claude', 'search', 'exit code 0', undefined, 'tool_result');
     expect(result.meta.search?.matched).toBe(true);
-    expect(result.meta.search?.matchIndex).toBe(4);
+    expect(result.meta.search?.match_index).toBe(4);
+  });
+});
+
+describe('search match visibility regression', () => {
+  const messages: NormalizedMessage[] = [makeMsg(1, 'user', 'request'), makeMsg(2, 'assistant', 'working'), { ...makeMsg(3, 'tool_use', 'Tool: Bash'), blocks: [{ type: 'tool_use', id: 'call', name: 'Bash', input: { command: 'echo "quoted-needle"', path: 'C:\\work\\file.ts' } }] }, { ...makeMsg(4, 'tool_result', 'result-needle'), blocks: [{ type: 'tool_result', toolUseId: 'call', content: 'result-needle', isError: false }] }];
+  it.each([['quoted-needle', 'tool_input', 3], ['result-needle', 'tool_result', 4]] as const)('retains the actual %s match', (query, field, index) => {
+    const result = sliceByTokenBudget(messages, 4000, 's', 'claude', 'search', query, undefined, field);
+    expect(result.meta.search?.matched).toBe(true);
+    expect(result.messages.map(m => m.index)).toContain(index);
+    expect(result.meta.search).not.toHaveProperty('matchIndex');
+  });
+  it('searches decoded strings rather than escaped JSON', () => {
+    const result = sliceByTokenBudget(messages, 4000, 's', 'claude', 'search', 'echo "quoted-needle"', undefined, 'tool_input');
+    expect(result.meta.search?.matched).toBe(true);
+  });
+  it('marks searches of empty collections as unmatched', () => {
+    const result = sliceByTokenBudget([], 4000, 's', 'claude', 'search', 'missing', undefined, 'tool_input', 10);
+    expect(result.meta.search).toMatchObject({ query: 'missing', matched: false, match_index: null, fields: ['tool_input'] });
   });
 });
