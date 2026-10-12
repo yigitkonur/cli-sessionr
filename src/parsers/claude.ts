@@ -213,12 +213,12 @@ export function classifyUserSource(text: string, line: RawLine): MessageSource {
     return 'queued';
   }
   const trimmed = text.trim();
-  if (
-    trimmed === '[Request interrupted by user]' ||
-    trimmed.startsWith('[Request interrupted') ||
-    trimmed.startsWith('User interrupted execution')
-  ) {
+  if (/^\[Request interrupted by user(?: for tool use "[^"\n]+")?\]$/.test(trimmed)) {
     return 'interrupt';
+  }
+  // Explicit human provenance wins over heuristics for conversational text.
+  if ((line.origin as { kind?: string } | undefined)?.kind === 'human') {
+    return 'prompt';
   }
   if (trimmed.startsWith('<task-notification') || trimmed.startsWith('<task-id>')) {
     return 'task_notification';

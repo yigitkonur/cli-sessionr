@@ -318,7 +318,7 @@ describe('Claude message source classification (Issue #16)', () => {
     // Genuine system/interrupt/notification/local-command records
     expect(classifyUserSource('[Request interrupted by user]', dummyLine)).toBe('interrupt');
     expect(classifyUserSource('[Request interrupted by user for tool use "Bash"]', dummyLine)).toBe('interrupt');
-    expect(classifyUserSource('User interrupted execution', dummyLine)).toBe('interrupt');
+    expect(classifyUserSource('User interrupted execution', dummyLine)).toBe('prompt');
     expect(classifyUserSource('<task-notification><task-id>task-1</task-id></task-notification>', dummyLine)).toBe('task_notification');
     expect(classifyUserSource('<command-name>/compact</command-name>', dummyLine)).toBe('local_command');
     expect(classifyUserSource('/compact', dummyLine)).toBe('local_command');
@@ -401,4 +401,16 @@ it('19-A excludes harness peer wrappers but preserves legacy and queued new-turn
   expect(session.messages[0].source).toBe('system');
   expect(session.messages.slice(1).map((m) => m.source)).toEqual(['prompt', 'prompt']);
   expect(session.stats.byRole.user).toBe(2);
+});
+
+it('19-B keeps conversational interrupt text human and exact bracketed markers interrupts', async () => {
+  const session = await parseReview19Records([
+    { type: 'user', uuid: 'human', timestamp: '2026-01-01T00:00:01Z', promptSource: 'typed', origin: { kind: 'human' }, message: { content: 'User interrupted execution while my script was running; explain the error.' } },
+    { type: 'user', uuid: 'marker', timestamp: '2026-01-01T00:00:02Z', message: { content: '[Request interrupted by user]' } },
+    { type: 'user', uuid: 'tool-marker', timestamp: '2026-01-01T00:00:03Z', message: { content: '[Request interrupted by user for tool use "Bash"]' } },
+  ]);
+  expect(session.messages.map((m) => m.source)).toEqual(['prompt', 'interrupt', 'interrupt']);
+  expect(session.stats.byRole.user).toBe(1);
+  expect(classifyUserSource('[Request interrupted by user] how do I handle this?', { type: 'user' } as any)).toBe('prompt');
+  expect(classifyUserSource('<command-name> is literal text', { type: 'user', origin: { kind: 'human' }, promptSource: 'typed' } as any)).toBe('prompt');
 });
