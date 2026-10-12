@@ -145,14 +145,15 @@ export function sliceByTokenBudget(
   anchor: 'head' | 'tail' | 'search' = 'tail',
   searchQuery?: string,
   preset?: VerbosityPreset,
+  totalSessionMessages = allMessages.length,
 ): SliceResult {
   const totalTokens = estimateSessionTokens(allMessages);
-  const totalMessages = allMessages.length;
+  const totalMessages = totalSessionMessages;
 
-  if (totalMessages === 0) {
+  if (allMessages.length === 0) {
     return {
       messages: [],
-      meta: emptySticeMeta(sessionId, source, budget, anchor),
+      meta: { ...emptySticeMeta(sessionId, source, budget, anchor), total_messages: totalMessages },
     };
   }
 
@@ -163,15 +164,15 @@ export function sliceByTokenBudget(
     centerIdx = allMessages.findIndex(
       (m) => m.content.toLowerCase().includes(query),
     );
-    if (centerIdx === -1) centerIdx = totalMessages - 1;
+    if (centerIdx === -1) centerIdx = allMessages.length - 1;
   } else if (anchor === 'head') {
     centerIdx = 0;
   } else {
-    centerIdx = totalMessages - 1;
+    centerIdx = allMessages.length - 1;
   }
 
   const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor, preset);
-  const trimmed = trimToAssistantLast(selected);
+  const trimmed = anchor === 'tail' ? selected : trimToAssistantLast(selected);
 
   const returnedTokens = preset
     ? estimateRenderedSessionTokens(trimmed, preset)

@@ -452,8 +452,8 @@ export async function readCommand(
         token_budget: tokenBudget,
         anchor: requestedAnchor ?? 'head',
         range: { from: 0, to: 0 },
-        has_more_before: opts?.before != null ? false : (from > 1),
-        has_more_after: opts?.after != null ? false : (to < totalMessages),
+        has_more_before: false,
+        has_more_after: false,
         cursor_before: null,
         cursor_after: null,
         cursor: { next: null, prev: null, first: null },
@@ -469,6 +469,11 @@ export async function readCommand(
         page: undefined,
         format: outputFormat,
       });
+
+      if (opts?.ifChanged && meta.etag === opts.ifChanged) {
+        emitUnchanged(session, meta.etag, outputFormat, opts?.timing);
+        return;
+      }
 
       if (outputFormat === 'json' || outputFormat === 'jsonl') {
         emitReadEnvelope({
@@ -493,7 +498,7 @@ export async function readCommand(
     }
 
     // Apply range first (positional/cursor)
-    let sliced = messages.slice(from - 1, to);
+    let sliced = messages.filter((message) => message.index >= from && message.index <= to);
 
     // Directional anchor defaulting:
     const anchor = opts?.search
@@ -512,6 +517,7 @@ export async function readCommand(
       anchor,
       opts?.search,
       preset,
+      totalMessages,
     );
 
     let meta = injectNextAction(sliceResult.meta);

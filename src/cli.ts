@@ -156,7 +156,7 @@ program
   .option('-p, --preset <name>', PRESET_HELP)
   .option('-d, --detail <level>', `Detail level (${DETAIL_LEVELS.join(', ')})`)
   .option('--tokens <n>', 'Token budget (env: SESSIONREADER_MAX_TOKENS)')
-  .option('--anchor <anchor>', 'Slice anchor: head, tail, search', 'head')
+  .option('--anchor <anchor>', 'Slice anchor: head, tail, search (default: head; before cursor: tail)')
   .option('--search <query>', 'Search query (sets anchor=search)')
   .option('--role <roles>', 'Filter by role (comma-separated: user, assistant, system, tool_use, tool_result)')
   .option('--page <n>', 'Page number (1-based, from head)')
@@ -195,7 +195,7 @@ Examples:
         role: opts.role as string | undefined,
         page: parseOptionalBounded('--page', opts.page, 1),
         before: parseOptionalBounded('--before', opts.before, 1),
-        after: parseOptionalBounded('--after', opts.after, 1),
+        after: parseOptionalBounded('--after', opts.after, 0),
         ifChanged: opts.ifChanged as string | undefined,
         includeSummary: opts.includeSummary as boolean | undefined,
         batch: opts.batch as string | undefined,

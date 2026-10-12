@@ -141,3 +141,40 @@ describe('readCommand validation', () => {
     expect(process.exitCode).toBe(EXIT.PARTIAL);
   });
 });
+
+describe('exclusive cursor walks', () => {
+  afterEach(() => { vi.restoreAllMocks(); process.exitCode = undefined; });
+  async function run(options: Parameters<typeof readCommand>[3]) {
+    const out = captureStdout(); await readCommand('sess-test', undefined, undefined, { output: 'json', tokens: 120, ...options });
+    const body = JSON.parse(out.chunks.join('')); out.restore(); return body;
+  }
+  it.each(['head', 'tail'] as const)('walks every index exactly once from %s using printed cursor commands', async (anchor) => {
+    const messages = Array.from({ length: 31 }, (_, i) => makeMessage(i + 1, 'x'.repeat(100)));
+    vi.mocked(loadSession).mockResolvedValue(makeSession(messages));
+    const collected: number[] = []; let opts: Parameters<typeof readCommand>[3] = { anchor }; let pages = 0;
+    while (pages++ < 100) {
+      const body = await run(opts); collected.push(...body.result.messages.map((m: NormalizedMessage) => m.index));
+      expect(body.meta.total_messages).toBe(31);
+      const cursor = body.meta.cursor[anchor === 'head' ? 'next' : 'prev']; if (!cursor) break;
+      const match = cursor.command.match(/--(after|before) (\d+)/)!;
+      opts = { [match[1]]: Number(match[2]) };
+    }
+    expect(pages).toBeGreaterThan(2); expect(pages).toBeLessThan(100);
+    expect(collected.slice().sort((a,b) => a-b)).toEqual(messages.map(m => m.index));
+    expect(new Set(collected).size).toBe(collected.length);
+  });
+  it('applies role-filtered cursors to message indices, not array positions', async () => {
+    vi.mocked(loadSession).mockResolvedValue(makeSession(Array.from({ length: 10 }, (_, i) => makeMessage(i + 1))));
+    const after = await run({ role: 'assistant', after: 4, tokens: 4000 });
+    expect(after.result.messages.map((m: NormalizedMessage) => m.index)).toEqual([6,8,10]);
+    const before = await run({ role: 'assistant', before: 6, tokens: 4000 });
+    expect(before.result.messages.map((m: NormalizedMessage) => m.index)).toEqual([2,4]);
+  });
+  it('empty cursor responses retain the conditional-read contract and coherent flags', async () => {
+    vi.mocked(loadSession).mockResolvedValue(makeSession([makeMessage(1), makeMessage(2)]));
+    const first = await run({ after: 2 });
+    expect(first.meta.has_more_before).toBe(false); expect(first.meta.has_more_after).toBe(false);
+    const second = await run({ after: 2, ifChanged: first.meta.etag });
+    expect(second.result.unchanged).toBe(true); expect(process.exitCode).toBe(EXIT.NO_CHANGES);
+  });
+});

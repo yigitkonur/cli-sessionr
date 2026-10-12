@@ -106,7 +106,7 @@ sessionr read <id>
 # read with a token budget (agent-friendly — won't blow your context)
 sessionr read <id> --tokens 4000
 
-# read just the tail (default) or the head
+# read just the tail or the head (default)
 sessionr read <id> --tokens 4000 --anchor tail
 sessionr read <id> --tokens 4000 --anchor head
 
@@ -119,6 +119,8 @@ sessionr read <id> --role user,assistant
 # cursor pagination
 sessionr read <id> --after 15
 sessionr read <id> --before 30
+# Cursors are exclusive: --after N returns indices > N; --before N returns indices < N.
+# meta.cursor_after/cursor_before are the boundary indices used by printed commands.
 
 # detail levels — pick how much your agent sees
 sessionr read <id> --detail full        # everything
