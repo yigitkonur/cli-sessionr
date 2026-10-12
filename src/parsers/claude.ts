@@ -12,6 +12,7 @@ import type {
 } from '../types.js';
 import { readJsonlFile, scanJsonlHead, getFileStats } from './common.js';
 import { registerSource } from './registry.js';
+import { deriveContextWindow } from '../turns.js';
 
 // ── Raw JSONL types ──────────────────────────────────────────────────────────
 
@@ -133,6 +134,7 @@ interface ExtractedMetadata {
   cwd: string;
   gitBranch?: string;
   model?: string;
+  reasoningEffort?: string;
   hasCompactSummary: boolean;
 }
 
@@ -141,6 +143,7 @@ function extractMetadata(lines: RawLine[]): ExtractedMetadata {
   let cwd = '';
   let gitBranch: string | undefined;
   let model: string | undefined;
+  let reasoningEffort: string | undefined;
   let hasCompactSummary = false;
 
   for (const line of lines) {
@@ -152,10 +155,16 @@ function extractMetadata(lines: RawLine[]): ExtractedMetadata {
     if (!model && line.model) model = line.model;
     if (!model && line.message?.model) model = line.message.model;
 
+    if (!reasoningEffort) {
+      if (typeof line.effort === 'string') reasoningEffort = line.effort;
+      else if (typeof line.perTurnEffort === 'string') reasoningEffort = line.perTurnEffort;
+      else if (typeof (line as any).reasoning_effort === 'string') reasoningEffort = (line as any).reasoning_effort;
+    }
+
     if (line.isCompactSummary) hasCompactSummary = true;
   }
 
-  return { sessionId, cwd, gitBranch, model, hasCompactSummary };
+  return { sessionId, cwd, gitBranch, model, reasoningEffort, hasCompactSummary };
 }
 
 // ── Deduplication ────────────────────────────────────────────────────────────
@@ -189,6 +198,8 @@ interface ExplodedMessage {
   blocks: ContentBlock[];
   timestamp: Date;
   rawLineIndex: number;
+  usage?: Record<string, unknown>;
+  contextTokens?: number;
 }
 
 function shouldSkipLine(line: RawLine): boolean {
@@ -223,6 +234,24 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
   const ts = new Date(line.timestamp);
   const content = line.message?.content;
 
+  const u = line.message?.usage;
+  let usage: Record<string, unknown> | undefined;
+  let contextTokens: number | undefined;
+  if (u) {
+    const inTok = u.input_tokens || 0;
+    const outTok = u.output_tokens || 0;
+    const readTok = u.cache_read_input_tokens || 0;
+    const createTok = u.cache_creation_input_tokens || 0;
+    contextTokens = inTok + readTok + createTok;
+    usage = {
+      input_tokens: inTok,
+      output_tokens: outTok,
+      cache_read_input_tokens: readTok,
+      cache_creation_input_tokens: createTok,
+      context_tokens: contextTokens,
+    };
+  }
+
   if (!content || typeof content === 'string') {
     // Simple string content (unusual for assistant but handle it)
     const text = typeof content === 'string' ? content : '';
@@ -233,6 +262,8 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
         blocks: [{ type: 'text', text }],
         timestamp: ts,
         rawLineIndex: lineIndex,
+        usage,
+        contextTokens,
       });
     }
     return results;
@@ -344,6 +375,14 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
       timestamp: ts,
       rawLineIndex: lineIndex,
     });
+  }
+
+  if (usage && results.length > 0) {
+    const asst = results.find((r) => r.role === 'assistant') ?? results[0];
+    if (asst) {
+      asst.usage = usage;
+      asst.contextTokens = contextTokens;
+    }
   }
 
   return results;
@@ -500,6 +539,7 @@ function computeStats(
   let outputTokens = 0;
   let cacheRead = 0;
   let cacheCreation = 0;
+  let contextTokens = 0;
 
   for (const line of dedupedLines) {
     if (line.type === 'assistant' && line.message?.usage) {
@@ -517,6 +557,10 @@ function computeStats(
       }
       if (u.cache_creation_input_tokens) {
         cacheCreation += u.cache_creation_input_tokens;
+      }
+      const lineContext = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      if (lineContext > 0) {
+        contextTokens = lineContext;
       }
     }
   }
@@ -543,6 +587,7 @@ function computeStats(
           output: outputTokens,
           cacheRead: cacheRead || undefined,
           cacheCreation: cacheCreation || undefined,
+          contextTokens: contextTokens || undefined,
         }
       : undefined,
     toolFrequency,
@@ -580,14 +625,23 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
   }
 
   // Assign 1-based indexes
-  const messages: NormalizedMessage[] = exploded.map((e, i) => ({
-    index: i + 1,
-    role: e.role,
-    timestamp: e.timestamp,
-    content: e.content,
-    blocks: e.blocks,
-    rawLineIndex: e.rawLineIndex,
-  }));
+  const messages: NormalizedMessage[] = exploded.map((e, i) => {
+    const m: NormalizedMessage = {
+      index: i + 1,
+      role: e.role,
+      timestamp: e.timestamp,
+      content: e.content,
+      blocks: e.blocks,
+      rawLineIndex: e.rawLineIndex,
+    };
+    if (e.usage) {
+      (m as any).usage = e.usage;
+    }
+    if (e.contextTokens !== undefined) {
+      (m as any).contextTokens = e.contextTokens;
+    }
+    return m;
+  });
 
   // 5. Timestamps for metadata — use raw event timestamps so system lines
   //    that get filtered don't shift createdAt forward
@@ -609,10 +663,14 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
   // 6. Compute stats from deduplicated raw lines (for token usage)
   const stats = computeStats(messages, deduped);
 
+  const contextWindow = deriveContextWindow(meta.model);
+
   const metadata: SessionMetadata = {
     cwd: meta.cwd || path.dirname(filePath),
     gitBranch: meta.gitBranch,
     model: meta.model,
+    contextWindow,
+    reasoningEffort: meta.reasoningEffort,
     createdAt,
     updatedAt,
     fileBytes,

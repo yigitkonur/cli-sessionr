@@ -106,6 +106,10 @@ function buildSessionSummary(session: NormalizedSession, tokenBudget: number | u
       tool_use: session.stats.byRole.toolUse,
       tool_result: session.stats.byRole.toolResult,
     },
+    context_window: session.metadata.contextWindow,
+    context_tokens: session.stats.tokenUsage?.contextTokens,
+    reasoning_effort: session.metadata.reasoningEffort,
+    rate_limits: session.metadata.rateLimits,
   };
 }
 
@@ -468,6 +472,8 @@ export async function readCommand(
     );
 
     let meta = injectNextAction(sliceResult.meta);
+    meta.context_window = session.metadata.contextWindow;
+    meta.context_tokens = session.stats.tokenUsage?.contextTokens;
     if (selectedTurn) {
       meta.turn = selectedTurn;
       meta.turns = session.turns ?? segmentTurns(session);

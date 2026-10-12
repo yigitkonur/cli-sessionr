@@ -79,10 +79,12 @@ export interface SessionStats {
     cacheRead?: number;
     cacheCreation?: number;
     thinking?: number;
+    contextTokens?: number;
   };
   toolFrequency: Array<{ name: string; count: number; errors: number }>;
   filesModified: string[];
   durationMs?: number;
+  rateLimits?: CodexRateLimits;
 }
 
 // ── Turn Data Model (Issues #8, #12, #13) ───────────────────────────────────
@@ -283,6 +285,10 @@ export interface SessionSummary {
     tool_use: number;
     tool_result: number;
   };
+  context_window?: number;
+  context_tokens?: number;
+  reasoning_effort?: string;
+  rate_limits?: CodexRateLimits;
 }
 
 // ── Cursor Commands (copy-paste ready + machine-readable tokens) ──────────
@@ -318,6 +324,8 @@ export interface SliceMeta {
   total_messages: number;
   total_tokens_estimate: number;
   returned_tokens_estimate: number;
+  context_window?: number;
+  context_tokens?: number;
   token_budget: number | null;
   anchor: 'head' | 'tail' | 'search' | 'page' | null;
   range: { from: number; to: number };
