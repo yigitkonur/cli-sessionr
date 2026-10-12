@@ -70,7 +70,7 @@ interface RawLine {
   isMeta?: boolean;
   attachment?: {
     type?: string;
-    prompt?: string;
+    prompt?: unknown;
     timestamp?: string;
     commandMode?: string;
     origin?: { kind?: string };
@@ -99,7 +99,8 @@ function extractToolResultContent(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
-      .filter((b: { type?: string; text?: string }) => b.type === 'text' && b.text)
+      .filter((b): b is { type: 'text'; text: string } =>
+        b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
       .map((b: { text?: string }) => b.text!)
       .join('\n');
   }
@@ -241,7 +242,8 @@ function shouldSkipLine(line: RawLine): boolean {
 
 function explodeAttachmentMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
   const ts = new Date(line.attachment?.timestamp || line.timestamp);
-  const prompt = line.attachment?.prompt || '[queued command]';
+  const extracted = extractToolResultContent(line.attachment?.prompt);
+  const prompt = extracted.trim() ? extracted : '[queued command]';
   const notification = line.attachment?.commandMode === 'task-notification';
   return [
     {

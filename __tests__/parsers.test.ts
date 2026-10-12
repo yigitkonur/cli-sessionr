@@ -399,3 +399,16 @@ it('21-D exposes individual turn ends outside messages and through the external 
   const { toExternalSession } = await import('../src/output/serialize.js');
   expect(toExternalSession(one).turn_ends).toEqual([{ timestamp: '2026-01-01T00:00:07.000Z', duration_ms: 6000, raw_line_index: 0 }]);
 });
+
+it('21-E safely extracts text from unknown queued prompt content', async () => {
+  const prompts: unknown[] = [
+    [{ type: 'text', text: 'inspect image' }, { type: 'image', source: { data: 'abc' } }],
+    [{ type: 'image', source: { data: 'abc' } }],
+    [null, 7, { type: 'text', text: 42 }, { type: 'text', text: 'safe text' }],
+    { broken: true }, null,
+  ];
+  const session = await parseReview21Records(prompts.map((prompt, i) => review21Attachment(`array-${i}`, { prompt })));
+  expect(session.messages.map((m) => m.content)).toEqual(['inspect image', '[queued command]', 'safe text', '[queued command]', '[queued command]']);
+  expect(session.messages.every((m) => typeof m.content === 'string')).toBe(true);
+  expect(session.messages[0].blocks).toEqual([{ type: 'text', text: 'inspect image' }]);
+});
