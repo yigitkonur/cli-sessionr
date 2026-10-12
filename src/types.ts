@@ -37,7 +37,7 @@ export interface NormalizedMessage {
   content: string;
   /** All content blocks for rich rendering */
   blocks: ContentBlock[];
-  /** Original JSONL line number for debugging */
+  /** Claude: physical zero-based JSONL line; other adapters may use parsed-record indices */
   rawLineIndex?: number;
 }
 
