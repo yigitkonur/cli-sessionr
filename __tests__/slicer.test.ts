@@ -71,13 +71,15 @@ describe('sliceByTokenBudget', () => {
     expect(result.messages[result.messages.length - 1].role).toBe('assistant');
   });
 
-  it('search anchor falls back to tail when no match', () => {
+  it('search anchor returns empty messages with matched: false when no match', () => {
     const msgs = makeMsgs(10);
     const singleTokens = estimateMessageTokens(msgs[0]);
     const budget = singleTokens * 3;
     const result = sliceByTokenBudget(msgs, budget, 'sess1', 'claude', 'search', 'nonexistent query');
-    const lastMsg = result.messages[result.messages.length - 1];
-    expect(lastMsg.index).toBe(10);
+    expect(result.messages.length).toBe(0);
+    expect(result.meta.search?.matched).toBe(false);
+    expect(result.meta.search?.matchIndex).toBeNull();
+    expect(result.meta.search?.query).toBe('nonexistent query');
   });
 
   it('respects message boundaries (never truncates mid-message)', { timeout: 30000 }, () => {
@@ -124,5 +126,70 @@ describe('filterByRole', () => {
     const msgs = makeMsgs(6);
     const filtered = filterByRole(msgs, ['user', 'assistant']);
     expect(filtered).toHaveLength(6);
+  });
+});
+
+describe('Search multi-field filtering (Issue #10)', () => {
+  const toolMsgs: NormalizedMessage[] = [
+    makeMsg(1, 'user', 'Deploy the app'),
+    {
+      index: 2,
+      role: 'assistant',
+      timestamp: new Date(),
+      content: 'Running deployment script',
+      blocks: [{ type: 'text', text: 'Running deployment script' }],
+    },
+    {
+      index: 3,
+      role: 'tool_use',
+      timestamp: new Date(),
+      content: 'Tool: Bash',
+      blocks: [
+        {
+          type: 'tool_use',
+          id: 'tu-1',
+          name: 'Bash',
+          input: { command: 'npm run deploy:staging --force' },
+        },
+      ],
+    },
+    {
+      index: 4,
+      role: 'tool_result',
+      timestamp: new Date(),
+      content: 'Deployment successful with exit code 0',
+      blocks: [
+        {
+          type: 'tool_result',
+          toolUseId: 'tu-1',
+          content: 'Deployment successful with exit code 0',
+          isError: false,
+        },
+      ],
+    },
+  ];
+
+  it('finds match in content by default', () => {
+    const result = sliceByTokenBudget(toolMsgs, 4000, 'sess1', 'claude', 'search', 'deployment');
+    expect(result.meta.search?.matched).toBe(true);
+    expect(result.meta.search?.matchIndex).toBe(2);
+  });
+
+  it('fails to find tool_input string if searching only content', () => {
+    const result = sliceByTokenBudget(toolMsgs, 4000, 'sess1', 'claude', 'search', 'staging --force', undefined, 'content');
+    expect(result.messages.length).toBe(0);
+    expect(result.meta.search?.matched).toBe(false);
+  });
+
+  it('finds string inside tool_input when tool_input field is specified', () => {
+    const result = sliceByTokenBudget(toolMsgs, 4000, 'sess1', 'claude', 'search', 'staging --force', undefined, 'tool_input');
+    expect(result.meta.search?.matched).toBe(true);
+    expect(result.meta.search?.matchIndex).toBe(3);
+  });
+
+  it('finds string inside tool_result when tool_result field is specified', () => {
+    const result = sliceByTokenBudget(toolMsgs, 4000, 'sess1', 'claude', 'search', 'exit code 0', undefined, 'tool_result');
+    expect(result.meta.search?.matched).toBe(true);
+    expect(result.meta.search?.matchIndex).toBe(4);
   });
 });

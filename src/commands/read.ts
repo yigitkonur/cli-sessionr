@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import chalk from 'chalk';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { serializeMessage } from '../output/serialize.js';
@@ -8,12 +9,12 @@ import { emit } from '../output/emit.js';
 import { computeETag } from '../etag.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
 import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '../errors.js';
-import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount } from '../slicer.js';
+import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount, VALID_SEARCH_FIELDS, normalizeSearchFields } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
 import { which } from '../utils/which.js';
 import { cmdPrefix } from '../util/invocation.js';
-import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning, V2Action, V2Meta } from '../types.js';
+import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning, V2Action, V2Meta, SearchField } from '../types.js';
 
 // it/12: per-source spawn binary, mirroring src/commands/doctor.ts. Looked up
 // once via which() and cached so we don't fork a child every read.
@@ -69,6 +70,26 @@ function validateAnchor(raw: string | undefined): 'head' | 'tail' | 'search' {
     });
   }
   return raw as 'head' | 'tail' | 'search';
+}
+
+function validateSearchIn(raw?: string | string[]): Set<SearchField> {
+  if (!raw) return new Set(['content']);
+  const fields = typeof raw === 'string'
+    ? raw.split(',').map((f) => f.trim().toLowerCase().replace(/-/g, '_')).filter(Boolean)
+    : Array.isArray(raw)
+      ? raw.map((f) => String(f).trim().toLowerCase().replace(/-/g, '_')).filter(Boolean)
+      : [];
+  const unknown = fields.filter((f) => f !== 'all' && !(VALID_SEARCH_FIELDS as readonly string[]).includes(f as any));
+  if (unknown.length > 0) {
+    throw new SessionReaderError(`Unknown search field(s): ${unknown.join(', ')}`, {
+      code: 'INVALID_SEARCH_FIELD',
+      exitCode: EXIT.USAGE,
+      errorClass: 'validation',
+      detail: { provided: raw, unknown, valid: [...VALID_SEARCH_FIELDS] },
+      suggestion: `${cmdPrefix()} read <id> --search "<query>" --search-in content,tool_input,tool_result`,
+    });
+  }
+  return normalizeSearchFields(raw);
 }
 
 function shortenPath(p: string): string {
@@ -291,12 +312,13 @@ export async function readCommand(
       return;
     }
 
-    const warnings: DiscoveryWarning[] = [];
+    const rawWarnings: DiscoveryWarning[] = [];
     const session = await loadSession(
       sessionId,
       opts?.source as SessionSource | undefined,
-      (warning: DiscoveryWarning) => warnings.push(warning),
+      (warning: DiscoveryWarning) => rawWarnings.push(warning),
     );
+    const warnings: string[] = rawWarnings.map((w) => `[${w.source}] adapter failed: ${w.error.message}`);
 
     let messages = session.messages;
     const totalMessages = session.stats.totalMessages;
@@ -315,6 +337,19 @@ export async function readCommand(
         exitCode: EXIT.USAGE,
         suggestion: `${cmdPrefix()} read <id> --anchor search --search "<term>"`,
       });
+    }
+
+    if (opts?.searchIn) {
+      if (!opts?.search) {
+        throw new SessionReaderError('--search-in requires --search <query>', {
+          code: 'INVALID_SEARCH_USAGE',
+          errorClass: 'validation',
+          exitCode: EXIT.USAGE,
+          detail: { provided: opts.searchIn },
+          suggestion: `${cmdPrefix()} read <id> --search "<query>" --search-in ${opts.searchIn}`,
+        });
+      }
+      validateSearchIn(opts.searchIn);
     }
 
     // Resolve preset: --detail > --preset > auto (verbose for agents, standard for TTY)
@@ -458,6 +493,8 @@ export async function readCommand(
       anchor,
       opts?.search,
       preset,
+      opts?.searchIn,
+      totalMessages,
     );
 
     let meta = injectNextAction(sliceResult.meta);
@@ -493,6 +530,10 @@ export async function readCommand(
       }));
     }
 
+    if (outputMessages.length === 0 && meta.search && !meta.search.matched) {
+      warnings.push(`Search query "${meta.search.query}" yielded no matches.`);
+    }
+
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
       emitReadEnvelope({
         session,
@@ -504,11 +545,29 @@ export async function readCommand(
         timing: opts?.timing,
         preset,
         detail,
+        notice: meta.search && !meta.search.matched ? `Search query "${meta.search.query}" yielded no matches.` : undefined,
       });
     } else {
-      process.stdout.write(
-        formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta) + '\n',
-      );
+      if (warnings.length > 0) {
+        for (const w of warnings) {
+          if (isTTY && !process.env.NO_COLOR) {
+            process.stderr.write(`${chalk.yellow('warning:')} ${w}\n`);
+          } else {
+            process.stderr.write(`warning: ${w}\n`);
+          }
+        }
+      }
+      if (outputMessages.length === 0 && meta.search && !meta.search.matched) {
+        process.stdout.write(
+          (isTTY && !process.env.NO_COLOR
+            ? chalk.yellow(`Search query "${meta.search.query}" yielded no matches.`)
+            : `Search query "${meta.search.query}" yielded no matches.`) + '\n',
+        );
+      } else {
+        process.stdout.write(
+          formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta) + '\n',
+        );
+      }
     }
 
     // Signal partial reads (truncated by token budget) via PARTIAL exit code
