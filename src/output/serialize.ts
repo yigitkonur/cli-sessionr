@@ -64,6 +64,7 @@ export function serializeMessage(
   const msg: Record<string, unknown> = {
     index: m.index,
     role: m.role,
+    ...(m.source ? { source: m.source } : {}),
     ...(m.originKind ? { origin_kind: m.originKind } : {}),
     timestamp: m.timestamp,
     tokens_estimate: estimateMessageTokens(m),

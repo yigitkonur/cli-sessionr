@@ -372,3 +372,18 @@ it('21-B retains distinct attachment origins and counts only human prompting', a
   const { serializeMessage } = await import('../src/output/serialize.js');
   expect(session.messages.map((m) => serializeMessage(m, { preset: 'full' }).origin_kind)).toEqual(['human', 'peer']);
 });
+
+it('21-C serializes queued provenance in direct, JSON and JSONL output', async () => {
+  const session = await parseReview21Records([review21Attachment('human', { origin: { kind: 'human' } })]);
+  const { serializeMessage } = await import('../src/output/serialize.js');
+  const { createJsonFormatter } = await import('../src/output/json.js');
+  const { createJsonlFormatter } = await import('../src/output/jsonl.js');
+  const { getPreset } = await import('../src/config.js');
+  const message = session.messages[0];
+  expect(serializeMessage(message, { preset: 'full' })).toMatchObject({ source: 'queued', origin_kind: 'human' });
+  expect(serializeMessage(message, { detail: 'meta' })).toMatchObject({ source: 'queued', origin_kind: 'human' });
+  const json = JSON.parse(createJsonFormatter().read(session, session.messages, 1, 1, getPreset('full')));
+  expect(json.result.messages[0]).toMatchObject({ source: 'queued', origin_kind: 'human' });
+  const jsonl = createJsonlFormatter().read(session, session.messages, 1, 1, getPreset('full')).split('\n').map((s) => JSON.parse(s));
+  expect(jsonl[1]).toMatchObject({ source: 'queued', origin_kind: 'human' });
+});
