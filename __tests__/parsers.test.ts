@@ -338,3 +338,26 @@ describe('Claude mid-turn absorbed commands and turn duration (Issue #14)', () =
   });
 });
 
+
+async function parseReview21Records(records: unknown[], raw?: string) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-review-21-'));
+  const file = path.join(dir, 'session.jsonl');
+  fs.writeFileSync(file, raw ?? records.map((r) => JSON.stringify(r)).join('\n'));
+  try { return await parseClaudeSession(file); }
+  finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function review21Attachment(uuid: string, attachment: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  return { type: 'attachment', uuid, timestamp: '2026-01-01T00:00:04Z', ...extra, attachment: { type: 'queued_command', prompt: 'steer', ...attachment } };
+}
+
+it('21-A accepts prompt and absent modes but never treats notifications as human steers', async () => {
+  const session = await parseReview21Records([
+    review21Attachment('prompt', { commandMode: 'prompt', origin: { kind: 'human' } }),
+    review21Attachment('legacy', { origin: { kind: 'human' } }),
+    review21Attachment('notification', { commandMode: 'task-notification', prompt: '<task-notification>done</task-notification>', origin: { kind: 'task-notification' } }),
+  ]);
+  expect(session.messages.filter((m) => m.role === 'user').map((m) => m.source)).toEqual(['queued', 'queued']);
+  expect(session.stats.byRole.user).toBe(2);
+  expect(session.messages[2]).toMatchObject({ role: 'system', source: 'task_notification' });
+});

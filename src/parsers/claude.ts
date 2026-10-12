@@ -206,7 +206,9 @@ interface ExplodedMessage {
 function shouldSkipLine(line: RawLine): boolean {
   // Allow queued_command attachments mid-turn
   if (line.type === 'attachment') {
-    return line.attachment?.type !== 'queued_command';
+    const mode = line.attachment?.commandMode;
+    return line.attachment?.type !== 'queued_command' ||
+      (mode !== undefined && mode !== 'prompt' && mode !== 'task-notification');
   }
 
   // Skip non-conversation types
@@ -238,14 +240,15 @@ function shouldSkipLine(line: RawLine): boolean {
 function explodeAttachmentMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
   const ts = new Date(line.attachment?.timestamp || line.timestamp);
   const prompt = line.attachment?.prompt || '[queued command]';
+  const notification = line.attachment?.commandMode === 'task-notification';
   return [
     {
-      role: 'user',
+      role: notification ? 'system' : 'user',
       content: prompt,
       blocks: [{ type: 'text', text: prompt }],
       timestamp: ts,
       rawLineIndex: lineIndex,
-      source: 'queued',
+      source: notification ? 'task_notification' : 'queued',
     },
   ];
 }
