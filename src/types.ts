@@ -28,6 +28,13 @@ export type ContentBlock =
 
 // ── Normalized Message ─────────────────────────────────────────────────────
 
+export interface CompactionMeta {
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+  summary?: string;
+}
+
 export interface NormalizedMessage {
   /** 1-based position after normalization (tool blocks exploded into separate entries) */
   index: number;
@@ -42,7 +49,9 @@ export interface NormalizedMessage {
   /** Source classification for origin/provenance */
   source?: string;
   /** Kind classification (e.g. compaction, turn_duration) */
-  kind?: string;
+  kind?: 'compaction' | 'turn_duration' | string;
+  /** Compaction metadata */
+  compactionMeta?: CompactionMeta;
 }
 
 // ── Session Metadata ───────────────────────────────────────────────────────
@@ -84,6 +93,7 @@ export interface SessionStats {
   toolFrequency: Array<{ name: string; count: number; errors: number }>;
   filesModified: string[];
   durationMs?: number;
+  compactions?: number;
   rateLimits?: CodexRateLimits;
 }
 

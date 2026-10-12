@@ -473,6 +473,44 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     const event = events[lineIdx];
     const ts = event.timestamp ? new Date(event.timestamp) : (lastTimestamp ?? now);
 
+    // ── compaction events ──────────────────────────────────────────────
+
+    if (
+      event.type === 'compacted' ||
+      event.type === 'context_compaction' ||
+      (event.type === 'event_msg' &&
+        event.payload &&
+        ((event.payload as Record<string, unknown>).type === 'compacted' ||
+          (event.payload as Record<string, unknown>).type === 'context_compaction'))
+    ) {
+      const p = (event.payload ?? {}) as Record<string, unknown>;
+      const trigger = typeof p.trigger === 'string' ? p.trigger : 'token_limit';
+      const preTokens = typeof p.pre_tokens === 'number' ? p.pre_tokens : typeof p.preTokens === 'number' ? p.preTokens : undefined;
+      const postTokens = typeof p.post_tokens === 'number' ? p.post_tokens : typeof p.postTokens === 'number' ? p.postTokens : undefined;
+      const summary = typeof p.summary === 'string' ? p.summary : undefined;
+
+      let content = summary || `Context compacted from ${preTokens ?? '?'} to ${postTokens ?? '?'} tokens`;
+      if (!content.includes('Compacted')) {
+        content = `Compacted historical conversation: ${content}`;
+      }
+
+      pushMessage({
+        role: 'system',
+        timestamp: ts,
+        content,
+        blocks: [{ type: 'text', text: content }],
+        rawLineIndex: lineIdx,
+        kind: 'compaction',
+        compactionMeta: {
+          trigger,
+          preTokens,
+          postTokens,
+          summary,
+        },
+      });
+      continue;
+    }
+
     // ── response_item events ──────────────────────────────────────────
 
     if (event.type === 'response_item' && event.payload) {
@@ -482,6 +520,34 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
 
       // Skip developer role (system instructions injected by the CLI)
       if (pRole === 'developer') continue;
+
+      if (pType === 'context_compaction') {
+        const trigger = typeof p.trigger === 'string' ? p.trigger : 'token_limit';
+        const preTokens = typeof p.pre_tokens === 'number' ? p.pre_tokens : typeof p.preTokens === 'number' ? p.preTokens : undefined;
+        const postTokens = typeof p.post_tokens === 'number' ? p.post_tokens : typeof p.postTokens === 'number' ? p.postTokens : undefined;
+        const summary = typeof p.summary === 'string' ? p.summary : undefined;
+
+        let content = summary || `Context compacted from ${preTokens ?? '?'} to ${postTokens ?? '?'} tokens`;
+        if (!content.includes('Compacted')) {
+          content = `Compacted historical conversation: ${content}`;
+        }
+
+        pushMessage({
+          role: 'system',
+          timestamp: ts,
+          content,
+          blocks: [{ type: 'text', text: content }],
+          rawLineIndex: lineIdx,
+          kind: 'compaction',
+          compactionMeta: {
+            trigger,
+            preTokens,
+            postTokens,
+            summary,
+          },
+        });
+        continue;
+      }
 
       // ── message ─────────────────────────────────────────────────────
 
@@ -716,6 +782,8 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     if (diff > 0) durationMs = diff;
   }
 
+  const compactionsCount = messages.filter((m) => m.kind === 'compaction' || m.compactionMeta !== undefined).length;
+
   const stats: SessionStats = {
     totalMessages: messages.length,
     byRole,
@@ -724,6 +792,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     toolFrequency,
     filesModified,
     durationMs,
+    compactions: compactionsCount > 0 ? compactionsCount : undefined,
     rateLimits: latestRateLimits,
   };
 

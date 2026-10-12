@@ -9,6 +9,7 @@ import type {
   SessionListEntry,
   SessionMetadata,
   SessionStats,
+  CompactionMeta,
 } from '../types.js';
 import { readJsonlFile, scanJsonlHead, getFileStats } from './common.js';
 import { registerSource } from './registry.js';
@@ -200,9 +201,27 @@ interface ExplodedMessage {
   rawLineIndex: number;
   usage?: Record<string, unknown>;
   contextTokens?: number;
+  kind?: string;
+  compactionMeta?: CompactionMeta;
+}
+
+function isCompactionLine(line: RawLine): boolean {
+  return (
+    line.kind === 'compaction' ||
+    line.subtype === 'compact_boundary' ||
+    line.subtype === 'compaction' ||
+    Boolean(line.isCompactSummary) ||
+    Boolean(line.compactionMeta) ||
+    Boolean((line as any).compactMetadata)
+  );
 }
 
 function shouldSkipLine(line: RawLine): boolean {
+  // Never skip compaction records!
+  if (isCompactionLine(line)) {
+    return false;
+  }
+
   // Skip non-conversation types
   if (
     line.type === 'system' ||
@@ -223,10 +242,59 @@ function shouldSkipLine(line: RawLine): boolean {
     }
   }
 
-  // Skip compact summaries (just note for metadata)
+  // Skip compact summaries (handled in compaction explosion)
   if (line.isCompactSummary) return true;
 
   return false;
+}
+
+function explodeCompactionMessage(
+  line: RawLine,
+  lineIndex: number,
+  overrideSummary?: string,
+): ExplodedMessage[] {
+  const ts = line.timestamp ? new Date(line.timestamp) : new Date();
+
+  const rawMeta = (line.compactionMeta || (line as any).compactMetadata || {}) as {
+    trigger?: string;
+    preTokens?: number;
+    postTokens?: number;
+    summary?: string;
+  };
+
+  const trigger = rawMeta.trigger;
+  const preTokens = typeof rawMeta.preTokens === 'number' ? rawMeta.preTokens : undefined;
+  const postTokens = typeof rawMeta.postTokens === 'number' ? rawMeta.postTokens : undefined;
+  const summary =
+    overrideSummary ||
+    rawMeta.summary ||
+    (typeof line.message?.content === 'string' ? line.message.content : undefined);
+
+  let content = '';
+  if (typeof line.message?.content === 'string' && line.message.content.trim()) {
+    content = line.message.content;
+  } else if (summary) {
+    content = summary;
+  } else {
+    content = `Context compacted${preTokens != null && postTokens != null ? ` from ${preTokens} to ${postTokens} tokens` : ''}`;
+  }
+
+  return [
+    {
+      role: 'system',
+      content,
+      blocks: [{ type: 'text', text: content }],
+      timestamp: ts,
+      rawLineIndex: lineIndex,
+      kind: 'compaction',
+      compactionMeta: {
+        trigger,
+        preTokens,
+        postTokens,
+        summary,
+      },
+    },
+  ];
 }
 
 function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
@@ -577,6 +645,8 @@ function computeStats(
     .map(([name, { count, errors }]) => ({ name, count, errors }))
     .sort((a, b) => b.count - a.count);
 
+  const compactionsCount = messages.filter((m) => m.kind === 'compaction' || m.compactionMeta !== undefined).length;
+
   return {
     totalMessages: messages.length,
     byRole,
@@ -593,6 +663,7 @@ function computeStats(
     toolFrequency,
     filesModified: Array.from(filesModifiedSet).sort(),
     durationMs,
+    compactions: compactionsCount > 0 ? compactionsCount : undefined,
   };
 }
 
@@ -617,7 +688,28 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
 
     if (shouldSkipLine(line)) continue;
 
-    if (line.type === 'assistant') {
+    if (isCompactionLine(line)) {
+      if (
+        (line.subtype === 'compact_boundary' || Boolean((line as any).compactMetadata)) &&
+        i + 1 < deduped.length &&
+        deduped[i + 1]?.isCompactSummary
+      ) {
+        const nextLine = deduped[i + 1]!;
+        const nextContent =
+          typeof nextLine.message?.content === 'string'
+            ? nextLine.message.content
+            : Array.isArray(nextLine.message?.content)
+              ? nextLine.message.content
+                  .filter((b: any) => b.type === 'text')
+                  .map((b: any) => b.text)
+                  .join('\n')
+              : undefined;
+        exploded.push(...explodeCompactionMessage(line, i, nextContent));
+        i++; // skip following isCompactSummary
+      } else {
+        exploded.push(...explodeCompactionMessage(line, i));
+      }
+    } else if (line.type === 'assistant') {
       exploded.push(...explodeAssistantMessage(line, i));
     } else if (line.type === 'user') {
       exploded.push(...explodeUserMessage(line, i));
@@ -639,6 +731,12 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     }
     if (e.contextTokens !== undefined) {
       (m as any).contextTokens = e.contextTokens;
+    }
+    if (e.kind) {
+      m.kind = e.kind;
+    }
+    if (e.compactionMeta) {
+      m.compactionMeta = e.compactionMeta;
     }
     return m;
   });
