@@ -9,6 +9,9 @@ import type {
   SessionMetadata,
   SessionStats,
   SessionListEntry,
+  CodexRateLimits,
+  CodexRateLimitTier,
+  MessageUsage,
 } from '../types.js';
 
 import {
@@ -19,6 +22,7 @@ import {
   findFiles,
 } from './common.js';
 import { registerSource } from './registry.js';
+import { deriveContextWindow } from '../turns.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -31,6 +35,7 @@ const MAX_TOOL_RESULT_PREVIEW = 500;
 interface RawUsage {
   input_tokens: number;
   cached_input_tokens: number;
+  cache_write_input_tokens: number;
   output_tokens: number;
   total_tokens: number;
 }
@@ -38,6 +43,7 @@ interface RawUsage {
 interface TokenDelta {
   inputTokens: number;
   cacheRead: number;
+  cacheWrite: number;
   outputTokens: number;
   totalTokens: number;
 }
@@ -104,6 +110,31 @@ function extractAssistantText(content: unknown): string {
     .trim();
 }
 
+function extractRateLimits(raw: unknown): CodexRateLimits | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+
+  const parseTier = (tier: unknown): CodexRateLimitTier | undefined => {
+    if (!tier || typeof tier !== 'object') return undefined;
+    const t = tier as Record<string, unknown>;
+    const usedPercent = typeof t.used_percent === 'number' ? t.used_percent : typeof t.usedPercent === 'number' ? t.usedPercent : undefined;
+    const windowMinutes = typeof t.window_minutes === 'number' ? t.window_minutes : typeof t.windowMinutes === 'number' ? t.windowMinutes : undefined;
+    const reset = t.resets_at ?? t.resetsAt;
+    const resetsAt = typeof reset === 'number' || typeof reset === 'string' ? reset : undefined;
+    if (usedPercent === undefined && windowMinutes === undefined && resetsAt === undefined) return undefined;
+    return {
+      ...(usedPercent !== undefined ? { usedPercent } : {}),
+      ...(windowMinutes !== undefined ? { windowMinutes } : {}),
+      ...(resetsAt !== undefined ? { resetsAt } : {}),
+    };
+  };
+
+  const primary = parseTier(obj.primary);
+  const secondary = parseTier(obj.secondary);
+  if (!primary && !secondary) return undefined;
+  return { primary, secondary };
+}
+
 // ── Reasoning summary (ported from agentlytics) ─────────────────────────────
 
 function extractReasoningSummary(payload: Record<string, unknown>): string {
@@ -166,6 +197,7 @@ function ensureNumber(value: unknown): number {
 function normalizeRawUsage(value: unknown): RawUsage | null {
   if (!value || typeof value !== 'object') return null;
   const obj = value as Record<string, unknown>;
+  if (![obj.input_tokens, obj.cached_input_tokens, obj.cache_read_input_tokens, obj.output_tokens, obj.total_tokens].some(v => typeof v === 'number' && Number.isFinite(v))) return null;
   const input = ensureNumber(obj.input_tokens);
   const cached = ensureNumber(
     obj.cached_input_tokens != null ? obj.cached_input_tokens : obj.cache_read_input_tokens,
@@ -175,6 +207,7 @@ function normalizeRawUsage(value: unknown): RawUsage | null {
   return {
     input_tokens: input,
     cached_input_tokens: cached,
+    cache_write_input_tokens: ensureNumber(obj.cache_write_input_tokens ?? obj.cache_creation_input_tokens),
     output_tokens: output,
     total_tokens: total > 0 ? total : input + output,
   };
@@ -187,6 +220,7 @@ function subtractRawUsage(current: RawUsage, previous: RawUsage | null): RawUsag
       current.cached_input_tokens - (previous ? previous.cached_input_tokens : 0),
       0,
     ),
+    cache_write_input_tokens: Math.max(current.cache_write_input_tokens - (previous ? previous.cache_write_input_tokens : 0), 0),
     output_tokens: Math.max(current.output_tokens - (previous ? previous.output_tokens : 0), 0),
     total_tokens: Math.max(current.total_tokens - (previous ? previous.total_tokens : 0), 0),
   };
@@ -194,10 +228,12 @@ function subtractRawUsage(current: RawUsage, previous: RawUsage | null): RawUsag
 
 function convertToDelta(raw: RawUsage): TokenDelta {
   const cacheRead = Math.min(raw.cached_input_tokens, raw.input_tokens);
-  const billableInput = Math.max(raw.input_tokens - cacheRead, 0);
+  const cacheWrite = Math.min(raw.cache_write_input_tokens, Math.max(raw.input_tokens - cacheRead, 0));
+  const billableInput = Math.max(raw.input_tokens - cacheRead - cacheWrite, 0);
   return {
     inputTokens: billableInput,
     cacheRead,
+    cacheWrite,
     outputTokens: raw.output_tokens,
     totalTokens: raw.total_tokens > 0 ? raw.total_tokens : raw.input_tokens + raw.output_tokens,
   };
@@ -313,6 +349,9 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
   let gitBranch: string | undefined;
   let gitRepo: string | undefined;
   let currentModel: string | null = null;
+  let contextWindow: number | undefined;
+  let reasoningEffort: string | undefined;
+  let latestRateLimits: CodexRateLimits | undefined;
   let firstTimestamp: Date | undefined;
   let lastTimestamp: Date | undefined;
 
@@ -332,21 +371,35 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
         if (typeof git.branch === 'string') gitBranch = git.branch;
         if (typeof git.repository_url === 'string') gitRepo = git.repository_url;
       }
+      if (p.rate_limits) {
+        latestRateLimits = extractRateLimits(p.rate_limits);
+      }
     }
 
     // Extract model from turn_context and token_count events via recursive search
     if (event.type === 'turn_context' && event.payload) {
       const m = extractModel(event.payload);
       if (m) currentModel = m;
+      const p = event.payload as Record<string, unknown>;
+      if (typeof p.context_window === 'number') {
+        contextWindow = p.context_window;
+      }
+      const effort = p.effort ?? p.reasoning_effort;
+      if (typeof effort === 'string') reasoningEffort = effort;
     }
     if (
       event.type === 'event_msg' &&
       event.payload &&
       (event.payload as Record<string, unknown>).type === 'token_count'
     ) {
-      const info = (event.payload as Record<string, unknown>).info;
+      const info = (event.payload as Record<string, unknown>).info as Record<string, unknown> | undefined;
       const m = extractModel(info) || extractModel(event.payload);
       if (m) currentModel = m;
+      if (info && typeof (info as any).model_context_window === 'number') {
+        contextWindow = (info as any).model_context_window;
+      }
+      const rates = event.payload.rate_limits ?? info?.rate_limits;
+      if (rates !== undefined) latestRateLimits = extractRateLimits(rates);
     }
   }
 
@@ -360,41 +413,104 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     updatedAt: lastTimestamp ?? now,
     fileBytes: fileStats.bytes,
     rawLineCount: fileStats.lines,
+    contextWindow: contextWindow ?? (currentModel ? deriveContextWindow(currentModel) : undefined),
+    reasoningEffort,
+    rateLimits: latestRateLimits,
   };
 
-  // ── 2. Token delta accumulation (proper pipeline from agentlytics) ────
+  // ── 2. Request usage and temporal settings ────────────────────────────
 
+  const usageSessionId = events.find(e => e.type === 'session_meta' && typeof e.payload?.id === 'string')?.payload?.id;
+  const settings = new Map<number, Pick<NormalizedMessage, 'model' | 'contextWindow' | 'reasoningEffort' | 'rateLimits'>>();
+  const observations: Array<{ lineIndex: number; usage?: MessageUsage; rateLimits?: CodexRateLimits }> = [];
+  const responseIds = new Set<string>();
   let previousTotals: RawUsage | null = null;
+  let previousLast: string | undefined;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheRead = 0;
+  let totalCacheWrite = 0;
+  let latestContextTokens: number | undefined;
+  let hasUsage = false;
+  let model: string | undefined;
+  let window: number | undefined;
+  let effort: string | undefined;
+  let rates: CodexRateLimits | undefined;
 
-  for (const event of events) {
-    if (
-      event.type === 'event_msg' &&
-      event.payload &&
-      (event.payload as Record<string, unknown>).type === 'token_count'
-    ) {
-      const info = ((event.payload as Record<string, unknown>).info ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const lastUsage = normalizeRawUsage(info.last_token_usage);
-      const totalUsage = normalizeRawUsage(info.total_token_usage);
-
-      let rawUsage = lastUsage;
-      if (!rawUsage && totalUsage) rawUsage = subtractRawUsage(totalUsage, previousTotals);
-      if (totalUsage) previousTotals = totalUsage;
-      if (!rawUsage) continue;
-
-      const delta = convertToDelta(rawUsage);
-      if (delta.inputTokens === 0 && delta.outputTokens === 0 && delta.cacheRead === 0) continue;
-
-      totalInputTokens += delta.inputTokens;
-      totalOutputTokens += delta.outputTokens;
-      totalCacheRead += delta.cacheRead;
+  for (let lineIndex = 0; lineIndex < events.length; lineIndex++) {
+    const event = events[lineIndex];
+    const p = event.payload ?? {};
+    if (event.type === 'turn_context' || (event.type === 'event_msg' && p.type === 'task_started')) {
+      const nextModel = extractModel(p);
+      if (model && nextModel && nextModel !== model) window = undefined;
+      model = nextModel ?? model;
+      const nextWindow = p.context_window ?? p.model_context_window;
+      if (typeof nextWindow === 'number' && nextWindow > 0) window = nextWindow;
+      const nextEffort = p.effort ?? p.reasoning_effort;
+      if (typeof nextEffort === 'string') effort = nextEffort;
     }
+    if (event.type === 'event_msg' && p.type === 'thread_settings_applied') {
+      const applied = p.thread_settings as Record<string, unknown> | undefined;
+      if (applied) {
+        model = extractModel(applied) ?? model;
+        const nextEffort = applied.effort ?? applied.reasoning_effort;
+        if (typeof nextEffort === 'string') effort = nextEffort;
+        const nextWindow = applied.context_window ?? applied.model_context_window;
+        if (typeof nextWindow === 'number' && nextWindow > 0) window = nextWindow;
+      }
+    }
+    if (event.type === 'session_meta' && p.rate_limits !== undefined) rates = extractRateLimits(p.rate_limits);
+    const modern = event.type === 'token_usage_record';
+    const tokenCount = event.type === 'event_msg' && p.type === 'token_count';
+    if ((modern || tokenCount) && (!usageSessionId || !p.thread_id || p.thread_id === usageSessionId)) {
+      const info = (p.info ?? {}) as Record<string, unknown>;
+      model = extractModel(info) ?? extractModel(p) ?? model;
+      if (typeof info.model_context_window === 'number' && info.model_context_window > 0) window = info.model_context_window;
+      const rawRates = p.rate_limits ?? info.rate_limits;
+      if (rawRates !== undefined) {
+        rates = extractRateLimits(rawRates);
+        observations.push({ lineIndex, rateLimits: rates });
+      }
+      const responseId = modern && typeof p.response_id === 'string' ? p.response_id : undefined;
+      if (!responseId || !responseIds.has(responseId)) {
+        const rawLast = modern ? p.usage : info.last_token_usage;
+        const last = normalizeRawUsage(rawLast);
+        const totals = normalizeRawUsage(modern ? p.thread_token_usage : info.total_token_usage);
+        if (responseId) responseIds.add(responseId);
+        if (last) {
+          const explicit = (rawLast as Record<string, unknown>).context_tokens;
+          latestContextTokens = typeof explicit === 'number' ? explicit : last.total_tokens;
+        }
+        const reset = totals && previousTotals && (totals.input_tokens < previousTotals.input_tokens || totals.output_tokens < previousTotals.output_tokens || totals.cached_input_tokens < previousTotals.cached_input_tokens || totals.cache_write_input_tokens < previousTotals.cache_write_input_tokens);
+        let raw = totals && previousTotals && !reset ? subtractRawUsage(totals, previousTotals) : last ?? totals;
+        const signature = last ? JSON.stringify(last) : undefined;
+        if (!totals && !responseId && signature === previousLast) raw = null;
+        if (totals && !previousTotals && signature !== undefined && signature === previousLast) raw = null;
+        if (totals) previousTotals = totals;
+        if (last) previousLast = signature;
+        if (raw) {
+          hasUsage = true;
+          const delta = convertToDelta(raw);
+          totalInputTokens += delta.inputTokens;
+          totalOutputTokens += delta.outputTokens;
+          totalCacheRead += delta.cacheRead;
+          totalCacheWrite += delta.cacheWrite;
+          if (delta.inputTokens || delta.outputTokens || delta.cacheRead || delta.cacheWrite || latestContextTokens === 0) {
+            observations.push({ lineIndex, usage: {
+              input_tokens: delta.inputTokens, output_tokens: delta.outputTokens,
+              cache_read_input_tokens: delta.cacheRead, cache_creation_input_tokens: delta.cacheWrite,
+              context_tokens: latestContextTokens,
+            } });
+          }
+        }
+      }
+    }
+    settings.set(lineIndex, { model, contextWindow: window ?? deriveContextWindow(model), reasoningEffort: effort, rateLimits: rates });
   }
+  metadata.model = model ?? metadata.model;
+  metadata.contextWindow = window ?? deriveContextWindow(metadata.model);
+  metadata.reasoningEffort = effort ?? metadata.reasoningEffort;
+  metadata.rateLimits = rates;
 
   // ── 3. Build exploded messages ────────────────────────────────────────
 
@@ -414,7 +530,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
   }
 
   function pushMessage(msg: Omit<NormalizedMessage, 'index'>): void {
-    messages.push({ ...msg, index: messages.length + 1 });
+    messages.push({ ...settings.get(msg.rawLineIndex ?? 0), ...msg, index: messages.length + 1 });
   }
 
   for (let lineIdx = 0; lineIdx < events.length; lineIdx++) {
@@ -564,15 +680,18 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
       continue;
     }
 
-    // ── event_msg fallback (only when no response_items exist) ─────────
+    // ── event_msg processing ──────────────────────────────────────────
 
-    if (event.type === 'event_msg' && !hasResponseItems && event.payload) {
+    if (event.type === 'event_msg' && event.payload) {
       const p = event.payload;
       const pType = p.type as string;
 
-      if (pType === 'token_count' || pType === 'agent_reasoning') continue;
+      if (pType === 'token_count') continue;
 
-      const text = typeof p.message === 'string' ? p.message : '';
+      if (pType === 'agent_reasoning') continue;
+
+      if (!hasResponseItems) {
+        const text = typeof p.message === 'string' ? p.message : '';
 
       if (pType === 'user_message') {
         if (!text || isBootstrapMessage(text)) continue;
@@ -592,8 +711,46 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
           blocks: [{ type: 'text', text }],
           rawLineIndex: lineIdx,
         });
+        }
       }
     }
+  }
+
+  // Associate observations only with responses in the same prompt interval.
+  let position = 0;
+  let target: NormalizedMessage | undefined;
+  let prompt: NormalizedMessage | undefined;
+  for (const observation of observations) {
+    while (position < messages.length && (messages[position].rawLineIndex ?? 0) <= observation.lineIndex) {
+      const message = messages[position++];
+      if (message.role === 'user') { prompt = message; target = undefined; }
+      else if (message.role === 'assistant' || message.role === 'tool_use') target = message;
+    }
+    let owner = target;
+    if (!owner) {
+      for (let i = position; i < messages.length; i++) {
+        if (messages[i].role === 'user') break;
+        if (messages[i].role === 'assistant' || messages[i].role === 'tool_use') { owner = messages[i]; break; }
+      }
+    }
+    owner ??= prompt;
+    if (!owner) continue;
+    if ('rateLimits' in observation) owner.rateLimits = observation.rateLimits;
+    if (!observation.usage) continue;
+    const observedSettings = settings.get(observation.lineIndex);
+    if (observedSettings?.contextWindow !== undefined) owner.contextWindow = observedSettings.contextWindow;
+    owner.model ??= observedSettings?.model;
+    owner.reasoningEffort ??= observedSettings?.reasoningEffort;
+    const previous = owner.usage;
+    const u = observation.usage;
+    owner.usage = {
+      input_tokens: (previous?.input_tokens ?? 0) + (u.input_tokens ?? 0),
+      output_tokens: (previous?.output_tokens ?? 0) + (u.output_tokens ?? 0),
+      cache_read_input_tokens: (previous?.cache_read_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
+      cache_creation_input_tokens: (previous?.cache_creation_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
+      context_tokens: u.context_tokens,
+    };
+    owner.contextTokens = u.context_tokens;
   }
 
   // ── 4. Compute stats ──────────────────────────────────────────────────
@@ -628,12 +785,14 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     .map(([name, { count, errors }]) => ({ name, count, errors }))
     .sort((a, b) => b.count - a.count);
 
-  const hasTokens = totalInputTokens > 0 || totalOutputTokens > 0;
+  const hasTokens = hasUsage;
   const tokenUsage = hasTokens
     ? {
         input: totalInputTokens,
         output: totalOutputTokens,
         ...(totalCacheRead > 0 ? { cacheRead: totalCacheRead } : {}),
+        ...(totalCacheWrite > 0 ? { cacheCreation: totalCacheWrite } : {}),
+        ...(latestContextTokens !== undefined ? { contextTokens: latestContextTokens } : {}),
       }
     : undefined;
 
@@ -651,6 +810,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     toolFrequency,
     filesModified,
     durationMs,
+    rateLimits: latestRateLimits,
   };
 
   return {
