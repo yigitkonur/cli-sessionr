@@ -12,11 +12,13 @@ export { SCHEMA_VERSION, success, failure } from './output/envelope.js';
 
 // ── Source Types ────────────────────────────────────────────────────────────
 
-export type SessionSource =
+export type BuiltinSessionSource =
   | 'codex' | 'claude'
   | 'gemini' | 'copilot' | 'cursor-agent' | 'commandcode'
   | 'goose' | 'opencode' | 'kiro' | 'zed'
   | 'factory';
+
+export type SessionSource = BuiltinSessionSource | (string & {});
 
 // ── Content Blocks ─────────────────────────────────────────────────────────
 

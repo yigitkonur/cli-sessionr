@@ -28,6 +28,7 @@ export type {
   VerbosityPreset,
   PresetName,
   SessionSource,
+  BuiltinSessionSource,
   OutputFormat,
   DetailLevel,
   SliceMeta,
