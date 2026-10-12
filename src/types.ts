@@ -43,6 +43,8 @@ export interface NormalizedMessage {
   source?: string;
   /** Kind classification (e.g. compaction, turn_duration) */
   kind?: string;
+  terminal?: 'complete' | 'interrupted';
+  durationMs?: number;
 }
 
 // ── Session Metadata ───────────────────────────────────────────────────────

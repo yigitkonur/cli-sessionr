@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
-import { serializeMessage } from '../output/serialize.js';
+import { serializeMessage, toExternal } from '../output/serialize.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
 import { computeETag } from '../etag.js';
@@ -287,6 +287,9 @@ export async function readCommand(
   });
 
   try {
+    if (opts?.turn != null && (opts.page != null || opts.batch)) {
+      throw new SessionReaderError('--turn cannot be combined with --page or --batch', { code: 'INVALID_TURN_USAGE', errorClass: 'validation', exitCode: EXIT.USAGE });
+    }
     if (opts?.batch) {
       await readBatchCommand(opts, isTTY);
       return;
@@ -434,6 +437,8 @@ export async function readCommand(
       selectedTurn = getTurn(turns, opts.turn);
       from = selectedTurn.startIndex;
       to = selectedTurn.endIndex;
+      if (opts.after != null) from = Math.max(from, opts.after);
+      if (opts.before != null) to = Math.min(to, opts.before);
     } else if (opts?.before != null) {
       to = opts.before;
       from = 1;
@@ -450,7 +455,9 @@ export async function readCommand(
     }
 
     // Apply range first (positional/cursor)
-    let sliced = messages.slice(from - 1, to);
+    let sliced = selectedTurn
+      ? messages.filter(m => m.index >= from && m.index <= to)
+      : messages.slice(from - 1, to);
 
     // Always apply token budget (8K max enforced)
     const anchor = opts?.search
@@ -465,12 +472,26 @@ export async function readCommand(
       anchor,
       opts?.search,
       preset,
+      { preserveTrailing: selectedTurn !== undefined },
     );
 
+    if (selectedTurn) {
+      for (const cursor of Object.values(sliceResult.meta.cursor)) {
+        if (cursor) cursor.command += ` --turn ${selectedTurn.id}`;
+      }
+    }
     let meta = injectNextAction(sliceResult.meta);
     if (selectedTurn) {
-      meta.turn = selectedTurn;
-      meta.turns = session.turns ?? segmentTurns(session);
+      const { facts: _facts, contextWindow: _contextWindow, ...turnOutput } = selectedTurn;
+      const externalTurn = toExternal({ ...turnOutput, prompt: { ...turnOutput.prompt, text: detail === 'meta' ? '' : turnOutput.prompt.text.slice(0, preset.maxContentChars) } }) as Record<string, unknown>;
+      // Tool input is opaque user data, not part of the envelope naming contract.
+      if (selectedTurn.pendingToolCalls) {
+        externalTurn.pending_tool_calls = selectedTurn.pendingToolCalls.map(({ input, ...call }) => ({
+          ...(toExternal(call) as Record<string, unknown>), ...(preset.showToolArgs ? { input } : {}),
+        }));
+      }
+      meta.turn = externalTurn as unknown as Turn;
+      meta.turns = (session.turns ?? segmentTurns(session)).map(t => toExternal({ id: t.id, turnIndex: t.turnIndex, startIndex: t.startIndex, endIndex: t.endIndex, completed: t.completed, interrupted: t.interrupted }) as Turn);
     }
     meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
     meta = attachETag(meta, session, {

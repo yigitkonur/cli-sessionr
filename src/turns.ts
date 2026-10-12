@@ -100,7 +100,7 @@ export function isGenuinePrompt(msg: NormalizedMessage): boolean {
   // If source classification is present (e.g. from Claude adapter)
   if (msg.source) {
     if (msg.source === 'prompt' || (msg.source as string) === 'typed') return true;
-    if (['local_command', 'interrupt', 'task_notification', 'system', 'queued'].includes(msg.source)) {
+    if (['local_command', 'interrupt', 'task_notification', 'system', 'queued', 'injected'].includes(msg.source)) {
       return false;
     }
   }
@@ -200,6 +200,7 @@ function sanitizeFilePath(raw: string): string {
  * Extract files changed within a slice of messages.
  */
 export function extractTurnFilesChanged(messages: NormalizedMessage[]): TurnFilesChanged {
+  const results = new Map(messages.flatMap(m => m.blocks.filter(b => b.type === 'tool_result').map(b => [b.toolUseId, b] as const)));
   const created = new Set<string>();
   const edited = new Set<string>();
   const deleted = new Set<string>();
@@ -208,12 +209,12 @@ export function extractTurnFilesChanged(messages: NormalizedMessage[]): TurnFile
   const PATCH_UPDATE = /\*{3}\s+Update File:?\s*([^\r\n]+)/gi;
   const PATCH_DELETE = /\*{3}\s+Delete File:?\s*([^\r\n]+)/gi;
 
-  const DIFF_GIT = /diff --git a\/([^\s]+) b\/([^\s]+)/g;
-
   for (const msg of messages) {
     if (msg.role === 'tool_use') {
       for (const b of msg.blocks) {
         if (b.type === 'tool_use') {
+          const result = results.get(b.id);
+          if (!result || result.isError) continue;
           const name = b.name.toLowerCase();
           const inp = b.input || {};
 
@@ -225,13 +226,15 @@ export function extractTurnFilesChanged(messages: NormalizedMessage[]): TurnFile
             while ((m = PATCH_UPDATE.exec(patchStr)) !== null) edited.add(sanitizeFilePath(m[1]));
             while ((m = PATCH_DELETE.exec(patchStr)) !== null) deleted.add(sanitizeFilePath(m[1]));
 
-            // Also check git diff headers
-            if (patchStr.includes('--- /dev/null') && patchStr.includes('+++ b/')) {
-              const addMatch = patchStr.match(/\+\+\+ b\/([^\r\n]+)/);
-              if (addMatch && addMatch[1]) created.add(sanitizeFilePath(addMatch[1]));
-            } else if (patchStr.includes('+++ /dev/null') && patchStr.includes('--- a/')) {
-              const delMatch = patchStr.match(/--- a\/([^\r\n]+)/);
-              if (delMatch && delMatch[1]) deleted.add(sanitizeFilePath(delMatch[1]));
+            // Classify each unified diff section independently.
+            for (const section of patchStr.split(/(?=^diff --git )/m)) {
+              const headers = section.match(/^--- (.+)\r?\n\+\+\+ (.+)$/m);
+              if (!headers) continue;
+              const oldPath = headers[1].trim();
+              const newPath = headers[2].trim();
+              if (oldPath === '/dev/null') created.add(sanitizeFilePath(newPath.replace(/^b\//, '')));
+              else if (newPath === '/dev/null') deleted.add(sanitizeFilePath(oldPath.replace(/^a\//, '')));
+              else edited.add(sanitizeFilePath(newPath.replace(/^b\//, '')));
             }
           }
 
@@ -256,13 +259,26 @@ export function extractTurnFilesChanged(messages: NormalizedMessage[]): TurnFile
             }
           }
 
-          // Check shell commands touching files
+          // Only infer literal, standalone touch/rm operands. A shell script or quoted
+          // command embedded in echo/ssh/heredoc text is not proof of a local edit.
           if (['bash', 'exec_command', 'run_command', 'execute_command', 'terminal'].includes(name)) {
             const cmd = String(inp.command || inp.CommandLine || inp.cmd || '');
-            const touchMatch = cmd.match(/\btouch\s+([^\s;|&]+)/);
-            if (touchMatch && touchMatch[1]) created.add(sanitizeFilePath(touchMatch[1]));
-            const rmMatch = cmd.match(/\b(?:git\s+)?rm\s+(?:-[a-zA-Z]+\s+)*([^\s;|&]+)/);
-            if (rmMatch && rmMatch[1]) deleted.add(sanitizeFilePath(rmMatch[1]));
+            const simple = cmd.match(/^\s*(?:git\s+)?(touch|rm)\s+(.+?)\s*$/);
+            if (simple && !/[\r\n;|&`$<>]/.test(cmd)) {
+              const operands = simple[2].match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [];
+              let flags = true;
+              const paths: string[] = [];
+              let supported = true;
+              for (const operand of operands) {
+                if (flags && operand === '--') { flags = false; continue; }
+                if (flags && operand.startsWith('-')) {
+                  if (simple[1] !== 'rm' || !/^-[rfiv]+$/.test(operand)) supported = false;
+                  continue;
+                }
+                paths.push(sanitizeFilePath(operand));
+              }
+              if (supported) for (const path of paths) (simple[1] === 'touch' ? created : deleted).add(path);
+            }
           }
         }
       }
@@ -318,7 +334,7 @@ export function extractTurnCommands(messages: NormalizedMessage[]): TurnCommand[
           const inp = b.input || {};
 
           const isCommandTool =
-            ['bash', 'exec_command', 'run_command', 'execute_command', 'shell', 'terminal'].includes(name) ||
+            ['bash', 'exec_command', 'run_command', 'execute_command', 'execute', 'shell', 'terminal'].includes(name) ||
             (name === 'exec' && (inp.tool === 'exec_command' || typeof inp.command === 'string'));
 
           if (isCommandTool) {
@@ -354,6 +370,8 @@ export function extractTurnCommands(messages: NormalizedMessage[]): TurnCommand[
                   exitCode = parseInt(match[1], 10);
                 }
               }
+
+              if (exitCode === undefined && !isError) exitCode = 0;
 
               if (exitCode !== undefined) {
                 isError = isError || exitCode !== 0;
@@ -425,34 +443,34 @@ export function extractTurnUsage(messages: NormalizedMessage[]): TurnUsage | und
 /**
  * Extract all turn execution facts.
  */
-export function extractTurnFacts(messages: NormalizedMessage[]): TurnExecutionFacts {
-  const filesChanged = extractTurnFilesChanged(messages);
-  const commands = extractTurnCommands(messages);
-  const pendingToolCalls = findTurnPendingToolCalls(messages);
+export function extractTurnFacts(messages: NormalizedMessage[], sessionMessages: NormalizedMessage[] | Map<string, NormalizedMessage> = messages): TurnExecutionFacts {
+  const callIds = new Set(messages.flatMap(m => m.blocks.filter(b => b.type === 'tool_use').map(b => b.id)));
+  const turnIndices = new Set(messages.map(m => m.index));
+  const ownedMessages = messages.filter(m => m.role !== 'tool_result' || m.blocks.some(b => b.type === 'tool_result' && callIds.has(b.toolUseId)));
+  const resultsById = sessionMessages instanceof Map ? sessionMessages : new Map(sessionMessages.flatMap(m => m.blocks.flatMap(b => b.type === 'tool_result' ? [[b.toolUseId, m] as const] : [])));
+  const lateResults = [...callIds].flatMap(id => { const m = resultsById.get(id); return m && !turnIndices.has(m.index) ? [m] : []; });
+  const executionMessages = [...ownedMessages, ...lateResults];
+  const filesChanged = extractTurnFilesChanged(executionMessages);
+  const commands = extractTurnCommands(executionMessages);
+  const pendingToolCalls = findTurnPendingToolCalls(executionMessages);
 
-  // Count errors from failing commands
-  let errorCount = commands.filter((c) => c.isError).length;
-
-  // Add failing tool results that were not already counted as command errors
-  for (const m of messages) {
-    if (m.role === 'tool_result') {
-      for (const b of m.blocks) {
-        if (b.type === 'tool_result' && b.isError) {
-          const matchedCmd = commands.some((c) => c.isError);
-          // Only increment if there wasn't a failing command already counted for this tool block
-          if (!matchedCmd) {
-            errorCount++;
-          }
-        }
-      }
-    }
+  // Count distinct failing executions; a failed command result counts only once.
+  const commandIds = new Set(executionMessages.flatMap(m => m.blocks.filter(b => b.type === 'tool_use' &&
+    ['bash', 'exec_command', 'run_command', 'execute_command', 'execute', 'shell', 'terminal', 'exec'].includes(b.name.toLowerCase())).flatMap(b => b.type === 'tool_use' ? [b.id] : [])));
+  const failingIds = new Set<string>();
+  for (const m of executionMessages) for (const b of m.blocks) {
+    if (b.type !== 'tool_result') continue;
+    if (b.isError || (commandIds.has(b.toolUseId) && /(?:exit code|exited with code)[\s:=]*(-?[1-9]\d*)/i.test(b.content))) failingIds.add(b.toolUseId);
   }
+  // Include statuses encoded as JSON or other formats supported by command extraction.
+  const errorCount = Math.max(commands.filter(c => c.isError).length,
+    [...failingIds].filter(id => commandIds.has(id)).length) + [...failingIds].filter(id => !commandIds.has(id)).length;
 
   // Duration
   let durationMs: number | undefined;
   for (const m of messages) {
-    if (m.kind === 'turn_duration' && typeof (m as any).durationMs === 'number') {
-      durationMs = (m as any).durationMs;
+    if ((m.kind === 'turn_duration' || m.terminal !== undefined) && typeof m.durationMs === 'number') {
+      durationMs = m.durationMs;
       break;
     }
     if (m.kind === 'turn_duration' && typeof (m as any).duration_ms === 'number') {
@@ -523,6 +541,7 @@ export function segmentTurns(
   }
 
   const turns: Turn[] = [];
+  const resultsById = new Map(messages.flatMap(m => m.blocks.flatMap(b => b.type === 'tool_result' ? [[b.toolUseId, m] as const] : [])));
 
   for (let i = 0; i < promptIndices.length; i++) {
     const startPos = promptIndices[i];
@@ -535,13 +554,11 @@ export function segmentTurns(
     const endIndex = messages[endPos - 1].index;
 
     const interrupted = turnMessages.some(
-      (m) =>
-        m.source === 'interrupt' ||
-        m.content.includes('[Request interrupted by user]') ||
-        m.content.includes('User interrupted execution'),
+      (m) => m.terminal === 'interrupted' || m.source === 'interrupt' ||
+        (m.role === 'user' && /^(?:\[Request interrupted by user(?: for tool use(?: "[^"]+")?)?\]|User interrupted execution)/.test(m.content.trim())),
     );
 
-    const facts = extractTurnFacts(turnMessages);
+    const facts = extractTurnFacts(turnMessages, resultsById);
 
     let durationMs = facts.durationMs;
     if (durationMs === undefined && turnMessages.length > 1) {
@@ -555,18 +572,12 @@ export function segmentTurns(
       durationMs = 0;
     }
 
-    const isLastTurn = i === promptIndices.length - 1;
-    const hasPending = facts.pendingToolCalls && facts.pendingToolCalls.length > 0;
-    const hasAssistant = turnMessages.some((m) => m.role === 'assistant');
-
-    let completed: boolean;
-    if (interrupted) {
-      completed = false;
-    } else if (isLastTurn) {
-      completed = !hasPending && (turnMessages.length > 1 && hasAssistant);
-    } else {
-      completed = true;
-    }
+    const hasPending = Boolean(facts.pendingToolCalls?.length);
+    const finalAssistant = [...turnMessages].reverse().find((m) => m.role === 'assistant' && m.kind !== 'commentary');
+    const terminal = [...turnMessages].reverse().find((m) => m.terminal !== undefined)?.terminal;
+    const lastActivity = turnMessages[turnMessages.length - 1];
+    const completed = !interrupted && !hasPending && (terminal === 'complete' ||
+      (terminal === undefined && finalAssistant !== undefined && lastActivity.role === 'assistant'));
 
     const usage = extractTurnUsage(turnMessages);
     const model = meta?.model;
@@ -595,7 +606,7 @@ export function segmentTurns(
             ? promptMsg.timestamp.toISOString()
             : undefined,
       },
-      finalMessageIndex: endIndex,
+      finalMessageIndex: finalAssistant?.index ?? startIndex,
       completed,
       interrupted,
       durationMs,
@@ -656,7 +667,7 @@ export function getTurn(
   }
 
   if (typeof idOrIndex === 'number') {
-    if (idOrIndex < 1 || idOrIndex > turns.length) {
+    if (!Number.isInteger(idOrIndex) || idOrIndex < 1 || idOrIndex > turns.length) {
       throw new SessionReaderError(`Turn index ${idOrIndex} out of bounds (1..${turns.length})`, {
         code: 'TURN_NOT_FOUND',
         exitCode: EXIT.USAGE,
