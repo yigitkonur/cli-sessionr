@@ -438,3 +438,12 @@ it('19-A recognizes the fixed cross-session harness preamble observed in R4', as
   expect(session.messages.map((m) => m.source)).toEqual(['system', 'system', 'prompt']);
   expect(session.stats.byRole.user).toBe(1);
 });
+
+it('19-B recognizes the exact tool-use interrupt marker without a named tool', async () => {
+  const session = await parseReview19Records([
+    { type: 'user', uuid: 'marker', timestamp: '2026-01-01T00:00:01Z', message: { content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } },
+    { type: 'user', uuid: 'human', timestamp: '2026-01-01T00:00:02Z', message: { content: '[Request interrupted by user for tool use] what does this mean?' } },
+  ]);
+  expect(session.messages.map((m) => m.source)).toEqual(['interrupt', 'prompt']);
+  expect(session.stats.byRole.user).toBe(1);
+});

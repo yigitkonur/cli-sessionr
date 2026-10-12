@@ -213,7 +213,7 @@ export function classifyUserSource(text: string, line: RawLine): MessageSource {
     return 'queued';
   }
   const trimmed = text.trim();
-  if (/^\[Request interrupted by user(?: for tool use "[^"\n]+")?\]$/.test(trimmed)) {
+  if (/^\[Request interrupted by user(?: for tool use(?: "[^"\n]+")?)?\]$/.test(trimmed)) {
     return 'interrupt';
   }
   // Explicit human provenance wins over heuristics for conversational text.
