@@ -39,6 +39,12 @@ export interface NormalizedMessage {
   blocks: ContentBlock[];
   /** Original JSONL line number for debugging */
   rawLineIndex?: number;
+  /** Source classification for origin/provenance */
+  source?: string;
+  /** Kind classification (e.g. compaction, turn_duration) */
+  kind?: string;
+  terminal?: 'complete' | 'interrupted';
+  durationMs?: number;
 }
 
 // ── Session Metadata ───────────────────────────────────────────────────────
@@ -52,6 +58,9 @@ export interface SessionMetadata {
   updatedAt: Date;
   fileBytes: number;
   rawLineCount: number;
+  contextWindow?: number;
+  reasoningEffort?: string;
+  rateLimits?: CodexRateLimits;
 }
 
 // ── Session Stats ──────────────────────────────────────────────────────────
@@ -78,6 +87,105 @@ export interface SessionStats {
   durationMs?: number;
 }
 
+// ── Turn Data Model (Issues #8, #12, #13) ───────────────────────────────────
+
+export interface TurnPrompt {
+  text: string;
+  source?: string;
+  timestamp?: string;
+}
+
+export interface TurnFilesChanged {
+  created: string[];
+  edited: string[];
+  deleted: string[];
+}
+
+export interface TurnCommand {
+  cmd: string;
+  exitCode?: number | null;
+  isError: boolean;
+  startedAt?: string;
+  durationMs?: number;
+  exit_code?: number | null;
+  is_error?: boolean;
+  started_at?: string;
+  duration_ms?: number;
+}
+
+export interface PendingToolCall {
+  id?: string;
+  tool_use_id?: string;
+  name: string;
+  input: any;
+  messageIndex?: number;
+  index?: number;
+  timestamp?: string;
+}
+
+export interface TurnExecutionFacts {
+  filesChanged: TurnFilesChanged;
+  commands: TurnCommand[];
+  errorCount: number;
+  durationMs?: number;
+  pendingToolCalls?: PendingToolCall[];
+  files_changed?: TurnFilesChanged;
+  error_count?: number;
+  duration_ms?: number;
+  pending_tool_calls?: PendingToolCall[];
+}
+
+export interface TurnUsage {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  contextTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+export interface CodexRateLimitTier {
+  usedPercent: number;
+  windowMinutes: number;
+  resetsAt: string;
+}
+
+export interface CodexRateLimits {
+  primary?: CodexRateLimitTier;
+  secondary?: CodexRateLimitTier;
+}
+
+export interface Turn {
+  id: string;
+  turnIndex: number;
+  userMessageId: number;
+  startIndex: number;
+  endIndex: number;
+  prompt: TurnPrompt;
+  finalMessageIndex: number;
+  completed: boolean;
+  interrupted: boolean;
+  durationMs?: number;
+
+  // Execution facts (Issue #13)
+  filesChanged: TurnFilesChanged;
+  commands: TurnCommand[];
+  errorCount: number;
+  pendingToolCalls?: PendingToolCall[];
+  facts: TurnExecutionFacts;
+
+  // Context & Token usage (Issue #8)
+  usage?: TurnUsage;
+  model?: string;
+  contextWindowSize?: number;
+  contextWindow?: number;
+  reasoningEffort?: string;
+  rateLimits?: CodexRateLimits;
+}
+
 // ── Normalized Session ─────────────────────────────────────────────────────
 
 export interface NormalizedSession {
@@ -87,6 +195,7 @@ export interface NormalizedSession {
   metadata: SessionMetadata;
   messages: NormalizedMessage[];
   stats: SessionStats;
+  turns?: Turn[];
 }
 
 // ── Session List Entry (lightweight, for list command) ─────────────────────
@@ -250,6 +359,8 @@ export interface SliceMeta {
       command: string;
     }>;
   };
+  turns?: Turn[];
+  turn?: Turn;
 }
 
 // ── Output Resolution Options ──────────────────────────────────────────────
@@ -277,6 +388,7 @@ export interface ReadOptions {
   after?: number;
   ifChanged?: string;
   page?: number;
+  turn?: string;
   includeSummary?: boolean;
   batch?: string;
   /** Phase 1 carry-forward: forwarded from cli.ts so meta.timing_ms appears. */

@@ -140,4 +140,51 @@ describe('readCommand validation', () => {
     expect(body.meta.has_more_after || body.meta.has_more_before).toBe(true);
     expect(process.exitCode).toBe(EXIT.PARTIAL);
   });
+  it('filters roles within the selected turn and emits snake_case metadata', async () => {
+    vi.mocked(loadSession).mockResolvedValue(makeSession(Array.from({length:6},(_,i)=>makeMessage(i+1))));
+    await readCommand('sess-test', undefined, undefined, {output:'json',turn:'2',role:'assistant'});
+    const body=parseEnvelope() as any;
+    expect(body.result.messages.map((m:any)=>m.index)).toEqual([4]);
+    expect(body.meta.turn.start_index).toBe(3);
+    expect(body.meta.turn.startIndex).toBeUndefined();
+    expect(body.meta.partial).toBe(false);
+    expect(process.exitCode).not.toBe(EXIT.PARTIAL);
+  });
+  it('keeps tool activity at the end of a running last turn', async () => {
+    const messages=[makeMessage(1),makeMessage(2),{...makeMessage(3),role:'tool_use' as const,blocks:[{type:'tool_use' as const,id:'sleep',name:'Bash',input:{command:'sleep 7'}}]}];
+    vi.mocked(loadSession).mockResolvedValue(makeSession(messages));
+    await readCommand('sess-test', undefined, undefined, {output:'json',turn:'last'});
+    const body=parseEnvelope() as any;
+    expect(body.result.messages.map((m:any)=>m.index)).toEqual([1,2,3]);
+    expect(body.meta.partial).toBe(false);
+  });
+  it('rejects unsupported turn/page and turn/batch combinations', async () => {
+    for (const extra of [{page:1},{batch:'/not-read'}]) {
+      stdout.chunks.length=0;
+      await readCommand('sess-test', undefined, undefined, {output:'json',turn:'last',...extra});
+      expect((parseEnvelope() as any).error.code).toBe('INVALID_TURN_USAGE');
+    }
+  });
+
+  it('keeps pending tool input opaque while externalizing turn keys', async () => {
+    const msg={...makeMessage(2),role:'tool_use' as const,blocks:[{type:'tool_use' as const,id:'pending',name:'Custom',input:{filePath:'opaque',exitCode:17}}]};
+    vi.mocked(loadSession).mockResolvedValue(makeSession([makeMessage(1),msg]));
+    await readCommand('sess-test',undefined,undefined,{output:'json',turn:'last',detail:'full'});
+    const body=parseEnvelope() as any;
+    expect(body.meta.turn.pending_tool_calls[0].input).toEqual({filePath:'opaque',exitCode:17});
+    expect(body.meta.turn.facts).toBeUndefined();
+    expect(body.meta.turn.context_window).toBeUndefined();
+  });
+
+  it('does not repeat large prompts or pending input in meta detail', async () => {
+    const large='x'.repeat(20000);
+    const msg={...makeMessage(2),role:'tool_use' as const,blocks:[{type:'tool_use' as const,id:'pending',name:'Custom',input:{patch:large}}]};
+    vi.mocked(loadSession).mockResolvedValue(makeSession([makeMessage(1,large),msg]));
+    await readCommand('sess-test',undefined,undefined,{output:'json',turn:'last',detail:'meta',tokens:100});
+    const body=parseEnvelope() as any;
+    expect(body.meta.turn.prompt.text).toBe('');
+    expect(body.meta.turn.pending_tool_calls[0].input).toBeUndefined();
+    expect(stdout.chunks.join('').length).toBeLessThan(10000);
+  });
+
 });

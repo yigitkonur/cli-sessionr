@@ -160,6 +160,7 @@ program
   .option('--search <query>', 'Search query (sets anchor=search)')
   .option('--role <roles>', 'Filter by role (comma-separated: user, assistant, system, tool_use, tool_result)')
   .option('--page <n>', 'Page number (1-based, from head)')
+  .option('--turn <id>', 'Inspect a specific turn by 1-based index, slug (e.g. turn-1), or "last"')
   .option('--before <cursor>', 'Cursor: show messages before this index')
   .option('--after <cursor>', 'Cursor: show messages after this index')
   .option('--if-changed <etag>', 'Only return data if changed since ETag')
@@ -194,6 +195,7 @@ Examples:
         search: opts.search as string | undefined,
         role: opts.role as string | undefined,
         page: parseOptionalBounded('--page', opts.page, 1),
+        turn: opts.turn as string | undefined,
         before: parseOptionalBounded('--before', opts.before, 1),
         after: parseOptionalBounded('--after', opts.after, 1),
         ifChanged: opts.ifChanged as string | undefined,
