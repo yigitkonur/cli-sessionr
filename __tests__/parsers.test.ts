@@ -753,4 +753,19 @@ describe('Codex exec review regressions', () => {
     expect(unrollCodexExec(String.raw`await tools.apply_patch('*** Add File: \x62.txt\n+\u{1F600}');`).args.patch).toBe('*** Add File: b.txt\n+😀');
   });
 
+  it.each(['command', 'cmd'])('F7 preserves JSON argv under %s exactly', (key) => {
+    const argv = JSON.parse(regressionCall('array-command').input).command;
+    const result = unrollCodexExec(JSON.stringify({ [key]: argv }));
+    expect(result.toolName).toBe('exec_command');
+    expect(result.args.cmd).toEqual(['printf', '%s', 'a b']);
+    expect(result.args.command).toEqual(argv);
+    expect(unrollCodexExec(JSON.stringify({ [key]: 'echo hello' })).args.cmd).toBe('echo hello');
+  });
+
+  it('F7 retains opaque JSON exec input without inventing an empty command', () => {
+    const raw = '{"tool":"exec_command","command":{"dynamic":true}}';
+    expect(unrollCodexExec(raw).args).not.toHaveProperty('cmd');
+    expect(unrollCodexExec(raw).args.raw).toBe(raw);
+  });
+
 });

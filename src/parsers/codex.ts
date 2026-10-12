@@ -328,17 +328,13 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
       const parsed = JSON.parse(trimmed);
       if (parsed && typeof parsed === 'object') {
         if (parsed.tool === 'exec_command' || parsed.command || parsed.cmd) {
-          const cmd =
-            typeof parsed.command === 'string'
-              ? parsed.command
-              : typeof parsed.cmd === 'string'
-                ? parsed.cmd
-                : '';
+          const isCommand = (value: unknown): value is string | string[] =>
+            typeof value === 'string' || Array.isArray(value) && value.every((part) => typeof part === 'string');
+          const cmd = isCommand(parsed.command) ? parsed.command : isCommand(parsed.cmd) ? parsed.cmd : undefined;
           return {
             toolName: 'exec_command',
             args: {
-              cmd,
-              command: cmd,
+              ...(cmd !== undefined ? { cmd, command: cmd } : {}),
               ...(parsed.workdir ? { workdir: parsed.workdir } : {}),
               raw: rawInput,
             },
