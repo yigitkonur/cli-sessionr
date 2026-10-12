@@ -81,6 +81,8 @@ export interface SessionStats {
 // ── Pending Tool Calls ──────────────────────────────────────────────────────
 
 export interface PendingToolCall {
+  /** A later user prompt exists; this is historical, not necessarily a current waiter. */
+  superseded: boolean;
   id: string;
   tool_use_id?: string;
   name: string;

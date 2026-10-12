@@ -54,8 +54,8 @@ export function getUnresolvedToolCallIds(messages: NormalizedMessage[]): Set<str
   for (const msg of messages) {
     if (msg.blocks && Array.isArray(msg.blocks)) {
       for (const b of msg.blocks) {
-        if (b.type === 'tool_use' && b.id) {
-          unresolved.add(b.id);
+        if (b.type === 'tool_use') {
+          unresolved.add(b.id || `tool-${msg.index}`);
         } else if (b.type === 'tool_result') {
           const callId = b.toolUseId ?? (b as any).tool_use_id ?? (b as any).id;
           if (callId) {
@@ -76,6 +76,7 @@ export function getUnresolvedToolCallIds(messages: NormalizedMessage[]): Set<str
 
 export function computePendingToolCalls(messages: NormalizedMessage[]): PendingToolCall[] {
   const pendingMap = new Map<string, PendingToolCall>();
+  const lastUserIndex = messages.reduce((last, msg) => msg.role === 'user' ? Math.max(last, msg.index) : last, 0);
   for (const msg of messages) {
     if (msg.blocks && Array.isArray(msg.blocks)) {
       for (const b of msg.blocks) {
@@ -88,6 +89,7 @@ export function computePendingToolCalls(messages: NormalizedMessage[]): PendingT
             input: b.input ?? {},
             messageIndex: msg.index,
             index: msg.index,
+            superseded: msg.index < lastUserIndex,
             timestamp: typeof msg.timestamp === 'string'
               ? msg.timestamp
               : msg.timestamp instanceof Date && !isNaN(msg.timestamp.getTime())
@@ -110,6 +112,7 @@ export function computePendingToolCalls(messages: NormalizedMessage[]): PendingT
         input: {},
         messageIndex: msg.index,
         index: msg.index,
+        superseded: msg.index < lastUserIndex,
         timestamp: typeof msg.timestamp === 'string'
           ? msg.timestamp
           : msg.timestamp instanceof Date && !isNaN(msg.timestamp.getTime())
@@ -129,12 +132,12 @@ export function computePendingToolCalls(messages: NormalizedMessage[]): PendingT
 function isUnresolvedToolMessage(msg: NormalizedMessage, unresolved: Set<string>): boolean {
   if (msg.role === 'tool_use') {
     if (msg.blocks && msg.blocks.length > 0) {
-      return msg.blocks.some((b) => b.type === 'tool_use' && b.id && unresolved.has(b.id));
+      return msg.blocks.some((b) => b.type === 'tool_use' && unresolved.has(b.id || `tool-${msg.index}`));
     }
     return unresolved.size > 0;
   }
   if (msg.role === 'assistant' && msg.blocks) {
-    return msg.blocks.some((b) => b.type === 'tool_use' && b.id && unresolved.has(b.id));
+    return msg.blocks.some((b) => b.type === 'tool_use' && unresolved.has(b.id || `tool-${msg.index}`));
   }
   return false;
 }
@@ -156,6 +159,9 @@ function trimToAssistantLast(
   let end = messages.length - 1;
   while (end >= 0 && messages[end].role !== 'assistant') {
     end--;
+  }
+  if (messages.slice(end + 1).some((msg) => isUnresolvedToolMessage(msg, unresolved))) {
+    return messages;
   }
   if (end >= 0 && end + 1 >= messages.length / 2) {
     return messages.slice(0, end + 1);

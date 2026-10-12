@@ -221,3 +221,31 @@ describe('Pending tool calls and unresolved tool protection (Issue #6)', () => {
   });
 });
 
+
+describe('pending suffix regression', () => {
+  it.each(['user', 'tool_result'] as const)('keeps a pending call before trailing %s', (role) => {
+    const pending: NormalizedMessage = { ...makeMsg(5, 'tool_use', 'Tool: AskUserQuestion'), blocks: [{ type: 'tool_use', id: 'pending', name: 'AskUserQuestion', input: {} }] };
+    const suffix = makeMsg(6, role, 'stop');
+    const result = sliceByTokenBudget([...makeMsgs(4), pending, suffix], 4000, 's', 'claude', 'tail');
+    expect(result.messages.map(m => m.index)).toContain(5);
+  });
+  it('protects tool calls whose parser supplies an empty ID', () => {
+    const pending: NormalizedMessage = { ...makeMsg(3, 'tool_use', 'Tool: AskUserQuestion'), blocks: [{ type: 'tool_use', id: '', name: 'AskUserQuestion', input: {} }] };
+    const result = sliceByTokenBudget([makeMsg(1, 'user', 'start'), makeMsg(2, 'assistant', 'asking'), pending], 4000, 's', 'claude', 'tail');
+    expect(result.messages.map(m => m.index)).toContain(3);
+  });
+});
+
+describe('historical pending-call handoff metadata', () => {
+  it('marks earlier-turn calls superseded without removing them from the whole-session list', () => {
+    const messages = Array.from({ length: 185 }, (_, i) => makeMsg(i + 1, 'assistant', 'working'));
+    messages[0] = makeMsg(1, 'user', 'start');
+    messages[79] = { ...makeMsg(80, 'tool_use', 'Tool: Bash'), blocks: [{ type: 'tool_use', id: 'earlier', name: 'Bash', input: { command: 'npm test' } }] };
+    messages[80] = makeMsg(81, 'user', 'continue with a different task');
+    messages[184] = { ...makeMsg(185, 'tool_use', 'Tool: AskUserQuestion'), blocks: [{ type: 'tool_use', id: 'current', name: 'AskUserQuestion', input: { question: 'Proceed?' } }] };
+    const pending = computePendingToolCalls(messages);
+    expect(pending).toHaveLength(2);
+    expect(pending.find(p => p.id === 'earlier')).toMatchObject({ index: 80, superseded: true });
+    expect(pending.find(p => p.id === 'current')).toMatchObject({ index: 185, superseded: false });
+  });
+});
