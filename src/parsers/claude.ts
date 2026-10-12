@@ -253,7 +253,7 @@ function explodeAttachmentMessage(line: RawLine, lineIndex: number): ExplodedMes
       content: prompt,
       blocks: [{ type: 'text', text: prompt }],
       timestamp: ts,
-      rawLineIndex: lineIndex,
+      rawLineIndex: typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex,
       source: notification ? 'task_notification' : 'queued',
       ...(typeof line.attachment?.origin?.kind === 'string'
         ? { originKind: line.attachment.origin.kind } : {}),
@@ -471,7 +471,7 @@ function collectTurnEnds(lines: RawLine[]): TurnEndEvent[] {
   for (const [lineIndex, line] of lines.entries()) {
     if (
       line.type === 'system' &&
-line.subtype === 'turn_duration'
+      line.subtype === 'turn_duration'
     ) {
       const dur =
         typeof line.durationMs === 'number'

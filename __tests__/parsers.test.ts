@@ -443,3 +443,15 @@ it('21-G counts only finite non-negative system turn_duration completions', asyn
   expect(session.turnEnds?.map((e) => e.durationMs)).toEqual([6000, 0]);
   expect(session.messages).toEqual([]);
 });
+
+it('X-1 prefers reader-supplied physical attachment indices and retains the standalone fallback', async () => {
+  const user = { type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:01Z', message: { content: 'start' } };
+  const assistant = { type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:02Z', message: { content: 'working' } };
+  const records = [user, assistant, '', 'invalid', assistant, { type: 'queue-operation', timestamp: '2026-01-01T00:00:03Z', operation: 'enqueue' }, review21Attachment('attachment', { origin: { kind: 'human' } })];
+  const encode = (withPhysicalIndex: boolean) => records.map((r, i) => typeof r === 'string' ? r : JSON.stringify(withPhysicalIndex ? { ...r, rawLineIndex: i } : r)).join('\n');
+  // Emulate #20's reader annotation; #21 alone deliberately keeps parsed-index fallback.
+  const indexed = await parseReview21Records([], encode(true));
+  expect(indexed.messages.find((m) => m.source === 'queued')?.rawLineIndex).toBe(6);
+  const unindexed = await parseReview21Records([], encode(false));
+  expect(unindexed.messages.find((m) => m.source === 'queued')?.content).toBe('steer');
+});
