@@ -277,7 +277,7 @@ describe('Turn Token Usage and Context Window (Issue #8)', () => {
     expect(deriveContextWindow('claude-3-7-sonnet-20250219')).toBe(200_000);
     expect(deriveContextWindow('gpt-4o')).toBe(128_000);
     expect(deriveContextWindow('gemini-1.5-pro')).toBe(2_000_000);
-    expect(deriveContextWindow('unknown-model')).toBe(128_000);
+    expect(deriveContextWindow('unknown-model')).toBeUndefined();
     expect(deriveContextWindow('unknown-model', { contextWindow: 32_768 } as any)).toBe(32_768);
   });
 

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
-import { serializeMessage } from '../output/serialize.js';
+import { serializeMessage, toExternal } from '../output/serialize.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
 import { computeETag } from '../etag.js';
@@ -109,7 +109,7 @@ function buildSessionSummary(session: NormalizedSession, tokenBudget: number | u
     context_window: session.metadata.contextWindow,
     context_tokens: session.stats.tokenUsage?.contextTokens,
     reasoning_effort: session.metadata.reasoningEffort,
-    rate_limits: session.metadata.rateLimits,
+    rate_limits: toExternal(session.metadata.rateLimits) as SessionSummary['rate_limits'],
   };
 }
 
@@ -472,8 +472,6 @@ export async function readCommand(
     );
 
     let meta = injectNextAction(sliceResult.meta);
-    meta.context_window = session.metadata.contextWindow;
-    meta.context_tokens = session.stats.tokenUsage?.contextTokens;
     if (selectedTurn) {
       meta.turn = selectedTurn;
       meta.turns = session.turns ?? segmentTurns(session);
@@ -768,6 +766,8 @@ function emitReadEnvelope(args: EmitReadArgs): void {
   const meta: V2Meta = { ...args.meta } as unknown as V2Meta;
   meta.session_id = args.meta.session_id;
   meta.source = args.meta.source;
+  meta.context_window = args.session.metadata.contextWindow;
+  meta.context_tokens = args.session.stats.tokenUsage?.contextTokens;
   // Note: SliceMeta already lives flat under meta — V2Meta extends Record
   // so all its keys (range, anchor, cursor, partial, etag, next_action,
   // detail_hint, etc.) survive intact.
