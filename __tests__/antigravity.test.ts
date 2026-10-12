@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -106,21 +106,33 @@ describe('Antigravity CLI Discovery & Environment Resolution', () => {
     expect(session.messages.length).toBe(22);
   });
 
-  it('skips corrupted JSON lines in transcript without failing', async () => {
-    const tempFile = path.join(os.tmpdir(), 'corrupt-transcript.jsonl');
+  it('skips corrupted JSON lines without touching a pre-existing temp-root file', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-temp-root-'));
+    const sentinel = path.join(tempRoot, 'corrupt-transcript.jsonl');
+    fs.writeFileSync(sentinel, 'leave this file alone');
+    const tmpdir = vi.spyOn(os, 'tmpdir').mockReturnValue(tempRoot);
     try {
-      fs.writeFileSync(
-        tempFile,
-        '{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-10T12:00:00Z","content":"Valid prompt"}\n' +
-        'INVALID_JSON_CORRUPT_BYTES\n' +
-        '{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-10T12:00:01Z","content":"Valid response"}\n',
-      );
-      const session = await parseAntigravitySession(tempFile);
-      expect(session.messages.length).toBe(2);
-      expect(session.messages[0].content).toBe('Valid prompt');
-      expect(session.messages[1].content).toBe('Valid response');
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-corrupt-'));
+      const tempFile = path.join(tempDir, 'corrupt-transcript.jsonl');
+      try {
+        fs.writeFileSync(
+          tempFile,
+          '{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-10T12:00:00Z","content":"Valid prompt"}\n' +
+          'INVALID_JSON_CORRUPT_BYTES\n' +
+          '{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-10-10T12:00:01Z","content":"Valid response"}\n',
+        );
+        const session = await parseAntigravitySession(tempFile);
+        expect(session.messages.length).toBe(2);
+        expect(session.messages[0].content).toBe('Valid prompt');
+        expect(session.messages[1].content).toBe('Valid response');
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+      expect(fs.existsSync(sentinel)).toBe(true);
+      expect(fs.readFileSync(sentinel, 'utf8')).toBe('leave this file alone');
     } finally {
-      fs.rmSync(tempFile, { force: true });
+      tmpdir.mockRestore();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 });
