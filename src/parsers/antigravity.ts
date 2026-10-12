@@ -293,6 +293,7 @@ interface HeadScanResult {
 async function scanTranscriptHead(filePath: string, maxLines = 30): Promise<HeadScanResult> {
   return new Promise((resolve) => {
     let summary: string | undefined;
+    let systemSummary: string | undefined;
     let cwd: string | undefined;
     let sawConversation = false;
 
@@ -319,12 +320,10 @@ async function scanTranscriptHead(filePath: string, maxLines = 30): Promise<Head
           sawConversation = true;
         }
 
-        if (!summary) {
-          if (step.type === 'USER_INPUT' && typeof step.content === 'string') {
-            summary = cleanAntigravityPrompt(step.content);
-          } else if (step.type === 'SYSTEM_MESSAGE' && typeof step.content === 'string') {
-            summary = cleanAntigravityPrompt(step.content);
-          }
+        if (!summary && (step.type === 'USER_INPUT' || step.type === 'USER_MESSAGE') && typeof step.content === 'string') {
+          summary = cleanAntigravityPrompt(step.content);
+        } else if (!systemSummary && isMission) {
+          systemSummary = cleanAntigravityPrompt(step.content);
         }
 
         if (!cwd && step.tool_calls && Array.isArray(step.tool_calls)) {
@@ -354,8 +353,8 @@ async function scanTranscriptHead(filePath: string, maxLines = 30): Promise<Head
       }
     });
 
-    rl.on('close', () => resolve({ summary, cwd, sawConversation }));
-    rl.on('error', () => resolve({ summary, cwd, sawConversation }));
+    rl.on('close', () => resolve({ summary: summary ?? systemSummary, cwd, sawConversation }));
+    rl.on('error', () => resolve({ summary: summary ?? systemSummary, cwd, sawConversation }));
   });
 }
 

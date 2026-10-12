@@ -312,6 +312,23 @@ describe('Antigravity transcript regressions', () => {
     }
   });
 
+
+  it('prefers a real user summary over a system preamble even after cwd is found', async () => {
+    writeTranscript('preamble', [
+      { type: 'SYSTEM_MESSAGE', content: 'System preamble' },
+      { type: 'PLANNER_RESPONSE', tool_calls: [{ name: 'run_command', args: { Cwd: '/synthetic/project' } }] },
+      { type: 'USER_INPUT', content: '<USER_REQUEST>Actual user request</USER_REQUEST>' },
+    ]);
+    writeTranscript('no-user', [
+      { type: 'SYSTEM_MESSAGE', content: 'Agent mission brief' },
+      { type: 'PLANNER_RESPONSE', tool_calls: [{ name: 'run_command', args: { Cwd: '/synthetic/project' } }] },
+    ]);
+    const entries = await findAntigravitySessions();
+    expect(entries.find((e) => e.id === 'preamble')?.summary).toBe('Actual user request');
+    expect(entries.find((e) => e.id === 'preamble')?.cwd).toBe('/synthetic/project');
+    expect(entries.find((e) => e.id === 'no-user')?.summary).toBe('Agent mission brief');
+  });
+
 });
 
 
