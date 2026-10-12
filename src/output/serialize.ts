@@ -61,6 +61,12 @@ export function serializeMessage(
   const resolved: SerializeMessageOpts =
     typeof opts === 'string' ? { preset: opts } : (opts ?? {});
 
+  if (m.kind === 'compaction') {
+    const { preTokens, postTokens } = m.compactionMeta ?? {};
+    const content = `Context compacted${preTokens !== undefined && postTokens !== undefined ? ` from ${preTokens} to ${postTokens} tokens` : ''}`;
+    m = { ...m, content, blocks: [{ type: 'text', text: content }] };
+  }
+
   const msg: Record<string, unknown> = {
     index: m.index,
     role: m.role,
@@ -68,6 +74,32 @@ export function serializeMessage(
     tokens_estimate: estimateMessageTokens(m),
     content: m.content,
   };
+
+  if (m.source !== undefined) {
+    msg.source = m.source;
+  }
+  if (m.rawLineIndex !== undefined) {
+    msg.raw_line_index = m.rawLineIndex;
+  }
+  if (m.kind !== undefined) {
+    msg.kind = m.kind;
+  }
+  if (m.compactionMeta !== undefined) {
+    const { trigger, preTokens, postTokens, summary } = m.compactionMeta;
+    const showSummary = resolved.preset === 'full' && resolved.detail !== 'meta';
+    msg.compaction_meta = {
+      ...(trigger !== undefined ? { trigger } : {}),
+      ...(preTokens !== undefined ? { pre_tokens: preTokens } : {}),
+      ...(postTokens !== undefined ? { post_tokens: postTokens } : {}),
+      ...(showSummary && summary !== undefined ? { summary } : {}),
+    };
+    if (m.kind === 'compaction') {
+      if (trigger !== undefined) msg.trigger = trigger;
+      if (preTokens !== undefined) msg.pre_tokens = preTokens;
+      if (postTokens !== undefined) msg.post_tokens = postTokens;
+      if (showSummary && summary !== undefined) msg.summary = summary;
+    }
+  }
 
   // M3 — `--detail meta`: emit a thin per-message stub so agents can
   // enumerate without paying for decoded content. For tool_use /
@@ -233,6 +265,30 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   toolResult: 'tool_result',
   cacheRead: 'cache_read',
   cacheCreation: 'cache_creation',
+  turnIndex: 'turn_index',
+  userMessageId: 'user_message_id',
+  startIndex: 'start_index',
+  endIndex: 'end_index',
+  finalMessageIndex: 'final_message_index',
+  filesChanged: 'files_changed',
+  errorCount: 'error_count',
+  pendingToolCalls: 'pending_tool_calls',
+  contextWindowSize: 'context_window_size',
+  contextWindow: 'context_window',
+  contextTokens: 'context_tokens',
+  reasoningEffort: 'reasoning_effort',
+  rateLimits: 'rate_limits',
+  usedPercent: 'used_percent',
+  windowMinutes: 'window_minutes',
+  resetsAt: 'resets_at',
+  cacheWrite: 'cache_write',
+  preTokens: 'pre_tokens',
+  postTokens: 'post_tokens',
+  compactionMeta: 'compaction_meta',
+  compactions: 'compactions',
+  exitCode: 'exit_code',
+  startedAt: 'started_at',
+  messageIndex: 'message_index',
 };
 
 /**

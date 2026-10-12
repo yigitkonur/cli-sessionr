@@ -9,9 +9,12 @@ import type {
   SessionListEntry,
   SessionMetadata,
   SessionStats,
+  CompactionMeta,
+  MessageUsage,
 } from '../types.js';
 import { readJsonlFile, scanJsonlHead, getFileStats } from './common.js';
 import { registerSource } from './registry.js';
+import { deriveContextWindow } from '../turns.js';
 
 // ── Raw JSONL types ──────────────────────────────────────────────────────────
 
@@ -49,6 +52,7 @@ interface RawUsage {
 }
 
 interface RawMessage {
+  id?: string;
   role?: string;
   content?: string | RawBlock[];
   usage?: RawUsage;
@@ -133,6 +137,7 @@ interface ExtractedMetadata {
   cwd: string;
   gitBranch?: string;
   model?: string;
+  reasoningEffort?: string;
   hasCompactSummary: boolean;
 }
 
@@ -141,6 +146,7 @@ function extractMetadata(lines: RawLine[]): ExtractedMetadata {
   let cwd = '';
   let gitBranch: string | undefined;
   let model: string | undefined;
+  let reasoningEffort: string | undefined;
   let hasCompactSummary = false;
 
   for (const line of lines) {
@@ -148,14 +154,15 @@ function extractMetadata(lines: RawLine[]): ExtractedMetadata {
     if (!cwd && line.cwd) cwd = line.cwd;
     if (!gitBranch && line.gitBranch) gitBranch = line.gitBranch;
 
-    // Model can be on the line itself or inside message
-    if (!model && line.model) model = line.model;
-    if (!model && line.message?.model) model = line.message.model;
+    const reportedModel = line.message?.model || line.model;
+    if (reportedModel && reportedModel !== '<synthetic>') model = reportedModel;
+    const effort = line.effort ?? line.perTurnEffort ?? line.reasoning_effort;
+    if (typeof effort === 'string') reasoningEffort = effort;
 
     if (line.isCompactSummary) hasCompactSummary = true;
   }
 
-  return { sessionId, cwd, gitBranch, model, hasCompactSummary };
+  return { sessionId, cwd, gitBranch, model, reasoningEffort, hasCompactSummary };
 }
 
 // ── Deduplication ────────────────────────────────────────────────────────────
@@ -189,9 +196,32 @@ interface ExplodedMessage {
   blocks: ContentBlock[];
   timestamp: Date;
   rawLineIndex: number;
+  usage?: MessageUsage;
+  contextTokens?: number;
+  kind?: string;
+  compactionMeta?: CompactionMeta;
+  model?: string;
+  contextWindow?: number;
+  reasoningEffort?: string;
+}
+
+function isCompactionLine(line: RawLine): boolean {
+  return (
+    line.kind === 'compaction' ||
+    line.subtype === 'compact_boundary' ||
+    line.subtype === 'compaction' ||
+    Boolean(line.isCompactSummary) ||
+    Boolean(line.compactionMeta) ||
+    Boolean((line as any).compactMetadata)
+  );
 }
 
 function shouldSkipLine(line: RawLine): boolean {
+  // Never skip compaction records!
+  if (isCompactionLine(line)) {
+    return false;
+  }
+
   // Skip non-conversation types
   if (
     line.type === 'system' ||
@@ -212,16 +242,82 @@ function shouldSkipLine(line: RawLine): boolean {
     }
   }
 
-  // Skip compact summaries (just note for metadata)
+  // Skip compact summaries (handled in compaction explosion)
   if (line.isCompactSummary) return true;
 
   return false;
+}
+
+function compactionSummary(line: RawLine): string | undefined {
+  const content = line.message?.content;
+  if (typeof content === 'string') return content || undefined;
+  if (Array.isArray(content)) {
+    const text = content.filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n');
+    return text || undefined;
+  }
+  return undefined;
+}
+
+function explodeCompactionMessage(
+  line: RawLine,
+  lineIndex: number,
+  overrideSummary?: string,
+): ExplodedMessage[] {
+  const ts = line.timestamp ? new Date(line.timestamp) : new Date();
+
+  const rawMeta = (line.compactionMeta || (line as any).compactMetadata || {}) as {
+    trigger?: string;
+    preTokens?: number;
+    postTokens?: number;
+    summary?: string;
+  };
+
+  const trigger = typeof rawMeta.trigger === 'string' ? rawMeta.trigger : undefined;
+  const preTokens = typeof rawMeta.preTokens === 'number' ? rawMeta.preTokens : undefined;
+  const postTokens = typeof rawMeta.postTokens === 'number' ? rawMeta.postTokens : undefined;
+  const summary = overrideSummary ?? (typeof rawMeta.summary === 'string' ? rawMeta.summary : undefined) ?? compactionSummary(line);
+  const content = `Context compacted${preTokens !== undefined && postTokens !== undefined ? ` from ${preTokens} to ${postTokens} tokens` : ''}`;
+
+  return [
+    {
+      role: 'system',
+      content,
+      blocks: [{ type: 'text', text: content }],
+      timestamp: ts,
+      rawLineIndex: lineIndex,
+      kind: 'compaction',
+      compactionMeta: {
+        trigger,
+        preTokens,
+        postTokens,
+        summary,
+      },
+    },
+  ];
 }
 
 function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
   const results: ExplodedMessage[] = [];
   const ts = new Date(line.timestamp);
   const content = line.message?.content;
+
+  const u = line.message?.usage;
+  let usage: MessageUsage | undefined;
+  let contextTokens: number | undefined;
+  if (u) {
+    const inTok = u.input_tokens || 0;
+    const outTok = u.output_tokens || 0;
+    const readTok = u.cache_read_input_tokens || 0;
+    const createTok = u.cache_creation_input_tokens || 0;
+    contextTokens = inTok + readTok + createTok;
+    usage = {
+      input_tokens: inTok,
+      output_tokens: outTok,
+      cache_read_input_tokens: readTok,
+      cache_creation_input_tokens: createTok,
+      context_tokens: contextTokens,
+    };
+  }
 
   if (!content || typeof content === 'string') {
     // Simple string content (unusual for assistant but handle it)
@@ -233,6 +329,8 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
         blocks: [{ type: 'text', text }],
         timestamp: ts,
         rawLineIndex: lineIndex,
+        usage,
+        contextTokens,
       });
     }
     return results;
@@ -346,6 +444,14 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
     });
   }
 
+  if (usage && results.length > 0) {
+    const asst = results.find((r) => r.role === 'assistant') ?? results[0];
+    if (asst) {
+      asst.usage = usage;
+      asst.contextTokens = contextTokens;
+    }
+  }
+
   return results;
 }
 
@@ -425,7 +531,6 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
 
 function computeStats(
   messages: NormalizedMessage[],
-  dedupedLines: RawLine[],
 ): SessionStats {
   const byRole = { user: 0, assistant: 0, system: 0, toolUse: 0, toolResult: 0 };
   const byBlockType: Record<string, number> = {};
@@ -493,32 +598,23 @@ function computeStats(
     }
   }
 
-  // Token usage from deduplicated assistant lines only (avoids double-counting
-  // partial messages that share the same UUID with their final version)
+  // Usage is attached once per provider response, independently of content chunks.
   let hasTokens = false;
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheRead = 0;
   let cacheCreation = 0;
+  let contextTokens: number | undefined;
 
-  for (const line of dedupedLines) {
-    if (line.type === 'assistant' && line.message?.usage) {
-      const u = line.message.usage;
-      if (u.input_tokens) {
-        inputTokens += u.input_tokens;
-        hasTokens = true;
-      }
-      if (u.output_tokens) {
-        outputTokens += u.output_tokens;
-        hasTokens = true;
-      }
-      if (u.cache_read_input_tokens) {
-        cacheRead += u.cache_read_input_tokens;
-      }
-      if (u.cache_creation_input_tokens) {
-        cacheCreation += u.cache_creation_input_tokens;
-      }
-    }
+  for (const message of messages) {
+    const u = message.usage;
+    if (!u) continue;
+    hasTokens = true;
+    inputTokens += u.input_tokens ?? 0;
+    outputTokens += u.output_tokens ?? 0;
+    cacheRead += u.cache_read_input_tokens ?? 0;
+    cacheCreation += u.cache_creation_input_tokens ?? 0;
+    if (u.context_tokens !== undefined) contextTokens = u.context_tokens;
   }
 
   // Duration from first to last timestamp
@@ -533,6 +629,8 @@ function computeStats(
     .map(([name, { count, errors }]) => ({ name, count, errors }))
     .sort((a, b) => b.count - a.count);
 
+  const compactionsCount = messages.filter((m) => m.kind === 'compaction' || m.compactionMeta !== undefined).length;
+
   return {
     totalMessages: messages.length,
     byRole,
@@ -543,11 +641,13 @@ function computeStats(
           output: outputTokens,
           cacheRead: cacheRead || undefined,
           cacheCreation: cacheCreation || undefined,
+          contextTokens,
         }
       : undefined,
     toolFrequency,
     filesModified: Array.from(filesModifiedSet).sort(),
     durationMs,
+    compactions: compactionsCount > 0 ? compactionsCount : undefined,
   };
 }
 
@@ -562,32 +662,102 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
   const deduped = deduplicateByUuid(rawLines);
 
   // 3. Extract metadata from early messages
-  const meta = extractMetadata(deduped);
+  const isChildSession = filePath.split(path.sep).includes('subagents');
+  const meta = extractMetadata(isChildSession ? deduped : deduped.filter(line => line.isSidechain !== true));
 
-  // 4. Build NormalizedMessage[] with content block explosion
+  // 4. Preserve content chunks, but let the final provider snapshot own usage.
   const exploded: ExplodedMessage[] = [];
+  const usageLines = new Map<string | RawLine, RawLine>();
+  const usageTargets = new Map<string | RawLine, ExplodedMessage>();
+  const pairedSummaries = new Map<number, RawLine>();
+  const consumedSummaries = new Set<RawLine>();
+  let pendingBoundary: number | undefined;
+  for (let i = 0; i < deduped.length; i++) {
+    const line = deduped[i]!;
+    if (line.isCompactSummary) {
+      if (pendingBoundary !== undefined) {
+        pairedSummaries.set(pendingBoundary, line);
+        consumedSummaries.add(line);
+      }
+      pendingBoundary = undefined;
+    } else if (isCompactionLine(line)) pendingBoundary = i;
+    else if (line.type === 'user' || line.type === 'assistant') pendingBoundary = undefined;
+  }
+  let model: string | undefined;
+  let reasoningEffort: string | undefined;
+  let maxContext = 0;
+  let contextWindow: number | undefined;
 
   for (let i = 0; i < deduped.length; i++) {
     const line = deduped[i]!;
+    const ownUsage = line.isSidechain !== true || isChildSession;
+    const reportedModel = line.message?.model || line.model;
+    if (ownUsage && reportedModel && reportedModel !== '<synthetic>') model = reportedModel;
+    const effort = line.effort ?? line.perTurnEffort ?? line.reasoning_effort;
+    if (ownUsage && typeof effort === 'string') reasoningEffort = effort;
+    const reportedUsage = ownUsage && line.type === 'assistant' && !line.isCompactSummary && reportedModel !== '<synthetic>' ? line.message?.usage : undefined;
+    const u = reportedUsage && [reportedUsage.input_tokens, reportedUsage.output_tokens, reportedUsage.cache_read_input_tokens, reportedUsage.cache_creation_input_tokens].some(v => typeof v === 'number' && Number.isFinite(v)) ? reportedUsage : undefined;
+    if (u) maxContext = Math.max(maxContext, (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0));
+    const compact = line.compactMetadata as { preTokens?: number } | undefined;
+    if (typeof compact?.preTokens === 'number') maxContext = Math.max(maxContext, compact.preTokens);
+    contextWindow = model?.startsWith('claude-') && maxContext > 200_000 ? 1_000_000 : deriveContextWindow(model);
 
-    if (shouldSkipLine(line)) continue;
+    if (shouldSkipLine(line) || consumedSummaries.has(line)) continue;
 
-    if (line.type === 'assistant') {
-      exploded.push(...explodeAssistantMessage(line, i));
-    } else if (line.type === 'user') {
-      exploded.push(...explodeUserMessage(line, i));
+    let chunks: ExplodedMessage[];
+    if (isCompactionLine(line)) {
+      const paired = pairedSummaries.get(i);
+      chunks = explodeCompactionMessage(line, i, paired ? compactionSummary(paired) : undefined);
+    } else chunks = line.type === 'assistant' ? explodeAssistantMessage(line, i)
+      : line.type === 'user' ? explodeUserMessage(line, i) : [];
+    for (const chunk of chunks) {
+      delete chunk.usage;
+      delete chunk.contextTokens;
+      chunk.model = model;
+      chunk.reasoningEffort = reasoningEffort;
+      chunk.contextWindow = contextWindow;
     }
+    if (line.type === 'assistant' && !isCompactionLine(line)) {
+      const key = line.message?.id || line.uuid || line;
+      const target = chunks.find(m => m.role === 'assistant') ?? chunks[0];
+      if (target) usageTargets.set(key, target);
+      if (u) usageLines.set(key, line);
+    }
+    exploded.push(...chunks);
+  }
+  for (const [key, line] of usageLines) {
+    const target = usageTargets.get(key);
+    if (!target) continue;
+    const u = line.message!.usage!;
+    target.usage = {
+      input_tokens: u.input_tokens ?? 0,
+      output_tokens: u.output_tokens ?? 0,
+      cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
+      cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+      context_tokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
+    };
+    target.contextTokens = target.usage.context_tokens;
   }
 
   // Assign 1-based indexes
-  const messages: NormalizedMessage[] = exploded.map((e, i) => ({
-    index: i + 1,
-    role: e.role,
-    timestamp: e.timestamp,
-    content: e.content,
-    blocks: e.blocks,
-    rawLineIndex: e.rawLineIndex,
-  }));
+  const messages: NormalizedMessage[] = exploded.map((e, i) => {
+    const m: NormalizedMessage = {
+      index: i + 1,
+      role: e.role,
+      timestamp: e.timestamp,
+      content: e.content,
+      blocks: e.blocks,
+      rawLineIndex: e.rawLineIndex,
+      model: e.model,
+      contextWindow: e.contextWindow,
+      reasoningEffort: e.reasoningEffort,
+    };
+    if (e.usage) m.usage = e.usage;
+    if (e.contextTokens !== undefined) m.contextTokens = e.contextTokens;
+    if (e.kind) m.kind = e.kind;
+    if (e.compactionMeta) m.compactionMeta = e.compactionMeta;
+    return m;
+  });
 
   // 5. Timestamps for metadata — use raw event timestamps so system lines
   //    that get filtered don't shift createdAt forward
@@ -607,12 +777,14 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
   const sessionId = meta.sessionId || basename;
 
   // 6. Compute stats from deduplicated raw lines (for token usage)
-  const stats = computeStats(messages, deduped);
+  const stats = computeStats(messages);
 
   const metadata: SessionMetadata = {
     cwd: meta.cwd || path.dirname(filePath),
     gitBranch: meta.gitBranch,
     model: meta.model,
+    contextWindow,
+    reasoningEffort: meta.reasoningEffort,
     createdAt,
     updatedAt,
     fileBytes,
