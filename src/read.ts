@@ -205,6 +205,7 @@ export async function read(ref: SessionRef, opts?: ReadOptions): Promise<ReadEnv
     tokenBudget,
     anchor,
     search: opts?.search,
+    role: opts?.role,
     from: sliceResult.meta.range.from,
     to: sliceResult.meta.range.to,
   });
