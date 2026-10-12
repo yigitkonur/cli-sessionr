@@ -37,7 +37,7 @@ export function getAdapters(source?: string): SourceAdapter[] {
   if (direct.length > 0) return direct;
   const resolved = resolveSourceAlias(source);
   if (!resolved) return [];
-  return registry.filter((a) => a.name === resolved);
+  return registry.filter((a) => a.name.toLowerCase() === resolved.toLowerCase());
 }
 
 export function getAdapter(source: string): SourceAdapter | undefined {
@@ -47,7 +47,7 @@ export function getAdapter(source: string): SourceAdapter | undefined {
   if (direct) return direct;
   const resolved = resolveSourceAlias(source);
   if (!resolved) return undefined;
-  return registry.find((a) => a.name === resolved);
+  return registry.find((a) => a.name.toLowerCase() === resolved.toLowerCase());
 }
 
 export function getAllLabels(): Record<string, string> {
