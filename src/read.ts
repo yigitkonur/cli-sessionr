@@ -110,6 +110,12 @@ export async function read(ref: SessionRef, opts?: ReadOptions): Promise<ReadEnv
 
   const totalMessages = session.messages.length;
   const tokenBudget = opts?.tokens ?? getDefaultTokenBudget();
+  if (!Number.isFinite(tokenBudget) || tokenBudget <= 0) {
+    throw new SessionReaderError('Token budget must be finite and greater than zero.', {
+      code: 'INVALID_TOKEN_BUDGET', errorClass: 'validation', exitCode: EXIT.USAGE,
+      detail: { provided: tokenBudget },
+    });
+  }
   const preset = opts?.preset ? getPreset(opts.preset) : undefined;
   const pendingToolCalls = findTurnPendingToolCalls(session.messages);
 
