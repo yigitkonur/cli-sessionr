@@ -35,6 +35,14 @@ export interface CompactionMeta {
   summary?: string;
 }
 
+export interface MessageUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  context_tokens?: number;
+}
+
 export interface NormalizedMessage {
   /** 1-based position after normalization (tool blocks exploded into separate entries) */
   index: number;
@@ -49,9 +57,15 @@ export interface NormalizedMessage {
   /** Source classification for origin/provenance */
   source?: string;
   /** Kind classification (e.g. compaction, turn_duration) */
-  kind?: 'compaction' | 'turn_duration' | string;
+  kind?: string;
   /** Compaction metadata */
   compactionMeta?: CompactionMeta;
+  usage?: MessageUsage;
+  contextTokens?: number;
+  model?: string;
+  contextWindow?: number;
+  reasoningEffort?: string;
+  rateLimits?: CodexRateLimits;
 }
 
 // ── Session Metadata ───────────────────────────────────────────────────────
@@ -158,9 +172,9 @@ export interface TurnUsage {
 }
 
 export interface CodexRateLimitTier {
-  usedPercent: number;
-  windowMinutes: number;
-  resetsAt: string;
+  usedPercent?: number;
+  windowMinutes?: number;
+  resetsAt?: string | number;
 }
 
 export interface CodexRateLimits {
@@ -298,7 +312,10 @@ export interface SessionSummary {
   context_window?: number;
   context_tokens?: number;
   reasoning_effort?: string;
-  rate_limits?: CodexRateLimits;
+  rate_limits?: {
+    primary?: { used_percent?: number; window_minutes?: number; resets_at?: string | number };
+    secondary?: { used_percent?: number; window_minutes?: number; resets_at?: string | number };
+  };
 }
 
 // ── Cursor Commands (copy-paste ready + machine-readable tokens) ──────────
