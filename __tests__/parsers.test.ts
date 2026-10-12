@@ -361,3 +361,14 @@ it('21-A accepts prompt and absent modes but never treats notifications as human
   expect(session.stats.byRole.user).toBe(2);
   expect(session.messages[2]).toMatchObject({ role: 'system', source: 'task_notification' });
 });
+
+it('21-B retains distinct attachment origins and counts only human prompting', async () => {
+  const session = await parseReview21Records([
+    review21Attachment('human', { commandMode: 'prompt', origin: { kind: 'human' } }),
+    review21Attachment('peer', { commandMode: 'prompt', origin: { kind: 'peer' } }),
+  ]);
+  expect(session.messages.map((m) => m.originKind)).toEqual(['human', 'peer']);
+  expect(session.stats.byRole.user).toBe(1);
+  const { serializeMessage } = await import('../src/output/serialize.js');
+  expect(session.messages.map((m) => serializeMessage(m, { preset: 'full' }).origin_kind)).toEqual(['human', 'peer']);
+});

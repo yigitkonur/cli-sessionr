@@ -201,6 +201,7 @@ interface ExplodedMessage {
   timestamp: Date;
   rawLineIndex: number;
   source?: MessageSource;
+  originKind?: string;
 }
 
 function shouldSkipLine(line: RawLine): boolean {
@@ -249,6 +250,8 @@ function explodeAttachmentMessage(line: RawLine, lineIndex: number): ExplodedMes
       timestamp: ts,
       rawLineIndex: lineIndex,
       source: notification ? 'task_notification' : 'queued',
+      ...(typeof line.attachment?.origin?.kind === 'string'
+        ? { originKind: line.attachment.origin.kind } : {}),
     },
   ];
 }
@@ -473,7 +476,7 @@ function computeStats(
   for (const msg of messages) {
     switch (msg.role) {
       case 'user':
-        byRole.user++;
+        if (!msg.originKind || msg.originKind === 'human') byRole.user++;
         break;
       case 'assistant':
         byRole.assistant++;
@@ -650,6 +653,7 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     blocks: e.blocks,
     rawLineIndex: e.rawLineIndex,
     ...(e.source ? { source: e.source } : {}),
+    ...(e.originKind ? { originKind: e.originKind } : {}),
   }));
 
   // 5. Timestamps for metadata — use raw event timestamps so system lines

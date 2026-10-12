@@ -64,6 +64,7 @@ export function serializeMessage(
   const msg: Record<string, unknown> = {
     index: m.index,
     role: m.role,
+    ...(m.originKind ? { origin_kind: m.originKind } : {}),
     timestamp: m.timestamp,
     tokens_estimate: estimateMessageTokens(m),
     content: m.content,
@@ -225,6 +226,7 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   isError: 'is_error',
   toolUseId: 'tool_use_id',
   isEmpty: 'is_empty',
+  originKind: 'origin_kind',
   // Nested enum-style keys that also surface as map keys in byRole /
   // byBlockType / tokenUsage. Because the camelCase form is unambiguous
   // (only ever a contract-leak in our types), we rename them globally
