@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { fileURLToPath } from 'url';
-import { parseCodexSession } from '../src/parsers/codex.js';
+import { parseCodexSession, unrollCodexExec, extractFilesFromPatch } from '../src/parsers/codex.js';
 import { parseClaudeSession } from '../src/parsers/claude.js';
 import { parseFactorySession } from '../src/parsers/factory.js';
 import { getAdapter, resolveSourceAlias } from '../src/parsers/registry.js';
@@ -9,6 +11,8 @@ import '../src/parsers/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_FIXTURE = path.join(__dirname, 'fixtures', 'codex-session.jsonl');
+const CODEX_EXEC_FIXTURE = path.join(__dirname, 'fixtures', 'codex-exec-session.jsonl');
+const E2E_CODEX_EXEC_PATCH_FIXTURE = path.join(__dirname, 'fixtures', 'e2e-codex-exec-patch.jsonl');
 const CLAUDE_FIXTURE = path.join(__dirname, 'fixtures', 'claude-session.jsonl');
 const FACTORY_FIXTURE = path.join(__dirname, 'fixtures', 'factory-session.jsonl');
 
@@ -300,3 +304,324 @@ describe('Source aliases', () => {
     expect(adapter!.name).toBe('factory');
   });
 });
+
+describe('Milestone 1: Codex Deep Tool & Patch Parsing (Issue #7)', () => {
+  it('unrolls custom_tool_call exec into exec_command with full command', async () => {
+    const session = await parseCodexSession(CODEX_EXEC_FIXTURE);
+    const execMsg = session.messages.find(
+      (m) => m.role === 'tool_use' && m.blocks[0].name === 'exec_command',
+    );
+    expect(execMsg).toBeDefined();
+    expect(execMsg!.blocks[0].input.cmd).toBe('pnpm test');
+    expect(execMsg!.blocks[0].input.workdir).toBe('/app');
+    expect(execMsg!.content).toBe('Tool: exec_command');
+  });
+
+  it('unrolls custom_tool_call exec into apply_patch with untruncated patch', async () => {
+    const session = await parseCodexSession(CODEX_EXEC_FIXTURE);
+    const patchMsg = session.messages.find(
+      (m) => m.role === 'tool_use' && m.blocks[0].name === 'apply_patch',
+    );
+    expect(patchMsg).toBeDefined();
+    const patchInput = String(patchMsg!.blocks[0].input.patch || '');
+    expect(patchInput).toContain('*** Add File: src/service.ts');
+    expect(patchInput).toContain('*** Update File: src/index.ts');
+    expect(patchMsg!.content).toBe('Tool: apply_patch');
+  });
+
+  it('extracts files modified from unrolled apply_patch headers into stats.filesModified', async () => {
+    const session = await parseCodexSession(CODEX_EXEC_FIXTURE);
+    expect(session.stats.filesModified).toContain('src/service.ts');
+    expect(session.stats.filesModified).toContain('src/index.ts');
+  });
+
+  it('detects tool error from result JSON exit_code !== 0', async () => {
+    const session = await parseCodexSession(CODEX_EXEC_FIXTURE);
+    const results = session.messages.filter((m) => m.role === 'tool_result');
+    expect(results.length).toBe(2);
+
+    // First tool result (exit_code: 1) is flagged as error
+    const errResult = results[0];
+    expect(errResult.blocks[0].isError).toBe(true);
+
+    // Second tool result (exit_code: 0) is flagged as success
+    const okResult = results[1];
+    expect(okResult.blocks[0].isError).toBe(false);
+
+    // Tool error count attributed in stats.toolFrequency
+    const execFreq = session.stats.toolFrequency.find((t) => t.name === 'exec_command');
+    expect(execFreq).toBeDefined();
+    expect(execFreq!.errors).toBe(1);
+
+    const patchFreq = session.stats.toolFrequency.find((t) => t.name === 'apply_patch');
+    expect(patchFreq).toBeDefined();
+    expect(patchFreq!.errors).toBe(0);
+  });
+
+  it('handles e2e-codex-exec-patch fixture with structured JSON exec and file modifications', async () => {
+    const session = await parseCodexSession(E2E_CODEX_EXEC_PATCH_FIXTURE);
+    expect(session.source).toBe('codex');
+    expect(session.stats.filesModified).toContain('src/auth-helper.ts');
+    expect(session.stats.filesModified).toContain('src/index.ts');
+    expect(session.stats.filesModified).toContain('src/legacy-auth.ts');
+
+    // Tool calls unrolled
+    const toolUses = session.messages.filter((m) => m.role === 'tool_use');
+    expect(toolUses.some((t) => t.blocks[0].name === 'exec_command')).toBe(true);
+    expect(toolUses.some((t) => t.blocks[0].name === 'apply_patch')).toBe(true);
+
+    // Error detected on locked file delete (exit_code: 1)
+    const toolResults = session.messages.filter((m) => m.role === 'tool_result');
+    expect(toolResults.some((r) => r.blocks[0].isError === true)).toBe(true);
+    expect(toolResults.some((r) => r.blocks[0].isError === false)).toBe(true);
+  });
+
+  it('preserves untruncated commands and patches exceeding 300 characters in tool input', () => {
+    const longCmd = 'curl -X POST https://api.example.com/v1/deploy ' + 'a'.repeat(400);
+    const jsSnippet = `const r = await tools.exec_command({ cmd: "${longCmd}" });\ntext(r.output);`;
+    const unrolled = unrollCodexExec(jsSnippet);
+    expect(unrolled.toolName).toBe('exec_command');
+    expect(unrolled.args.cmd).toBe(longCmd);
+    expect((unrolled.args.cmd as string).length).toBeGreaterThan(400);
+  });
+
+  it('unescapes single quotes with \\\' cleanly in exec_command', () => {
+    const input = "const r = await tools.exec_command({ cmd: 'echo \\'hello world\\'' });";
+    const unrolled = unrollCodexExec(input);
+    expect(unrolled.toolName).toBe('exec_command');
+    expect(unrolled.args.cmd).toBe("echo 'hello world'");
+
+    const inputMultiple = "const r = await tools.exec_command({ cmd: 'echo \\'first\\' && echo \\'second\\'' });";
+    const unrolledMultiple = unrollCodexExec(inputMultiple);
+    expect(unrolledMultiple.args.cmd).toBe("echo 'first' && echo 'second'");
+  });
+
+  it('extracts all modified files when patch code contains quotes and semicolons', async () => {
+    const sessionLines = [
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-03-01T10:00:00Z', payload: { id: 'test-trunc', cwd: '/app' } }),
+      JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-03-01T10:00:01Z',
+        payload: {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'c1',
+          input: 'await tools.apply_patch("*** Add File: src/one.ts\\n+const x = \\"foo\\";\\n*** Update File: src/two.ts\\n+const y = 2;");',
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-03-01T10:00:02Z',
+        payload: {
+          type: 'custom_tool_call_output',
+          call_id: 'c1',
+          output: { exit_code: 0 },
+        },
+      }),
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-test-codex-'));
+    const filePath = path.join(tmpDir, 'test-trunc.jsonl');
+    fs.writeFileSync(filePath, sessionLines.join('\n') + '\n', 'utf8');
+
+    try {
+      const s = await parseCodexSession(filePath);
+      expect(s.stats.filesModified).toContain('src/one.ts');
+      expect(s.stats.filesModified).toContain('src/two.ts');
+      expect(s.stats.filesModified.length).toBe(2);
+
+      const toolUseMsg = s.messages.find((m) => m.role === 'tool_use');
+      expect(toolUseMsg).toBeDefined();
+      const patchInput = (toolUseMsg!.blocks[0] as any).input.patch;
+      expect(patchInput).toContain('src/one.ts');
+      expect(patchInput).toContain('src/two.ts');
+      expect(patchInput).toContain('+const x = "foo";');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('supports arbitrary variable names and template literals in apply_patch', async () => {
+    const sessionLines = [
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-03-01T10:00:00Z', payload: { id: 'test-var-patch', cwd: '/app' } }),
+      JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-03-01T10:00:01Z',
+        payload: {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'c2',
+          input: 'const diff = `*** Add File: src/alpha.ts\\n+export const a = "quoted;";\\n*** Update File: src/beta.ts\\n+const b = true;`;\\nawait tools.apply_patch(diff);',
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-03-01T10:00:02Z',
+        payload: {
+          type: 'custom_tool_call_output',
+          call_id: 'c2',
+          output: { exit_code: 0 },
+        },
+      }),
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-test-codex-'));
+    const filePath = path.join(tmpDir, 'test-var.jsonl');
+    fs.writeFileSync(filePath, sessionLines.join('\n') + '\n', 'utf8');
+
+    try {
+      const s = await parseCodexSession(filePath);
+      expect(s.stats.filesModified).toContain('src/alpha.ts');
+      expect(s.stats.filesModified).toContain('src/beta.ts');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extracts clean file paths without backticks from template literal patch variables without trailing newlines', async () => {
+    // 1. Unroll test: patch string must not retain outer backticks
+    const rawSnippet = 'const diff = `*** Add File: src/one.ts\n+1\n*** Add File: src/two.ts`;\nawait tools.apply_patch(diff);';
+    const unrolled = unrollCodexExec(rawSnippet);
+    expect(unrolled.toolName).toBe('apply_patch');
+    const patchStr = unrolled.args.patch as string;
+    expect(patchStr.startsWith('`')).toBe(false);
+    expect(patchStr.endsWith('`')).toBe(false);
+
+    // 2. Direct extraction from patch string without trailing newline
+    const files = extractFilesFromPatch(patchStr);
+    expect(files).toEqual(['src/one.ts', 'src/two.ts']);
+    expect(files).not.toContain('src/two.ts`');
+
+    // 3. Full session parsing with single and multi-file template literals without trailing newlines
+    const sessionLines = [
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-03-01T10:00:00Z', payload: { id: 'test-no-newline-patch', cwd: '/app' } }),
+      JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-03-01T10:00:01Z',
+        payload: {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'c-tl1',
+          input: 'const patchVar = `*** Add File: src/alpha.ts\\n+line\\n*** Add File: src/beta.ts`;\\nawait tools.apply_patch(patchVar);',
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-03-01T10:00:02Z',
+        payload: {
+          type: 'custom_tool_call_output',
+          call_id: 'c-tl1',
+          output: { exit_code: 0 },
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-03-01T10:00:03Z',
+        payload: {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'c-tl2',
+          input: 'const p = `*** Delete File: src/obsolete.ts`;\\nawait tools.apply_patch(p);',
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-03-01T10:00:04Z',
+        payload: {
+          type: 'custom_tool_call_output',
+          call_id: 'c-tl2',
+          output: { exit_code: 0 },
+        },
+      }),
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-test-codex-'));
+    const filePath = path.join(tmpDir, 'test-tl.jsonl');
+    fs.writeFileSync(filePath, sessionLines.join('\n') + '\n', 'utf8');
+
+    try {
+      const s = await parseCodexSession(filePath);
+      expect(s.stats.filesModified).toContain('src/alpha.ts');
+      expect(s.stats.filesModified).toContain('src/beta.ts');
+      expect(s.stats.filesModified).toContain('src/obsolete.ts');
+      expect(s.stats.filesModified).not.toContain('src/beta.ts`');
+      expect(s.stats.filesModified).not.toContain('src/obsolete.ts`');
+      for (const file of s.stats.filesModified) {
+        expect(file.endsWith('`')).toBe(false);
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extracts files modified from git diff headers in apply_patch', async () => {
+    const sessionLines = [
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-03-01T10:00:00Z', payload: { id: 'test-gitdiff', cwd: '/app' } }),
+      JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-03-01T10:00:01Z',
+        payload: {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'c3',
+          input: JSON.stringify({
+            tool: 'apply_patch',
+            patch: 'diff --git a/src/test.ts b/src/test.ts\n--- a/src/test.ts\n+++ b/src/test.ts\n@@ -1,1 +1,2 @@\n-old\n+new',
+          }),
+        },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        timestamp: '2026-03-01T10:00:02Z',
+        payload: {
+          type: 'custom_tool_call_output',
+          call_id: 'c3',
+          output: { exit_code: 0 },
+        },
+      }),
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-test-codex-'));
+    const filePath = path.join(tmpDir, 'test-gitdiff.jsonl');
+    fs.writeFileSync(filePath, sessionLines.join('\n') + '\n', 'utf8');
+
+    try {
+      const s = await parseCodexSession(filePath);
+      expect(s.stats.filesModified).toEqual(['src/test.ts']);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extractFilesFromPatch handles git diff headers, new/deleted files with /dev/null, and colon-less headers', () => {
+    const patchContent = [
+      '*** Add File src/new-without-colon.ts',
+      '+content',
+      '*** Update File: src/updated-with-colon.ts',
+      '+content',
+      'diff --git a/src/git-modified.ts b/src/git-modified.ts',
+      '--- a/src/git-modified.ts',
+      '+++ b/src/git-modified.ts',
+      '@@ -1 +1 @@',
+      'diff --git a/src/created.ts b/src/created.ts',
+      '--- /dev/null',
+      '+++ b/src/created.ts',
+      '@@ -0,0 +1 @@',
+      'diff --git a/src/deleted.ts b/src/deleted.ts',
+      '--- a/src/deleted.ts',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+    ].join('\n');
+
+    const files = extractFilesFromPatch(patchContent);
+    expect(files).toContain('src/new-without-colon.ts');
+    expect(files).toContain('src/updated-with-colon.ts');
+    expect(files).toContain('src/git-modified.ts');
+    expect(files).toContain('src/created.ts');
+    expect(files).toContain('src/deleted.ts');
+    expect(files).not.toContain('/dev/null');
+    expect(files).not.toContain('dev/null');
+    expect(files.length).toBe(5);
+  });
+});
+

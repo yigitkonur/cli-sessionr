@@ -228,12 +228,254 @@ function truncateSingleLine(text: string, maxLen: number): string {
   return oneLine.length > maxLen ? oneLine.substring(0, maxLen) + '\u2026' : oneLine;
 }
 
+export interface UnrolledExec {
+  toolName: string;
+  args: Record<string, unknown>;
+  patchContent?: string;
+}
+
+function unescapeJsString(raw: string): string {
+  return raw.replace(/\\([nrtbfv'"\\])/g, (_, ch) => {
+    switch (ch) {
+      case 'n': return '\n';
+      case 'r': return '\r';
+      case 't': return '\t';
+      case 'b': return '\b';
+      case 'f': return '\f';
+      case 'v': return '\v';
+      case "'": return "'";
+      case '"': return '"';
+      case '\\': return '\\';
+      default: return ch;
+    }
+  });
+}
+
+function extractPatchString(rawInput: string): string | undefined {
+  // 1. Direct string argument in tools.apply_patch("..." | '...' | `...`)
+  //    or tools.apply_patch({ patch: "..." | '...' | `...` })
+  const directMatch = rawInput.match(
+    /(?:tools\.)?apply_patch\s*\(\s*(?:\{\s*patch\s*:\s*)?(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
+  );
+  if (directMatch) {
+    const rawVal = directMatch[1] ?? directMatch[2] ?? directMatch[3] ?? '';
+    if (directMatch[1] !== undefined) {
+      try {
+        return JSON.parse(`"${rawVal}"`);
+      } catch {
+        return unescapeJsString(rawVal);
+      }
+    }
+    return unescapeJsString(rawVal);
+  }
+
+  // 2. Variable passed to tools.apply_patch(varName) or tools.apply_patch({ patch: varName })
+  const varCallMatch = rawInput.match(
+    /(?:tools\.)?apply_patch\s*\(\s*(?:\{\s*patch\s*:\s*)?([a-zA-Z0-9_$]+)/s,
+  );
+  if (varCallMatch) {
+    const varName = varCallMatch[1];
+    if (!['function', 'async', 'true', 'false', 'null', 'undefined'].includes(varName)) {
+      const varDefRe = new RegExp(
+        `(?:const|let|var)\\s+${varName}\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|'((?:[^'\\\\]|\\\\.)*)'|` +
+          '`((?:[^`\\\\]|\\\\.)*)`' +
+          ')',
+        's',
+      );
+      const varDefMatch = rawInput.match(varDefRe);
+      if (varDefMatch) {
+        const rawVal = varDefMatch[1] ?? varDefMatch[2] ?? varDefMatch[3] ?? '';
+        if (varDefMatch[1] !== undefined) {
+          try {
+            return JSON.parse(`"${rawVal}"`);
+          } catch {
+            return unescapeJsString(rawVal);
+          }
+        }
+        return unescapeJsString(rawVal);
+      }
+    }
+  }
+
+  // 3. Any variable assignment: const|let|var <identifier> = "..." | '...' | `...`
+  //    where variable name or value contains patch indicators
+  const anyVarRegex = /(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/gs;
+  let varMatch: RegExpExecArray | null;
+  while ((varMatch = anyVarRegex.exec(rawInput)) !== null) {
+    const varName = varMatch[1];
+    const rawVal = varMatch[2] ?? varMatch[3] ?? varMatch[4] ?? '';
+    const hasPatchContent =
+      rawVal.includes('***') ||
+      rawVal.includes('diff --git') ||
+      rawVal.includes('--- ') ||
+      rawVal.includes('+++ ');
+    if (hasPatchContent || /patch|diff/i.test(varName)) {
+      if (varMatch[2] !== undefined) {
+        try {
+          return JSON.parse(`"${rawVal}"`);
+        } catch {
+          return unescapeJsString(rawVal);
+        }
+      }
+      return unescapeJsString(rawVal);
+    }
+  }
+
+  // 4. *** Begin Patch ... *** End Patch block anywhere in input
+  const beginEndMatch = rawInput.match(/\*\*\*\s+Begin\s+Patch[\s\S]*?\*\*\*\s+End\s+Patch/i);
+  if (beginEndMatch) {
+    return unescapeJsString(beginEndMatch[0]);
+  }
+
+  // 5. Fallback: *** Add|Update|Delete File or diff --git headers
+  const headerMatch = rawInput.match(
+    /(?:\*{3}\s+(?:Add|Update|Delete)\s+File|diff\s+--git\s+)[\s\S]*?(?=(?:\*{3}\s+End\s+Patch|$))/i,
+  );
+  if (headerMatch) {
+    let patch = headerMatch[0];
+    if (rawInput.match(/\*{3}\s+End\s+Patch/i)) {
+      patch += '*** End Patch';
+    }
+    patch = patch.replace(/["'`]\s*(?:\)|;|\n)*$/, '');
+    return unescapeJsString(patch);
+  }
+
+  return undefined;
+}
+
+export function unrollCodexExec(rawInput: string): UnrolledExec {
+  const trimmed = rawInput.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        if (parsed.tool === 'exec_command' || parsed.command || parsed.cmd) {
+          const cmd =
+            typeof parsed.command === 'string'
+              ? parsed.command
+              : typeof parsed.cmd === 'string'
+                ? parsed.cmd
+                : '';
+          return {
+            toolName: 'exec_command',
+            args: {
+              cmd,
+              command: cmd,
+              ...(parsed.workdir ? { workdir: parsed.workdir } : {}),
+              raw: rawInput,
+            },
+          };
+        }
+        if (parsed.tool === 'apply_patch' || parsed.patch) {
+          const patch =
+            typeof parsed.patch === 'string'
+              ? parsed.patch
+              : typeof parsed.input === 'string'
+                ? parsed.input
+                : '';
+          return {
+            toolName: 'apply_patch',
+            args: {
+              patch,
+              input: patch,
+              raw: rawInput,
+            },
+            patchContent: patch,
+          };
+        }
+      }
+    } catch {
+      // Not JSON, continue to JS code analysis
+    }
+  }
+
+  // 1. Check for tools.exec_command
+  if (rawInput.includes('tools.exec_command') || rawInput.includes('exec_command(')) {
+    const cmdMatch =
+      rawInput.match(
+        /(?:cmd|command)\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
+      ) ??
+      rawInput.match(
+        /(?:tools\.)?exec_command\s*\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
+      );
+    let cmd = '';
+    if (cmdMatch) {
+      const rawMatch = cmdMatch[1] ?? cmdMatch[2] ?? cmdMatch[3] ?? '';
+      try {
+        if (cmdMatch[1] !== undefined) {
+          cmd = JSON.parse(`"${rawMatch}"`);
+        } else {
+          cmd = unescapeJsString(rawMatch);
+        }
+      } catch {
+        cmd = unescapeJsString(rawMatch);
+      }
+    }
+
+    let workdir: string | undefined;
+    const wdMatch = rawInput.match(
+      /workdir\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
+    );
+    if (wdMatch) {
+      const rawWd = wdMatch[1] ?? wdMatch[2] ?? wdMatch[3] ?? '';
+      try {
+        if (wdMatch[1] !== undefined) workdir = JSON.parse(`"${rawWd}"`);
+        else workdir = unescapeJsString(rawWd);
+      } catch {
+        workdir = unescapeJsString(rawWd);
+      }
+    }
+
+    return {
+      toolName: 'exec_command',
+      args: {
+        cmd,
+        ...(workdir ? { workdir } : {}),
+        raw: rawInput,
+      },
+    };
+  }
+
+  // 2. Check for tools.apply_patch
+  if (
+    rawInput.includes('tools.apply_patch') ||
+    rawInput.includes('apply_patch(') ||
+    rawInput.includes('*** Begin Patch')
+  ) {
+    const patch = extractPatchString(rawInput) || rawInput;
+
+    return {
+      toolName: 'apply_patch',
+      args: {
+        patch,
+        input: patch,
+        raw: rawInput,
+      },
+      patchContent: patch,
+    };
+  }
+
+  // Fallback: generic exec
+  return {
+    toolName: 'exec',
+    args: {
+      input: rawInput,
+      raw: rawInput,
+    },
+  };
+}
+
 function parseToolArgs(payload: Record<string, unknown>): Record<string, unknown> {
   if (payload.type === 'function_call') {
     return parseJsonRecord(payload.arguments);
   }
   if (payload.type === 'custom_tool_call') {
-    return { input: truncateSingleLine(String(payload.input || ''), 300) };
+    const raw = String(payload.input || '');
+    if (payload.name === 'exec') {
+      const unrolled = unrollCodexExec(raw);
+      return unrolled.args;
+    }
+    return { input: truncateSingleLine(raw, 300) };
   }
   if (payload.type === 'web_search_call') {
     return parseJsonRecord(payload.arguments ?? payload.input ?? payload.query);
@@ -273,20 +515,122 @@ function detectToolError(output: string): boolean {
   return output.startsWith('Error:') || output.startsWith('FAILED');
 }
 
-// ── File extraction from apply_patch ────────────────────────────────────────
+export function parseToolOutputError(rawOutput: unknown): boolean {
+  if (rawOutput == null) return false;
 
-const PATCH_FILE_RE = /\*{3}\s+(?:Add|Update|Delete)\s+File:\s+(.+)/g;
-
-function extractFilesFromPatch(input: string): string[] {
-  const files: string[] = [];
-  let m: RegExpExecArray | null;
-  PATCH_FILE_RE.lastIndex = 0;
-  while ((m = PATCH_FILE_RE.exec(input)) !== null) {
-    const filePath = m[1].trim();
-    if (filePath && !files.includes(filePath)) {
-      files.push(filePath);
+  // 1. Direct object with exit_code / returncode / status / is_error
+  if (typeof rawOutput === 'object' && !Array.isArray(rawOutput)) {
+    const obj = rawOutput as Record<string, unknown>;
+    if (typeof obj.exit_code === 'number') {
+      return obj.exit_code !== 0;
+    }
+    if (typeof obj.returncode === 'number') {
+      return obj.returncode !== 0;
+    }
+    if (typeof obj.status === 'number') {
+      return obj.status !== 0;
+    }
+    if (typeof obj.is_error === 'boolean') {
+      return obj.is_error;
     }
   }
+
+  // 2. String that might be JSON
+  if (typeof rawOutput === 'string') {
+    const trimmed = rawOutput.trim();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          if (typeof parsed.exit_code === 'number') {
+            return parsed.exit_code !== 0;
+          }
+          if (typeof parsed.returncode === 'number') {
+            return parsed.returncode !== 0;
+          }
+          if (typeof parsed.status === 'number') {
+            return parsed.status !== 0;
+          }
+          if (typeof parsed.is_error === 'boolean') {
+            return parsed.is_error;
+          }
+        }
+      } catch {
+        // Fall through to string check
+      }
+    }
+    return detectToolError(trimmed);
+  }
+
+  // 3. Array of items (e.g. text blocks)
+  if (Array.isArray(rawOutput)) {
+    for (const item of rawOutput) {
+      if (item && typeof item === 'object') {
+        const itemObj = item as Record<string, unknown>;
+        if (itemObj.type === 'error' || itemObj.is_error === true) return true;
+        if (typeof itemObj.exit_code === 'number') return itemObj.exit_code !== 0;
+        if (typeof itemObj.text === 'string' && detectToolError(itemObj.text)) return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+// ── File extraction from apply_patch ────────────────────────────────────────
+
+const PATCH_FILE_RE = /\*{3}\s+(?:Add|Update|Delete)\s+File:?\s+([^\r\n]+)/gi;
+const GIT_DIFF_RE = /(?:^|\n)diff\s+--git\s+(?:a\/|"?a\/)?([^\r\n\t\s"]+|"[^"]+")\s+(?:b\/|"?b\/)?([^\r\n\t\s"]+|"[^"]+")/gi;
+const DIFF_OLD_FILE_RE = /(?:^|\n)---\s+(?:a\/|"?a\/)?([^\r\n\t]+)/gi;
+const DIFF_NEW_FILE_RE = /(?:^|\n)\+\+\+\s+(?:b\/|"?b\/)?([^\r\n\t]+)/gi;
+
+function cleanDiffPath(rawPath: string): string {
+  let p = rawPath.split('\t')[0].trim();
+  p = p.replace(/^["'`]|["'`]$/g, '').trim();
+  p = p.replace(/^[ab]\//, '');
+  p = p.replace(/[,;]+$/, '').trim();
+  return p;
+}
+
+function isNullDevice(p: string): boolean {
+  return p === '/dev/null' || p === 'dev/null' || p === 'null' || p === '';
+}
+
+export function extractFilesFromPatch(input: string): string[] {
+  if (!input || typeof input !== 'string') return [];
+  const files: string[] = [];
+  const text = input.replace(/\\n/g, '\n');
+
+  const addFile = (raw: string) => {
+    const filePath = cleanDiffPath(raw);
+    if (filePath && !isNullDevice(filePath) && !files.includes(filePath)) {
+      files.push(filePath);
+    }
+  };
+
+  let m: RegExpExecArray | null;
+
+  PATCH_FILE_RE.lastIndex = 0;
+  while ((m = PATCH_FILE_RE.exec(text)) !== null) {
+    addFile(m[1]);
+  }
+
+  GIT_DIFF_RE.lastIndex = 0;
+  while ((m = GIT_DIFF_RE.exec(text)) !== null) {
+    addFile(m[1]);
+    addFile(m[2]);
+  }
+
+  DIFF_OLD_FILE_RE.lastIndex = 0;
+  while ((m = DIFF_OLD_FILE_RE.exec(text)) !== null) {
+    addFile(m[1]);
+  }
+
+  DIFF_NEW_FILE_RE.lastIndex = 0;
+  while ((m = DIFF_NEW_FILE_RE.exec(text)) !== null) {
+    addFile(m[1]);
+  }
+
   return files;
 }
 
@@ -479,13 +823,25 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
       // ── tool calls (function_call, custom_tool_call, web_search_call) ─
 
       if (isToolCallType(pType)) {
-        const toolName =
+        let toolName =
           typeof p.name === 'string' && p.name
             ? p.name
             : pType === 'web_search_call'
               ? 'web_search'
               : 'unknown';
-        const args = parseToolArgs(p);
+        let args = parseToolArgs(p);
+        let patchToExtract: string | undefined;
+
+        if (pType === 'custom_tool_call') {
+          const rawInput = String(p.input || '');
+          if (toolName === 'exec' || rawInput.includes('tools.')) {
+            const unrolled = unrollCodexExec(rawInput);
+            toolName = unrolled.toolName;
+            args = unrolled.args;
+            patchToExtract = unrolled.patchContent;
+          }
+        }
+
         const callId =
           (typeof p.call_id === 'string' && p.call_id) ||
           (typeof p.id === 'string' && p.id) ||
@@ -497,11 +853,14 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
         // Extract files modified from apply_patch
         if (toolName === 'apply_patch') {
           const inputStr =
-            pType === 'custom_tool_call'
+            patchToExtract ||
+            (pType === 'custom_tool_call'
               ? String(p.input || '')
-              : typeof (args as Record<string, unknown>).input === 'string'
-                ? (args as Record<string, unknown>).input as string
-                : '';
+              : typeof (args as Record<string, unknown>).patch === 'string'
+                ? (args as Record<string, unknown>).patch as string
+                : typeof (args as Record<string, unknown>).input === 'string'
+                  ? (args as Record<string, unknown>).input as string
+                  : '');
           if (inputStr) {
             for (const f of extractFilesFromPatch(inputStr)) {
               if (!filesModified.includes(f)) filesModified.push(f);
@@ -536,7 +895,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
               ? JSON.stringify(rawOutput)
               : '';
 
-        const isError = detectToolError(fullOutput);
+        const isError = parseToolOutputError(rawOutput);
         const toolName = toolCallMap.get(callId);
 
         if (toolName && isError) {
@@ -553,7 +912,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
         pushMessage({
           role: 'tool_result',
           timestamp: ts,
-          content: outputStr || fullOutput,
+          content: outputStr || fullOutput || (isError ? '[error]' : '[empty]'),
           blocks: [block],
           rawLineIndex: lineIdx,
         });
