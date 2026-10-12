@@ -42,6 +42,12 @@ describe('Claude request usage regressions', () => {
     expect(segmentTurns(zero)[0].usage?.contextTokens).toBe(0);
   });
 
+  it('does not turn an absent usage snapshot into a reported zero', async () => {
+    const s = await parse('claude', [user(), assistant('one', 'first', { input_tokens: 100, output_tokens: 1 }), assistant('two', 'second', {})]);
+    expect(s.stats.tokenUsage?.contextTokens).toBe(100);
+    expect(segmentTurns(s)[0].usage?.contextTokens).toBe(100);
+  });
+
   it('exposes latest session settings without relabeling earlier turns', async () => {
     const s = await parse('claude', [user('First prompt'), assistant('one', 'first', { input_tokens: 100, output_tokens: 1 }, 'First answer', 'claude-sonnet-5-5', 'low'),
       user('Second prompt'), assistant('two', 'second', { input_tokens: 300000, output_tokens: 1 }, 'Second answer', 'claude-opus-5-5', 'xhigh')]);
@@ -136,6 +142,13 @@ describe('Codex request usage regressions', () => {
     const s = await parse('codex', [{ type: 'session_meta', payload: { id: 'parent' } }, message('user'), message('assistant'), modern, count(last, last), modern]);
     expect(s.stats.tokenUsage).toMatchObject({ input: 60, output: 10, cacheRead: 40, contextTokens: 110 });
     expect(segmentTurns(s)[0].usage).toMatchObject({ input: 60, output: 10, cacheRead: 40 });
+  });
+
+  it('preserves separately reported cache writes without double-counting input', async () => {
+    const raw = { ...usage(100, 40, 10), cache_write_input_tokens: 10 };
+    const s = await parse('codex', [message('user'), message('assistant'), { type: 'token_usage_record', payload: { response_id: 'write-response', usage: raw, thread_token_usage: raw } }, count(raw, raw)]);
+    expect(s.stats.tokenUsage).toMatchObject({ input: 50, output: 10, cacheRead: 40, cacheCreation: 10, contextTokens: 110 });
+    expect(segmentTurns(s)[0].usage).toMatchObject({ input: 50, output: 10, cacheRead: 40, cacheWrite: 10, contextTokens: 110 });
   });
 
   it('keeps explicit child-thread usage separate from parent usage', async () => {

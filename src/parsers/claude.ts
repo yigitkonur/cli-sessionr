@@ -695,7 +695,8 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     if (ownUsage && reportedModel && reportedModel !== '<synthetic>') model = reportedModel;
     const effort = line.effort ?? line.perTurnEffort ?? line.reasoning_effort;
     if (ownUsage && typeof effort === 'string') reasoningEffort = effort;
-    const u = ownUsage && line.type === 'assistant' && !line.isCompactSummary && reportedModel !== '<synthetic>' ? line.message?.usage : undefined;
+    const reportedUsage = ownUsage && line.type === 'assistant' && !line.isCompactSummary && reportedModel !== '<synthetic>' ? line.message?.usage : undefined;
+    const u = reportedUsage && [reportedUsage.input_tokens, reportedUsage.output_tokens, reportedUsage.cache_read_input_tokens, reportedUsage.cache_creation_input_tokens].some(v => typeof v === 'number' && Number.isFinite(v)) ? reportedUsage : undefined;
     if (u) maxContext = Math.max(maxContext, (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0));
     const compact = line.compactMetadata as { preTokens?: number } | undefined;
     if (typeof compact?.preTokens === 'number') maxContext = Math.max(maxContext, compact.preTokens);
