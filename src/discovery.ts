@@ -180,81 +180,80 @@ export async function loadSessionByPath(
     });
   }
 
-  // 3. Detect source from file path heuristics
-  const lowerPath = filePath.toLowerCase();
-  if (lowerPath.includes('codex') || lowerPath.includes('rollout-')) {
-    const adapter = getAdapter('codex');
-    if (adapter) return adapter.parse(filePath);
-  }
-  if (lowerPath.includes('claude')) {
-    const adapter = getAdapter('claude');
-    if (adapter) return adapter.parse(filePath);
-  }
-  if (lowerPath.includes('cursor')) {
-    const adapter = getAdapter('cursor-agent');
-    if (adapter) return adapter.parse(filePath);
-  }
-  if (lowerPath.includes('gemini')) {
-    const adapter = getAdapter('gemini');
-    if (adapter) return adapter.parse(filePath);
-  }
-  if (lowerPath.includes('copilot')) {
-    const adapter = getAdapter('copilot');
-    if (adapter) return adapter.parse(filePath);
-  }
-  if (lowerPath.includes('commandcode')) {
-    const adapter = getAdapter('commandcode');
-    if (adapter) return adapter.parse(filePath);
-  }
-  if (lowerPath.includes('goose') || lowerPath.endsWith('.sqlite')) {
-    const adapter = getAdapter('goose');
-    if (adapter) return adapter.parse(filePath);
-  }
-  if (lowerPath.includes('zed') || (lowerPath.endsWith('.db') && lowerPath.includes('thread'))) {
-    const adapter = getAdapter('zed');
-    if (adapter) return adapter.parse(filePath);
-  }
-  if (lowerPath.includes('kiro')) {
-    const adapter = getAdapter('kiro');
-    if (adapter) return adapter.parse(filePath);
-  }
-  if (lowerPath.includes('opencode')) {
-    const adapter = getAdapter('opencode');
-    if (adapter) return adapter.parse(filePath);
-  }
+  const canonicalSource = detectCanonicalSource(filePath);
+  if (canonicalSource) return parseDetectedSource(filePath, canonicalSource);
 
-  // Dynamic custom adapters match
-  for (const a of getAdapters()) {
-    if (lowerPath.includes(a.name.toLowerCase())) {
-      return a.parse(filePath);
-    }
-  }
-
-  // 4. Sniff content for signatures
+  let snippet: string;
   try {
     const fd = fs.openSync(filePath, 'r');
     const buf = Buffer.alloc(16384);
-    const bytesRead = fs.readSync(fd, buf, 0, 16384, 0);
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
     fs.closeSync(fd);
-    const snippet = buf.toString('utf8', 0, bytesRead);
-
-    if (snippet.includes('"session_meta"') || snippet.includes('apply_patch') || snippet.includes('exec_command') || snippet.includes('"response_item"')) {
-      const adapter = getAdapter('codex');
-      if (adapter) return adapter.parse(filePath);
-    }
-    if (snippet.includes('"sessionId"') || snippet.includes('"parentUuid"') || snippet.includes('"uuid"') || snippet.includes('"type":"user"')) {
-      const adapter = getAdapter('claude');
-      if (adapter) return adapter.parse(filePath);
-    }
+    snippet = buf.toString('utf8', 0, bytesRead);
   } catch {
-    // ignore read error and fall through
+    throw new SessionReaderError('Could not read the session file.', {
+      code: 'SESSION_FILE_READ_FAILED', errorClass: 'internal', exitCode: EXIT.ERROR,
+      detail: { file_path: filePath },
+    });
   }
 
-  // Fallback to claude or codex based on extension
-  if (lowerPath.endsWith('.jsonl')) {
-    const adapter = getAdapter('claude') ?? getAdapter('codex');
-    if (adapter) return adapter.parse(filePath);
+  const records: unknown[] = [];
+  try { records.push(JSON.parse(snippet)); } catch { /* JSONL or an incomplete JSON document */ }
+  for (const line of snippet.split(/\r?\n/).slice(0, 32)) {
+    try { records.push(JSON.parse(line)); } catch { /* Skip incomplete or malformed records */ }
   }
+  const sources = new Set<string>();
+  for (const record of records) {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
+    const row = record as Record<string, unknown>;
+    const payload = row.payload;
+    if (typeof row.type === 'string' &&
+        ['session_meta', 'response_item', 'event_msg', 'turn_context'].includes(row.type) &&
+        payload && typeof payload === 'object' && !Array.isArray(payload)) sources.add('codex');
+    if (['user', 'assistant', 'system'].includes(String(row.type)) &&
+        row.message && typeof row.message === 'object' && !Array.isArray(row.message) &&
+        (typeof row.sessionId === 'string' || typeof row.uuid === 'string')) sources.add('claude');
+    if (typeof row.step_index === 'number' && typeof row.type === 'string' &&
+        /^[A-Z][A-Z_]+$/.test(row.type)) sources.add('antigravity');
+    if (typeof row.sessionId === 'string' && Array.isArray(row.messages)) sources.add('gemini');
+  }
+  if (sources.size === 1) return parseDetectedSource(filePath, [...sources][0]);
+  throw new SessionReaderError(
+    sources.size > 1 ? 'The file contains ambiguous session formats.' : 'Unrecognized session file format.',
+    {
+      code: sources.size > 1 ? 'AMBIGUOUS_SESSION_FORMAT' : 'UNRECOGNIZED_SESSION_FILE',
+      errorClass: 'validation', exitCode: EXIT.USAGE,
+      detail: { file_path: filePath, sources: [...sources] },
+      suggestion: 'Pass an explicit source to loadSessionByPath(path, source).',
+    },
+  );
+}
 
-  throw new SessionNotFoundError(filePath);
+function detectCanonicalSource(filePath: string): string | undefined {
+  const normalized = path.resolve(filePath).replace(/\\/g, '/').toLowerCase();
+  const roots: Array<[RegExp, string]> = [
+    [/\/\.claude\/projects\//, 'claude'],
+    [/\/\.codex\/(sessions|archived_sessions)\//, 'codex'],
+    [/\/\.gemini\/antigravity-cli\/brain\//, 'antigravity'],
+    [/\/\.gemini\/tmp\//, 'gemini'],
+    [/\/\.copilot\/session-state\//, 'copilot'],
+    [/\/\.cursor\/projects\/.*\/agent-transcripts\//, 'cursor-agent'],
+    [/\/\.commandcode\/projects\//, 'commandcode'],
+    [/\/\.local\/share\/goose\/sessions\//, 'goose'],
+    [/\/\.local\/share\/opencode\/storage\//, 'opencode'],
+    [/\/\.kiro\/.*\/globalstorage\/kiro\.kiroagent\//, 'kiro'],
+    [/\/zed\/threads\/threads\.db$/, 'zed'],
+    [/\/\.factory\/sessions\//, 'factory'],
+  ];
+  return roots.find(([pattern]) => pattern.test(normalized))?.[1];
+}
+
+function parseDetectedSource(filePath: string, source: string): Promise<NormalizedSession> {
+  const adapter = getAdapter(source);
+  if (adapter) return adapter.parse(filePath);
+  throw new SessionReaderError(`No adapter is registered for detected source "${source}".`, {
+    code: 'SOURCE_UNAVAILABLE', errorClass: 'validation', exitCode: EXIT.USAGE,
+    detail: { file_path: filePath, source },
+    suggestion: 'Register the source adapter or pass an explicit source.',
+  });
 }
