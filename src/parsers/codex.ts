@@ -512,68 +512,32 @@ function previewToolOutput(output: unknown): string {
 // ── Error detection (conservative) ──────────────────────────────────────────
 
 function detectToolError(output: string): boolean {
-  return output.startsWith('Error:') || output.startsWith('FAILED');
+  return output.startsWith('Error:') || output.startsWith('FAILED') ||
+    output.startsWith('Script failed') ||
+    [...output.matchAll(/^Process exited with code (-?\d+)\b/gm)].some((match) => Number(match[1]) !== 0);
 }
 
 export function parseToolOutputError(rawOutput: unknown): boolean {
   if (rawOutput == null) return false;
-
-  // 1. Direct object with exit_code / returncode / status / is_error
-  if (typeof rawOutput === 'object' && !Array.isArray(rawOutput)) {
-    const obj = rawOutput as Record<string, unknown>;
-    if (typeof obj.exit_code === 'number') {
-      return obj.exit_code !== 0;
-    }
-    if (typeof obj.returncode === 'number') {
-      return obj.returncode !== 0;
-    }
-    if (typeof obj.status === 'number') {
-      return obj.status !== 0;
-    }
-    if (typeof obj.is_error === 'boolean') {
-      return obj.is_error;
-    }
+  if (Array.isArray(rawOutput)) {
+    // A successful block must not hide a later failure.
+    return rawOutput.some((item) => parseToolOutputError(item));
   }
-
-  // 2. String that might be JSON
   if (typeof rawOutput === 'string') {
     const trimmed = rawOutput.trim();
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          if (typeof parsed.exit_code === 'number') {
-            return parsed.exit_code !== 0;
-          }
-          if (typeof parsed.returncode === 'number') {
-            return parsed.returncode !== 0;
-          }
-          if (typeof parsed.status === 'number') {
-            return parsed.status !== 0;
-          }
-          if (typeof parsed.is_error === 'boolean') {
-            return parsed.is_error;
-          }
-        }
-      } catch {
-        // Fall through to string check
-      }
-    }
+    const parsed = safeParseJson(trimmed);
+    if (parsed && typeof parsed === 'object') return parseToolOutputError(parsed);
     return detectToolError(trimmed);
   }
-
-  // 3. Array of items (e.g. text blocks)
-  if (Array.isArray(rawOutput)) {
-    for (const item of rawOutput) {
-      if (item && typeof item === 'object') {
-        const itemObj = item as Record<string, unknown>;
-        if (itemObj.type === 'error' || itemObj.is_error === true) return true;
-        if (typeof itemObj.exit_code === 'number') return itemObj.exit_code !== 0;
-        if (typeof itemObj.text === 'string' && detectToolError(itemObj.text)) return true;
-      }
+  if (typeof rawOutput === 'object') {
+    const obj = rawOutput as Record<string, unknown>;
+    if (obj.type === 'error' || obj.is_error === true) return true;
+    for (const key of ['exit_code', 'returncode', 'status']) {
+      if (typeof obj[key] === 'number' && obj[key] !== 0) return true;
     }
+    return parseToolOutputError(obj.metadata) || parseToolOutputError(obj.text) ||
+      parseToolOutputError(obj.output);
   }
-
   return false;
 }
 

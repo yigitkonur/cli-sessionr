@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { fileURLToPath } from 'url';
-import { parseCodexSession, unrollCodexExec, extractFilesFromPatch } from '../src/parsers/codex.js';
+import { parseCodexSession, unrollCodexExec, extractFilesFromPatch, parseToolOutputError } from '../src/parsers/codex.js';
 import { parseClaudeSession } from '../src/parsers/claude.js';
 import { parseFactorySession } from '../src/parsers/factory.js';
 import { getAdapter, resolveSourceAlias } from '../src/parsers/registry.js';
@@ -625,3 +625,46 @@ describe('Milestone 1: Codex Deep Tool & Patch Parsing (Issue #7)', () => {
   });
 });
 
+
+// Cases copied from the PR #18 review's numbered regression records.
+const CODEX_REGRESSIONS = path.join(__dirname, 'fixtures', 'codex-exec-regressions.jsonl');
+const regressionRecords = fs.readFileSync(CODEX_REGRESSIONS, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+function regressionCall(id: string) {
+  return regressionRecords.find((record) => record.payload?.call_id === id && record.payload.type === 'custom_tool_call').payload;
+}
+async function regressionSession(id: string) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-codex-regression-'));
+  const file = path.join(tmpDir, 'regression.jsonl');
+  const records = regressionRecords.filter((record) => record.type === 'session_meta' || record.payload?.call_id === id);
+  fs.writeFileSync(file, records.map((record) => JSON.stringify(record)).join('\n'));
+  try {
+    return await parseCodexSession(file);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+describe('Codex exec review regressions', () => {
+  it.each(['nested-error', 'later-array-error', 'metadata-error', 'plain-exit-error'])('F1 detects %s and attributes the failure', async (id) => {
+    const session = await regressionSession(id);
+    const result = session.messages.find((message) => message.role === 'tool_result')!.blocks[0];
+    expect(result.isError).toBe(true);
+    expect(session.stats.toolFrequency).toEqual([{ name: 'exec_command', count: 1, errors: 1 }]);
+    const output = regressionRecords.find((record) => record.payload?.call_id === id && record.payload.type === 'custom_tool_call_output').payload.output;
+    expect(result.content).toBe(typeof output === 'string' ? output : JSON.stringify(output));
+  });
+
+  it('F1 detects Script failed prefixes, nested metadata objects and all text blocks', () => {
+    expect(parseToolOutputError('Script failed\nOutput: failure')).toBe(true);
+    expect(parseToolOutputError({ metadata: { exit_code: 1 } })).toBe(true);
+    expect(parseToolOutputError([{ type: 'input_text', text: '{"exit_code":0}' }, { type: 'input_text', text: '{"metadata":{"exit_code":1}}' }])).toBe(true);
+    expect(parseToolOutputError('Process exited with code 0\nFinal output:\nok')).toBe(false);
+    expect(parseToolOutputError([{ exit_code: 0 }, { type: 'input_text', text: '{"metadata":{"exit_code":0}}' }])).toBe(false);
+  });
+
+  it('F1 reproduces the exact later issue #7 comment with one failed command', async () => {
+    const session = await parseCodexSession(path.join(__dirname, 'fixtures', 'codex-issue7-repro.jsonl'));
+    expect(session.messages.filter((message) => message.role === 'tool_result').map((message) => message.blocks[0].isError)).toEqual([false, true]);
+    expect(session.stats.toolFrequency.find((tool) => tool.name === 'exec_command')!.errors).toBe(1);
+  });
+});
