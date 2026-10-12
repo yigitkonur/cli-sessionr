@@ -734,4 +734,23 @@ describe('Codex exec review regressions', () => {
     expect(extractFilesFromPatch('*** Update File: real.txt\n@@\n--- a/bogus\n+++ b/bogus')).toEqual(['real.txt']);
   });
 
+  it('F6 decodes hex and Unicode code point escapes from record 15', () => {
+    expect(unrollCodexExec(regressionCall('unicode').input).args.cmd).toBe('echo ab😀');
+  });
+
+  it.each([
+    ['text(await tools.exec_command({cmd:`echo \\`hello\\``}));', 'echo `hello`'],
+    ["text(await tools.exec_command({cmd:'echo he\\\nllo'}));", 'echo hello'],
+    ["text(await tools.exec_command({cmd:'echo he\\\r\nllo'}));", 'echo hello'],
+    [String.raw`text(await tools.exec_command({cmd:"echo a\x62\u0063\u{1F600}"}));`, 'echo abc😀'],
+  ])('F6 decodes JavaScript literal %s without evaluating it', (input, expected) => {
+    expect(unrollCodexExec(input).args.cmd).toBe(expected);
+  });
+
+  it('F6 shares literal decoding across commands, workdirs and patches', () => {
+    const result = unrollCodexExec(String.raw`await tools.exec_command({cmd:'echo \x62',workdir:'C:\\work\u{1F600}'});`);
+    expect(result.args.workdir).toBe('C:\\work😀');
+    expect(unrollCodexExec(String.raw`await tools.apply_patch('*** Add File: \x62.txt\n+\u{1F600}');`).args.patch).toBe('*** Add File: b.txt\n+😀');
+  });
+
 });

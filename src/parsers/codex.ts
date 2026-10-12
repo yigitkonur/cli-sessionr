@@ -235,20 +235,30 @@ export interface UnrolledExec {
 }
 
 function unescapeJsString(raw: string): string {
-  return raw.replace(/\\([nrtbfv'"\\])/g, (_, ch) => {
-    switch (ch) {
-      case 'n': return '\n';
-      case 'r': return '\r';
-      case 't': return '\t';
-      case 'b': return '\b';
-      case 'f': return '\f';
-      case 'v': return '\v';
-      case "'": return "'";
-      case '"': return '"';
-      case '\\': return '\\';
-      default: return ch;
+  let output = '';
+  const escapes: Record<string, string> = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v', '0': '\0' };
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== '\\') { output += raw[i]; continue; }
+    const next = raw[++i];
+    if (next === '\n' || next === ' ' || next === ' ') continue;
+    if (next === '\r') { if (raw[i + 1] === '\n') i++; continue; }
+    if (next === 'x' || next === 'u') {
+      const braced = next === 'u' && raw[i + 1] === '{';
+      const end = braced ? raw.indexOf('}', i + 2) : i + (next === 'x' ? 2 : 4) + 1;
+      const hex = raw.slice(i + (braced ? 2 : 1), end);
+      if (/^[\da-f]+$/i.test(hex) && (braced ? hex.length <= 6 : hex.length === (next === 'x' ? 2 : 4))) {
+        const value = parseInt(hex, 16);
+        if (value <= 0x10ffff) {
+          output += String.fromCodePoint(value);
+          i = braced ? end : end - 1;
+          continue;
+        }
+      }
     }
-  });
+    // Quotes, backticks, backslashes and identity escapes all decode here.
+    output += escapes[next] ?? next ?? '\\';
+  }
+  return output;
 }
 
 // Keep offsets, but hide strings/templates and comments from invocation matching.
@@ -271,13 +281,8 @@ function invocationInput(source: string, code: string, start: number): string {
 function extractPatchString(rawInput: string, code: string, callInput: string): string | undefined {
   const argument = callInput.replace(/^\s*\{\s*(?:patch|"patch"|'patch')\s*:\s*/, '').trimStart();
   const literal = /^(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|`((?:[^`\\]|\\[\s\S])*)`)/;
-  const decode = (match: RegExpMatchArray): string => {
-    const raw = match[1] ?? match[2] ?? match[3] ?? '';
-    if (match[1] !== undefined) {
-      try { return JSON.parse(`"${raw}"`); } catch { /* JavaScript, not JSON */ }
-    }
-    return unescapeJsString(raw);
-  };
+  const decode = (match: RegExpMatchArray): string =>
+    unescapeJsString(match[1] ?? match[2] ?? match[3] ?? '');
   const direct = argument.match(literal);
   if (direct) return decode(direct);
   const variable = /^([a-zA-Z_$][\w$]*)\s*(?:[,}]|$)/.exec(argument);
@@ -384,15 +389,7 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
     let cmd: string | undefined;
     if (cmdMatch) {
       const rawMatch = cmdMatch[1] ?? cmdMatch[2] ?? cmdMatch[3] ?? '';
-      try {
-        if (cmdMatch[1] !== undefined) {
-          cmd = JSON.parse(`"${rawMatch}"`);
-        } else {
-          cmd = unescapeJsString(rawMatch);
-        }
-      } catch {
-        cmd = unescapeJsString(rawMatch);
-      }
+      cmd = unescapeJsString(rawMatch);
     }
 
     let workdir: string | undefined;
@@ -401,12 +398,7 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
     );
     if (wdMatch) {
       const rawWd = wdMatch[1] ?? wdMatch[2] ?? wdMatch[3] ?? '';
-      try {
-        if (wdMatch[1] !== undefined) workdir = JSON.parse(`"${rawWd}"`);
-        else workdir = unescapeJsString(rawWd);
-      } catch {
-        workdir = unescapeJsString(rawWd);
-      }
+      workdir = unescapeJsString(rawWd);
     }
 
     return {
