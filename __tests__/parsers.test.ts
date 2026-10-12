@@ -414,3 +414,16 @@ it('19-B keeps conversational interrupt text human and exact bracketed markers i
   expect(classifyUserSource('[Request interrupted by user] how do I handle this?', { type: 'user' } as any)).toBe('prompt');
   expect(classifyUserSource('<command-name> is literal text', { type: 'user', origin: { kind: 'human' }, promptSource: 'typed' } as any)).toBe('prompt');
 });
+
+it('19-C gives notifications and system classifications the system role for both content shapes', async () => {
+  const notification = '<task-notification><task-id>b1</task-id><status>completed</status></task-notification>';
+  const session = await parseReview19Records([
+    { type: 'user', uuid: 'human', timestamp: '2026-01-01T00:00:01Z', message: { content: 'fix the bug' } },
+    ...[notification, [{ type: 'text', text: notification }]].map((content, i) => ({ type: 'user', uuid: `notification-${i}`, timestamp: '2026-01-01T00:00:02Z', origin: { kind: 'task-notification' }, message: { content } })),
+    { type: 'user', uuid: 'system', timestamp: '2026-01-01T00:00:03Z', promptSource: 'system', message: { content: 'harness metadata' } },
+  ]);
+  expect(session.messages.slice(1).map((m) => m.role)).toEqual(['system', 'system', 'system']);
+  expect(session.messages.slice(1).map((m) => m.source)).toEqual(['task_notification', 'task_notification', 'system']);
+  expect(session.stats.byRole.user).toBe(1);
+  expect(session.stats.byRole.system).toBe(3);
+});

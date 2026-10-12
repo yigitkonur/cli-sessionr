@@ -413,13 +413,14 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
   // Simple string content
   if (typeof content === 'string') {
     if (content.trim()) {
+      const source = classifyUserSource(content, line);
       results.push({
-        role: 'user',
+        role: source === 'system' || source === 'task_notification' ? 'system' : 'user',
         content,
         blocks: [{ type: 'text', text: content }],
         timestamp: ts,
         rawLineIndex: lineIndex,
-        source: classifyUserSource(content, line),
+        source,
       });
     }
     return results;
@@ -464,13 +465,14 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
   // Combine real user text blocks into a single user message
   if (textBlocks.length > 0) {
     const joined = textBlocks.join('\n');
+    const source = classifyUserSource(joined, line);
     results.push({
-      role: 'user',
+      role: source === 'system' || source === 'task_notification' ? 'system' : 'user',
       content: joined,
       blocks: textBlocks.map((t) => ({ type: 'text' as const, text: t })),
       timestamp: ts,
       rawLineIndex: lineIndex,
-      source: classifyUserSource(joined, line),
+      source,
     });
   }
 
