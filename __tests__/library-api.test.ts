@@ -14,12 +14,13 @@ const CODEX_FIXTURE = path.resolve(__dirname, 'fixtures/codex-session.jsonl');
 const CLAUDE_FIXTURE = path.resolve(__dirname, 'fixtures/claude-session.jsonl');
 
 describe('Library API: Programmatic read(), loadSessionByPath, and registerSource (Issue #5)', () => {
-  it('reads session by file path through read(path) in under 50ms', async () => {
+  it('reads the small Codex fixture by path within a 500ms smoke-test bound', async () => {
     const t0 = performance.now();
     const env = await read(CODEX_FIXTURE);
     const durationMs = performance.now() - t0;
 
-    expect(durationMs).toBeLessThan(500); // well within tolerance
+    console.info(`Codex fixture direct read: ${durationMs.toFixed(2)}ms (${fs.statSync(CODEX_FIXTURE).size} bytes)`);
+    expect(durationMs).toBeLessThan(500); // Small-fixture smoke, not the 10 MB acceptance benchmark.
     expect(env.ok).toBe(true);
     expect(env.source).toBe('codex');
     expect(env.messages.length).toBeGreaterThan(0);

@@ -156,7 +156,7 @@ function resolveCwdValue(cwdMode: string): string {
 
 /**
  * Load and parse a session directly by file path, bypassing all directory discovery.
- * Guarantees sub-50ms performance for direct file reads.
+ * Runtime depends on file size and adapter parsing; no discovery scan is performed.
  */
 export async function loadSessionByPath(
   filePath: string,
