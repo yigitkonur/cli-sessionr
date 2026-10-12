@@ -35,6 +35,7 @@ const MAX_TOOL_RESULT_PREVIEW = 500;
 interface RawUsage {
   input_tokens: number;
   cached_input_tokens: number;
+  cache_write_input_tokens: number;
   output_tokens: number;
   total_tokens: number;
 }
@@ -42,6 +43,7 @@ interface RawUsage {
 interface TokenDelta {
   inputTokens: number;
   cacheRead: number;
+  cacheWrite: number;
   outputTokens: number;
   totalTokens: number;
 }
@@ -205,6 +207,7 @@ function normalizeRawUsage(value: unknown): RawUsage | null {
   return {
     input_tokens: input,
     cached_input_tokens: cached,
+    cache_write_input_tokens: ensureNumber(obj.cache_write_input_tokens ?? obj.cache_creation_input_tokens),
     output_tokens: output,
     total_tokens: total > 0 ? total : input + output,
   };
@@ -217,6 +220,7 @@ function subtractRawUsage(current: RawUsage, previous: RawUsage | null): RawUsag
       current.cached_input_tokens - (previous ? previous.cached_input_tokens : 0),
       0,
     ),
+    cache_write_input_tokens: Math.max(current.cache_write_input_tokens - (previous ? previous.cache_write_input_tokens : 0), 0),
     output_tokens: Math.max(current.output_tokens - (previous ? previous.output_tokens : 0), 0),
     total_tokens: Math.max(current.total_tokens - (previous ? previous.total_tokens : 0), 0),
   };
@@ -224,10 +228,12 @@ function subtractRawUsage(current: RawUsage, previous: RawUsage | null): RawUsag
 
 function convertToDelta(raw: RawUsage): TokenDelta {
   const cacheRead = Math.min(raw.cached_input_tokens, raw.input_tokens);
-  const billableInput = Math.max(raw.input_tokens - cacheRead, 0);
+  const cacheWrite = Math.min(raw.cache_write_input_tokens, Math.max(raw.input_tokens - cacheRead, 0));
+  const billableInput = Math.max(raw.input_tokens - cacheRead - cacheWrite, 0);
   return {
     inputTokens: billableInput,
     cacheRead,
+    cacheWrite,
     outputTokens: raw.output_tokens,
     totalTokens: raw.total_tokens > 0 ? raw.total_tokens : raw.input_tokens + raw.output_tokens,
   };
@@ -423,6 +429,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let totalCacheRead = 0;
+  let totalCacheWrite = 0;
   let latestContextTokens: number | undefined;
   let hasUsage = false;
   let model: string | undefined;
@@ -474,7 +481,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
           const explicit = (rawLast as Record<string, unknown>).context_tokens;
           latestContextTokens = typeof explicit === 'number' ? explicit : last.total_tokens;
         }
-        const reset = totals && previousTotals && (totals.input_tokens < previousTotals.input_tokens || totals.output_tokens < previousTotals.output_tokens || totals.cached_input_tokens < previousTotals.cached_input_tokens);
+        const reset = totals && previousTotals && (totals.input_tokens < previousTotals.input_tokens || totals.output_tokens < previousTotals.output_tokens || totals.cached_input_tokens < previousTotals.cached_input_tokens || totals.cache_write_input_tokens < previousTotals.cache_write_input_tokens);
         let raw = totals && previousTotals && !reset ? subtractRawUsage(totals, previousTotals) : last ?? totals;
         const signature = last ? JSON.stringify(last) : undefined;
         if (!totals && !responseId && signature === previousLast) raw = null;
@@ -487,10 +494,12 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
           totalInputTokens += delta.inputTokens;
           totalOutputTokens += delta.outputTokens;
           totalCacheRead += delta.cacheRead;
-          if (delta.inputTokens || delta.outputTokens || delta.cacheRead || latestContextTokens === 0) {
+          totalCacheWrite += delta.cacheWrite;
+          if (delta.inputTokens || delta.outputTokens || delta.cacheRead || delta.cacheWrite || latestContextTokens === 0) {
             observations.push({ lineIndex, usage: {
               input_tokens: delta.inputTokens, output_tokens: delta.outputTokens,
-              cache_read_input_tokens: delta.cacheRead, context_tokens: latestContextTokens,
+              cache_read_input_tokens: delta.cacheRead, cache_creation_input_tokens: delta.cacheWrite,
+              context_tokens: latestContextTokens,
             } });
           }
         }
@@ -738,6 +747,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
       input_tokens: (previous?.input_tokens ?? 0) + (u.input_tokens ?? 0),
       output_tokens: (previous?.output_tokens ?? 0) + (u.output_tokens ?? 0),
       cache_read_input_tokens: (previous?.cache_read_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
+      cache_creation_input_tokens: (previous?.cache_creation_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
       context_tokens: u.context_tokens,
     };
     owner.contextTokens = u.context_tokens;
@@ -781,6 +791,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
         input: totalInputTokens,
         output: totalOutputTokens,
         ...(totalCacheRead > 0 ? { cacheRead: totalCacheRead } : {}),
+        ...(totalCacheWrite > 0 ? { cacheCreation: totalCacheWrite } : {}),
         ...(latestContextTokens !== undefined ? { contextTokens: latestContextTokens } : {}),
       }
     : undefined;
