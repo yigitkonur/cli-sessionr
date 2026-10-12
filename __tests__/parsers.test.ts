@@ -412,3 +412,14 @@ it('21-E safely extracts text from unknown queued prompt content', async () => {
   expect(session.messages.every((m) => typeof m.content === 'string')).toBe(true);
   expect(session.messages[0].blocks).toEqual([{ type: 'text', text: 'inspect image' }]);
 });
+
+it('21-F excludes attachments hidden by line-level or attachment-level metadata', async () => {
+  const session = await parseReview21Records([
+    review21Attachment('line-hidden', { origin: { kind: 'human' } }, { isMeta: true }),
+    review21Attachment('attachment-hidden', { origin: { kind: 'human' }, isMeta: true }),
+    review21Attachment('visible', { origin: { kind: 'human' }, isMeta: false }, { isMeta: false }),
+  ]);
+  expect(session.messages).toHaveLength(1);
+  expect(session.messages[0]).toMatchObject({ source: 'queued', originKind: 'human' });
+  expect(session.stats.byRole.user).toBe(1);
+});

@@ -73,6 +73,7 @@ interface RawLine {
     prompt?: unknown;
     timestamp?: string;
     commandMode?: string;
+    isMeta?: boolean;
     origin?: { kind?: string };
     [key: string]: unknown;
   };
@@ -209,6 +210,7 @@ interface ExplodedMessage {
 function shouldSkipLine(line: RawLine): boolean {
   // Allow queued_command attachments mid-turn
   if (line.type === 'attachment') {
+    if (line.isMeta || line.attachment?.isMeta) return true;
     const mode = line.attachment?.commandMode;
     return line.attachment?.type !== 'queued_command' ||
       (mode !== undefined && mode !== 'prompt' && mode !== 'task-notification');
