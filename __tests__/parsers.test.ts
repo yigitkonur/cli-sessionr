@@ -423,3 +423,23 @@ it('21-F excludes attachments hidden by line-level or attachment-level metadata'
   expect(session.messages[0]).toMatchObject({ source: 'queued', originKind: 'human' });
   expect(session.stats.byRole.user).toBe(1);
 });
+
+it('21-G counts only finite non-negative system turn_duration completions', async () => {
+  const end = { type: 'system', subtype: 'turn_duration', uuid: 'end', timestamp: '2026-01-01T00:00:07Z', durationMs: 6000 };
+  const records = [
+    end,
+    { ...end, uuid: 'hook', subtype: 'stop_hook_summary', durationMs: 100000 },
+    { ...end, uuid: 'kind-only', subtype: undefined, kind: 'turn_duration', durationMs: 100000 },
+    { ...end, uuid: 'negative', durationMs: -1 },
+    { ...end, uuid: 'string', durationMs: '6000' },
+    { ...end, uuid: 'wrong-type', type: 'user', durationMs: 100000 },
+    { ...end, uuid: 'zero', durationMs: 0 },
+  ];
+  const unrelated = await parseReview21Records(records.slice(0, 2));
+  expect(unrelated.stats.durationMs).toBe(6000);
+  const raw = records.map((r) => JSON.stringify(r)).join('\n') + '\n' + JSON.stringify({ ...end, uuid: 'infinite', durationMs: 'INFINITY' }).replace('"INFINITY"', '1e309');
+  const session = await parseReview21Records(records, raw);
+  expect(session.stats.durationMs).toBe(6000);
+  expect(session.turnEnds?.map((e) => e.durationMs)).toEqual([6000, 0]);
+  expect(session.messages).toEqual([]);
+});

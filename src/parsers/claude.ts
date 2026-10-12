@@ -471,10 +471,7 @@ function collectTurnEnds(lines: RawLine[]): TurnEndEvent[] {
   for (const [lineIndex, line] of lines.entries()) {
     if (
       line.type === 'system' &&
-      (line.subtype === 'turn_duration' ||
-        line.kind === 'turn_duration' ||
-        line.durationMs !== undefined ||
-        (line as any).duration_ms !== undefined)
+line.subtype === 'turn_duration'
     ) {
       const dur =
         typeof line.durationMs === 'number'
@@ -482,7 +479,7 @@ function collectTurnEnds(lines: RawLine[]): TurnEndEvent[] {
           : typeof (line as any).duration_ms === 'number'
             ? (line as any).duration_ms
             : undefined;
-      if (typeof dur === 'number' && !isNaN(dur)) {
+      if (typeof dur === 'number' && Number.isFinite(dur) && dur >= 0) {
         turnEnds.push({
           timestamp: new Date(line.timestamp),
           durationMs: dur,
