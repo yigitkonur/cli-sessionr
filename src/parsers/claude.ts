@@ -238,6 +238,7 @@ export function classifyUserSource(text: string, line: RawLine): MessageSource {
     trimmed.startsWith('<environment_context>') ||
     trimmed.startsWith('<system-reminder>') ||
     /^<agent-message(?:\s|>)/.test(trimmed) ||
+    /^Another Claude session sent a message:\s*<teammate-message(?:\s|>)/.test(trimmed) ||
     trimmed.startsWith('This session is being continued from a previous conversation')
   ) {
     return 'system';

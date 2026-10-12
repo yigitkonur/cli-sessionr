@@ -427,3 +427,14 @@ it('19-C gives notifications and system classifications the system role for both
   expect(session.stats.byRole.user).toBe(1);
   expect(session.stats.byRole.system).toBe(3);
 });
+
+it('19-A recognizes the fixed cross-session harness preamble observed in R4', async () => {
+  const text = 'Another Claude session sent a message:\n<teammate-message teammate_id="worker">done</teammate-message>';
+  const session = await parseReview19Records([
+    { type: 'user', uuid: 'peer', timestamp: '2026-01-01T00:00:01Z', message: { content: text } },
+    { type: 'user', uuid: 'peer-block', timestamp: '2026-01-01T00:00:02Z', message: { content: [{ type: 'text', text }] } },
+    { type: 'user', uuid: 'human', timestamp: '2026-01-01T00:00:03Z', message: { content: 'Another Claude session sent a message: can you explain that phrase?' } },
+  ]);
+  expect(session.messages.map((m) => m.source)).toEqual(['system', 'system', 'prompt']);
+  expect(session.stats.byRole.user).toBe(1);
+});
