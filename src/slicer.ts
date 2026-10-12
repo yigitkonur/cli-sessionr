@@ -145,6 +145,7 @@ export function sliceByTokenBudget(
   anchor: 'head' | 'tail' | 'search' = 'tail',
   searchQuery?: string,
   preset?: VerbosityPreset,
+  opts?: { preserveTrailing?: boolean },
 ): SliceResult {
   const totalTokens = estimateSessionTokens(allMessages);
   const totalMessages = allMessages.length;
@@ -171,7 +172,7 @@ export function sliceByTokenBudget(
   }
 
   const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor, preset);
-  const trimmed = trimToAssistantLast(selected);
+  const trimmed = opts?.preserveTrailing ? selected : trimToAssistantLast(selected);
 
   const returnedTokens = preset
     ? estimateRenderedSessionTokens(trimmed, preset)
@@ -188,12 +189,12 @@ export function sliceByTokenBudget(
     token_budget: budget,
     anchor,
     range: { from: firstIdx, to: lastIdx },
-    has_more_before: firstIdx > 1,
-    has_more_after: lastIdx < totalMessages,
-    cursor_before: firstIdx > 1 ? firstIdx - 1 : null,
-    cursor_after: lastIdx < totalMessages ? lastIdx + 1 : null,
+    has_more_before: firstIdx > allMessages[0].index,
+    has_more_after: lastIdx < allMessages[allMessages.length - 1].index,
+    cursor_before: firstIdx > allMessages[0].index ? firstIdx - 1 : null,
+    cursor_after: lastIdx < allMessages[allMessages.length - 1].index ? lastIdx + 1 : null,
     cursor: { prev: null, next: null, first: null },
-    partial: firstIdx > 1 || lastIdx < totalMessages,
+    partial: firstIdx > allMessages[0].index || lastIdx < allMessages[allMessages.length - 1].index,
   };
 
   meta.cursor = buildCursorCommands(sessionId, meta);

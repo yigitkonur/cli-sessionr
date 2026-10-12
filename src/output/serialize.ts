@@ -248,6 +248,15 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   exitCode: 'exit_code',
   startedAt: 'started_at',
   messageIndex: 'message_index',
+  cacheWrite: 'cache_write',
+  contextTokens: 'context_tokens',
+  inputTokens: 'input_tokens',
+  outputTokens: 'output_tokens',
+  cacheReadTokens: 'cache_read_tokens',
+  cacheWriteTokens: 'cache_write_tokens',
+  usedPercent: 'used_percent',
+  windowMinutes: 'window_minutes',
+  resetsAt: 'resets_at',
 };
 
 /**
