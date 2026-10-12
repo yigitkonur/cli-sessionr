@@ -130,6 +130,13 @@ describe('Codex request usage regressions', () => {
     expect(segmentTurns(s)[0]).toMatchObject({ model: 'first-model', reasoningEffort: 'high' });
   });
 
+  it('clears an older rate snapshot when the latest snapshot has no tiers', async () => {
+    const s = await parse('codex', [message('user'), message('assistant'), count(usage(100, 40, 10), usage(100, 40, 10), { rate_limits: { primary: { used_percent: 12, window_minutes: 300, resets_at: 1791760000 } } }),
+      { type: 'event_msg', payload: { type: 'token_count', info: null, rate_limits: { primary: null, secondary: null } } }]);
+    expect(s.metadata.rateLimits).toBeUndefined();
+    expect(segmentTurns(s)[0].rateLimits).toBeUndefined();
+  });
+
   it('does not attach stale usage to a new prompt', async () => {
     const last = usage(100, 40, 10);
     const s = await parse('codex', [message('user', 'First prompt'), message('assistant'), count(last, last), message('user', 'Second prompt'), count(last, last), message('assistant'), count(usage(20, 10, 2), usage(120, 50, 12))]);

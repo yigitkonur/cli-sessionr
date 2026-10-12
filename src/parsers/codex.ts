@@ -735,7 +735,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     }
     owner ??= prompt;
     if (!owner) continue;
-    if (observation.rateLimits) owner.rateLimits = observation.rateLimits;
+    if ('rateLimits' in observation) owner.rateLimits = observation.rateLimits;
     if (!observation.usage) continue;
     const observedSettings = settings.get(observation.lineIndex);
     if (observedSettings?.contextWindow !== undefined) owner.contextWindow = observedSettings.contextWindow;
