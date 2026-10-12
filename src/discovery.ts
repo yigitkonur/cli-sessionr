@@ -251,7 +251,7 @@ function detectCanonicalSource(filePath: string): string | undefined {
 }
 
 function parseDetectedSource(filePath: string, source: string): Promise<NormalizedSession> {
-  const adapter = getAdapter(source);
+  const adapter = getAdapters().find((candidate) => candidate.name.toLowerCase() === source.toLowerCase());
   if (adapter) return adapter.parse(filePath);
   throw new SessionReaderError(`No adapter is registered for detected source "${source}".`, {
     code: 'SOURCE_UNAVAILABLE', errorClass: 'validation', exitCode: EXIT.USAGE,

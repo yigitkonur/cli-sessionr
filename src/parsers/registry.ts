@@ -17,11 +17,7 @@ export function resolveSourceAlias(input: string | undefined): SessionSource | u
   const s = input.toLowerCase();
   const custom = registry.find((a) => a.name.toLowerCase() === s);
   if (custom) return custom.name as SessionSource;
-  try {
-    return resolveSource(input);
-  } catch {
-    return undefined;
-  }
+  return resolveSource(input);
 }
 
 export function registerSource(adapter: SourceAdapter): void {
