@@ -33,6 +33,7 @@ export type MessageSource =
   | 'queued'
   | 'system'
   | 'local_command'
+  // Interrupt-to-prompt references are deferred to the turns model (Issue #25).
   | 'interrupt'
   | 'task_notification';
 
