@@ -26,6 +26,16 @@ export type ContentBlock =
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean };
 
+// ── Message Source ──────────────────────────────────────────────────────────
+
+export type MessageSource =
+  | 'prompt'
+  | 'queued'
+  | 'system'
+  | 'local_command'
+  | 'interrupt'
+  | 'task_notification';
+
 // ── Normalized Message ─────────────────────────────────────────────────────
 
 export interface NormalizedMessage {
@@ -39,6 +49,10 @@ export interface NormalizedMessage {
   blocks: ContentBlock[];
   /** Original JSONL line number for debugging */
   rawLineIndex?: number;
+  /** Source classification for origin/provenance */
+  source?: MessageSource;
+  /** Original attachment origin.kind; absent on legacy records. */
+  originKind?: string;
 }
 
 // ── Session Metadata ───────────────────────────────────────────────────────
@@ -59,6 +73,8 @@ export interface SessionMetadata {
 export interface SessionStats {
   totalMessages: number;
   byRole: {
+    /** Human prompting; source-aware adapters count new turns, not absorbed steers.
+     * promptSource "queued" user records are new turns, unlike source "queued" attachments. */
     user: number;
     assistant: number;
     system: number;
@@ -80,12 +96,21 @@ export interface SessionStats {
 
 // ── Normalized Session ─────────────────────────────────────────────────────
 
+export interface TurnEndEvent {
+  timestamp: Date;
+  durationMs: number;
+  /** Claude physical JSONL index when available; otherwise parsed-record index. */
+  rawLineIndex: number;
+}
+
 export interface NormalizedSession {
   id: string;
   source: SessionSource;
   filePath: string;
   metadata: SessionMetadata;
   messages: NormalizedMessage[];
+  /** Per-turn completion records, separate from the conversation messages. */
+  turnEnds?: TurnEndEvent[];
   stats: SessionStats;
 }
 
