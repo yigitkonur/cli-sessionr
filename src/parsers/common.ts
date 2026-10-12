@@ -1,4 +1,6 @@
 import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import * as readline from 'readline';
 
 /**
@@ -141,4 +143,63 @@ export function findFiles(
 
   walk(dir, 0);
   return results;
+}
+
+/**
+ * Resolves an environment variable path with trimming, tilde expansion,
+ * and relative-to-absolute resolution via path.resolve().
+ * Falls back to defaultPath if envVal is undefined or empty/whitespace.
+ */
+export function resolveEnvPath(envVal: string | undefined, defaultPath: string): string {
+  if (!envVal) return defaultPath;
+  const trimmed = envVal.trim();
+  if (!trimmed) return defaultPath;
+  if (trimmed === '~' || trimmed.startsWith('~/') || trimmed.startsWith('~\\')) {
+    return path.resolve(os.homedir(), trimmed.slice(1).replace(/^[/\\]/, ''));
+  }
+  return path.resolve(trimmed);
+}
+
+/**
+ * Safely parse an arbitrary timestamp value into a guaranteed-valid Date instance.
+ *
+ * Guarantees that the returned Date is never `Invalid Date` (NaN), preventing
+ * downstream `RangeError: Invalid time value` crashes during JSON serialization.
+ */
+export function parseDefensiveTimestamp(ts: unknown, fallback?: Date): Date {
+  const safeFallback = fallback instanceof Date && !isNaN(fallback.getTime()) ? fallback : new Date();
+  if (ts == null) return safeFallback;
+  if (ts instanceof Date) return isNaN(ts.getTime()) ? safeFallback : ts;
+
+  if (typeof ts === 'number') {
+    if (!Number.isFinite(ts) || ts <= 0) return safeFallback;
+    const ms = ts < 1e11 ? Math.round(ts * 1000) : Math.round(ts);
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? safeFallback : d;
+  }
+
+  if (typeof ts === 'string') {
+    const trimmed = ts.trim();
+    if (!trimmed) return safeFallback;
+
+    // Check if purely numeric string (e.g. epoch ms or epoch s)
+    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+      const num = Number(trimmed);
+      if (Number.isFinite(num) && num > 0) {
+        const ms = num < 1e11 ? Math.round(num * 1000) : Math.round(num);
+        const d = new Date(ms);
+        if (!isNaN(d.getTime())) return d;
+      }
+    }
+
+    // Direct Date.parse for ISO-8601 or standard formats
+    let parsed = Date.parse(trimmed);
+    if (!isNaN(parsed)) return new Date(parsed);
+
+    const normalized = trimmed.replace(/\.(\d{3})\d+([Z+-]|$)/, '.$1$2');
+    parsed = Date.parse(normalized);
+    if (!isNaN(parsed)) return new Date(parsed);
+  }
+
+  return safeFallback;
 }
