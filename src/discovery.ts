@@ -184,17 +184,19 @@ export async function loadSessionByPath(
   if (canonicalSource) return parseDetectedSource(filePath, canonicalSource);
 
   let snippet: string;
+  let fd: number | undefined;
   try {
-    const fd = fs.openSync(filePath, 'r');
+    fd = fs.openSync(filePath, 'r');
     const buf = Buffer.alloc(16384);
     const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
-    fs.closeSync(fd);
     snippet = buf.toString('utf8', 0, bytesRead);
   } catch {
     throw new SessionReaderError('Could not read the session file.', {
       code: 'SESSION_FILE_READ_FAILED', errorClass: 'internal', exitCode: EXIT.ERROR,
       detail: { file_path: filePath },
     });
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
 
   const records: unknown[] = [];
