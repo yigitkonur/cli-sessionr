@@ -380,3 +380,27 @@ describe('Antigravity resume hints', () => {
     expect(getResumeHint('codex', id).resume).toContain(`send ${literal} -f prompt.md`);
   });
 });
+
+describe('Antigravity list catalog', () => {
+  it('includes antigravity in the JSON available_sources catalog', async () => {
+    vi.mocked(listSessionsScoped).mockResolvedValue({
+      sessions: [], meta: { cwd_scope: 'all', cwd: '/synthetic/project' },
+    });
+    const chunks: string[] = [];
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    });
+    const previousExitCode = process.exitCode;
+    try {
+      await listCommand(undefined, { output: 'json', cwd: 'all' });
+      const envelope = JSON.parse(chunks.join(''));
+      expect(envelope.ok).toBe(true);
+      expect(envelope.result.available_sources).toContain('antigravity');
+    } finally {
+      stdout.mockRestore();
+      vi.mocked(listSessionsScoped).mockReset();
+      process.exitCode = previousExitCode;
+    }
+  });
+});
