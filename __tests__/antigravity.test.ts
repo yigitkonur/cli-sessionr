@@ -151,3 +151,62 @@ describe('Antigravity Registry & Aliases', () => {
     expect(adapter!.label).toBe('Antigravity');
   });
 });
+
+describe('Antigravity transcript regressions', () => {
+  let tempHome: string;
+
+  beforeEach(() => {
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-regression-'));
+    vi.stubEnv('ANTIGRAVITY_APP_DATA_DIR', tempHome);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  function writeTranscript(id: string, records: unknown[], full = false): string {
+    const logs = path.join(tempHome, 'brain', id, '.system_generated', 'logs');
+    fs.mkdirSync(logs, { recursive: true });
+    const file = path.join(logs, full ? 'transcript_full.jsonl' : 'transcript.jsonl');
+    fs.writeFileSync(file, records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+    return file;
+  }
+
+  it('prefers full transcripts for discovery and directories, with canonical fallback and explicit-file fidelity', async () => {
+    const records = (label: string) => [
+      { type: 'USER_INPUT', content: `${label} prompt` },
+      { type: 'PLANNER_RESPONSE', content: `${label} answer`, tool_calls: [{ name: 'run_command' }] },
+      { type: 'GENERIC', content: `${label} result` },
+    ];
+    const canonical = writeTranscript('dual', records('canonical'));
+    const full = writeTranscript('dual', records('full'), true);
+    const dir = path.join(tempHome, 'brain', 'dual');
+    const entries = await findAntigravitySessions();
+    expect(entries[0].filePath).toBe(full);
+    expect((await parseAntigravitySession(dir)).messages.map((m) => m.content)).toEqual([
+      'full prompt', 'full answer', 'Tool: run_command', 'full result',
+    ]);
+    expect((await parseAntigravitySession(canonical)).messages.map((m) => m.content)).toEqual([
+      'canonical prompt', 'canonical answer', 'Tool: run_command', 'canonical result',
+    ]);
+    fs.rmSync(full);
+    expect((await findAntigravitySessions())[0].filePath).toBe(canonical);
+    expect((await parseAntigravitySession(dir)).messages[0].content).toBe('canonical prompt');
+  });
+
+  it('preserves typed full-transcript arguments without coercing numeric-looking strings', async () => {
+    const call = (args: Record<string, unknown>) => [{
+      type: 'PLANNER_RESPONSE', tool_calls: [{ name: 'run_command', args }],
+    }];
+    writeTranscript('typed', call({ WaitMsBeforeAsync: '2000', RunPersistent: 'false' }));
+    writeTranscript('typed', call({ WaitMsBeforeAsync: 2000, RunPersistent: false, CommandLine: '123' }), true);
+    const session = await parseAntigravitySession(path.join(tempHome, 'brain', 'typed'));
+    const block = session.messages[0].blocks[0];
+    expect(block.type).toBe('tool_use');
+    if (block.type !== 'tool_use') throw new Error('Expected tool call');
+    expect(block.input.WaitMsBeforeAsync).toBe(2000);
+    expect(block.input.RunPersistent).toBe(false);
+    expect(block.input.CommandLine).toBe('123');
+  });
+});

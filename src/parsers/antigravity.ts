@@ -363,15 +363,15 @@ export async function findAntigravitySessions(): Promise<SessionListEntry[]> {
     const transcriptCanonical = path.join(brainDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
     const transcriptFull = path.join(brainDir, convId, '.system_generated', 'logs', 'transcript_full.jsonl');
 
-    let transcriptPath = transcriptCanonical;
+    let transcriptPath = transcriptFull;
     let stat: fs.Stats;
 
     try {
-      if (fs.existsSync(transcriptCanonical)) {
-        stat = fs.statSync(transcriptCanonical);
-      } else if (fs.existsSync(transcriptFull)) {
-        transcriptPath = transcriptFull;
+      if (fs.existsSync(transcriptFull)) {
         stat = fs.statSync(transcriptFull);
+      } else if (fs.existsSync(transcriptCanonical)) {
+        transcriptPath = transcriptCanonical;
+        stat = fs.statSync(transcriptCanonical);
       } else {
         continue; // Empty directory or non-session folder
       }
@@ -428,7 +428,7 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
   if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
     const canonical = path.join(filePath, '.system_generated', 'logs', 'transcript.jsonl');
     const full = path.join(filePath, '.system_generated', 'logs', 'transcript_full.jsonl');
-    transcriptPath = fs.existsSync(canonical) ? canonical : full;
+    transcriptPath = fs.existsSync(full) ? full : canonical;
     conversationId = path.basename(filePath);
   } else {
     transcriptPath = filePath;
