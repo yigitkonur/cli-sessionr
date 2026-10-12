@@ -209,4 +209,36 @@ describe('Antigravity transcript regressions', () => {
     expect(block.input.RunPersistent).toBe(false);
     expect(block.input.CommandLine).toBe('123');
   });
+
+  it.each([
+    ['finished', 0, false],
+    ['failed', 0, true],
+    ['cancelled', 0, true],
+    ['canceled', 0, true],
+    ['finished', 2, true],
+    ['finished', -1, true],
+  ])('links background completion %s (exit %i) to its original call and keeps system text', async (outcome, exit, isError) => {
+    const taskId = '8870b007-42b0-4ffa-a47b-9acb5821ef3f/task-1';
+    const completion = `<SYSTEM_MESSAGE sender=${taskId} content=Task ${outcome} with result: The command exited with code ${exit}</SYSTEM_MESSAGE>`;
+    const file = writeTranscript('background', [
+      { type: 'USER_INPUT', content: 'Run in background' },
+      { type: 'PLANNER_RESPONSE', step_index: 1, tool_calls: [{ name: 'run_command' }] },
+      { type: 'GENERIC', status: 'RUNNING', content: `Task ID: "${taskId}"` },
+      { type: 'PLANNER_RESPONSE', step_index: 3, tool_calls: [{ name: 'read_file' }] },
+      { type: 'GENERIC', status: 'DONE', content: 'unrelated result' },
+      { type: 'SYSTEM_MESSAGE', content: completion },
+      { type: 'SYSTEM_MESSAGE', content: `<SYSTEM_MESSAGE sender=${taskId.replace('task-1', 'task-9')} content=Task finished with result: unmatched</SYSTEM_MESSAGE>` },
+    ]);
+    const session = await parseAntigravitySession(file);
+    const results = session.messages.flatMap((m) => m.blocks).filter((b) => b.type === 'tool_result');
+    expect(results).toHaveLength(3);
+    expect(results[2].toolUseId).toBe(results[0].toolUseId);
+    expect(results[2].toolUseId).not.toBe(results[1].toolUseId);
+    expect(results[2].isError).toBe(isError);
+    expect(session.stats.toolFrequency.find((t) => t.name === 'run_command')?.errors).toBe(isError ? 1 : 0);
+    expect(session.messages.some((m) => m.role === 'system' && m.content === completion)).toBe(true);
+  });
+
+
+
 });

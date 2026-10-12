@@ -180,6 +180,22 @@ export function normalizeToolArgs(args: unknown): Record<string, unknown> {
   return result;
 }
 
+function getTaskCompletion(content: string): { taskId: string; isError: boolean } | undefined {
+  const taskId = /sender=([0-9a-f-]{36}\/task-\d+)/i.exec(content)?.[1];
+  const outcome = /(?:finished|canceled|cancelled|failed) with result/i.exec(content)?.[0];
+  if (!taskId || !outcome) return undefined;
+  const exit = /exited with code (-?\d+)/i.exec(content);
+  return {
+    taskId,
+    isError: /canceled|cancelled|failed/i.test(outcome) || (exit !== null && Number(exit[1]) !== 0),
+  };
+}
+
+function extractSystemContent(content: string): string {
+  const payload = /content=([\s\S]*?)(?:<\/SYSTEM_MESSAGE>\s*)?$/.exec(content)?.[1];
+  return (payload ?? content).trim();
+}
+
 // ── Types for Parsing ────────────────────────────────────────────────────────
 
 export interface AntigravityToolCall {
@@ -494,6 +510,7 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
 
   const exploded: ExplodedMessage[] = [];
   const pendingToolCalls: Array<{ id: string; name: string }> = [];
+  const backgroundTasks = new Map<string, { id: string; name: string }>();
   const toolCounts = new Map<string, { count: number; errors: number }>();
   const filesModifiedSet = new Set<string>();
 
@@ -641,6 +658,10 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
         const callId = pending?.id || `agy-generic-${lineIndex}`;
         const toolName = pending?.name || 'unknown';
         const content = step.content || '';
+        if (pending && step.status === 'RUNNING') {
+          const taskId = /task id:?\s*"?([0-9a-f-]{36}\/task-\d+)/i.exec(content)?.[1];
+          if (taskId) backgroundTasks.set(taskId, pending);
+        }
 
         const isError =
           step.status === 'ERROR' ||
@@ -699,6 +720,22 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
       case 'ERROR':
       case 'TASK_NOTIFICATION': {
         const content = step.content || step.error || `[${step.type}]`;
+        const completion = step.type === 'SYSTEM_MESSAGE' ? getTaskCompletion(content) : undefined;
+        const call = completion && backgroundTasks.get(completion.taskId);
+        if (completion && call) {
+          const result = extractSystemContent(content);
+          exploded.push({
+            role: 'tool_result',
+            content: result,
+            blocks: [{ type: 'tool_result', toolUseId: call.id, content: result, isError: completion.isError }],
+            timestamp: ts,
+            rawLineIndex: lineIndex,
+          });
+          if (completion.isError) {
+            const tcStat = toolCounts.get(call.name);
+            if (tcStat) tcStat.errors++;
+          }
+        }
         exploded.push({
           role: 'system',
           content,
