@@ -13,6 +13,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_FIXTURE = path.join(__dirname, 'fixtures', 'codex-session.jsonl');
 const CODEX_EXEC_FIXTURE = path.join(__dirname, 'fixtures', 'codex-exec-session.jsonl');
 const E2E_CODEX_EXEC_PATCH_FIXTURE = path.join(__dirname, 'fixtures', 'e2e-codex-exec-patch.jsonl');
+const CODEX_EXEC_PATCH = [
+  '*** Begin Patch',
+  '*** Add File: src/service.ts',
+  '+export const ok = true;',
+  '+export const version = "1.0.0";',
+  '+export const description = "Service module that wires the session index to the exported API surface and keeps the public contract stable across releases";',
+  '*** Update File: src/index.ts',
+  '@@',
+  "+export * from './service.js';",
+  '*** End Patch',
+].join('\n');
 const CLAUDE_FIXTURE = path.join(__dirname, 'fixtures', 'claude-session.jsonl');
 const FACTORY_FIXTURE = path.join(__dirname, 'fixtures', 'factory-session.jsonl');
 
@@ -324,8 +335,8 @@ describe('Milestone 1: Codex Deep Tool & Patch Parsing (Issue #7)', () => {
     );
     expect(patchMsg).toBeDefined();
     const patchInput = String(patchMsg!.blocks[0].input.patch || '');
-    expect(patchInput).toContain('*** Add File: src/service.ts');
-    expect(patchInput).toContain('*** Update File: src/index.ts');
+    expect(CODEX_EXEC_PATCH.length).toBeGreaterThan(300);
+    expect(patchInput).toBe(CODEX_EXEC_PATCH);
     expect(patchMsg!.content).toBe('Tool: apply_patch');
   });
 
@@ -781,6 +792,21 @@ describe('Codex exec review regressions', () => {
     expect(result.patchContent).toBe(patch);
     expect(result.args).toEqual({ patch });
     expect(JSON.stringify(result.args)).toBe(JSON.stringify({ patch }));
+  });
+
+  it('cubic 4244115931 uses a fixture patch beyond the truncation boundary with exact equality', async () => {
+    const session = await parseCodexSession(CODEX_EXEC_FIXTURE);
+    const input = session.messages.find((message) => message.blocks[0].name === 'apply_patch')!.blocks[0].input;
+    expect(input.patch).toBe(CODEX_EXEC_PATCH);
+    expect((input.patch as string).length).toBeGreaterThan(300);
+  });
+
+  it('cubic 4244115973 records a valid Add File section without hunk markers', () => {
+    const call = fs.readFileSync(CODEX_EXEC_FIXTURE, 'utf8').trim().split('\n').map((line) => JSON.parse(line)).find((record) => record.payload?.call_id === 'c2' && record.payload.type === 'custom_tool_call');
+    const patch = unrollCodexExec(call.payload.input).args.patch as string;
+    const addSection = patch.split('*** Add File: src/service.ts\n')[1].split('*** Update File:')[0];
+    expect(addSection).not.toContain('@@');
+    expect(addSection.trim().split('\n').every((line) => line.startsWith('+'))).toBe(true);
   });
 
 });
