@@ -718,4 +718,20 @@ describe('Codex exec review regressions', () => {
     expect(unrollCodexExec('await tools.other_tool({count:2, enabled:true, value:null, label:"a,b", dynamic:compute()});')).toMatchObject({ toolName: 'other_tool', args: { count: 2, enabled: true, value: null, label: 'a,b' } });
   });
 
+  it.each([
+    ['git-quoted', ['src/with space.ts']],
+    ['real-a-directory', ['a/test.txt']],
+    ['hunk-path-false-positive', ['real.txt']],
+    ['null-path', ['null']],
+    ['comma-path', ['name,']],
+  ])('F5 preserves exact file paths for %s', async (id, files) => {
+    expect((await regressionSession(id as string)).stats.filesModified).toEqual(files);
+  });
+
+  it('F5 strips exactly one git-side prefix and drops only diff null sentinels', () => {
+    expect(extractFilesFromPatch('diff --git "a/a/my file.txt" "b/a/my file.txt"\n--- /dev/null\n+++ "b/a/my file.txt"\n@@ -0,0 +1 @@\n+x')).toEqual(['a/my file.txt']);
+    expect(extractFilesFromPatch('*** Add File: b/native;\n+x\n*** Add File: /dev/null\n+x')).toEqual(['b/native;', '/dev/null']);
+    expect(extractFilesFromPatch('*** Update File: real.txt\n@@\n--- a/bogus\n+++ b/bogus')).toEqual(['real.txt']);
+  });
+
 });

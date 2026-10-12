@@ -527,59 +527,44 @@ export function parseToolOutputError(rawOutput: unknown): boolean {
 
 // ── File extraction from apply_patch ────────────────────────────────────────
 
-const PATCH_FILE_RE = /\*{3}\s+(?:Add|Update|Delete)\s+File:?\s+([^\r\n]+)/gi;
-const GIT_DIFF_RE = /(?:^|\n)diff\s+--git\s+(?:a\/|"?a\/)?([^\r\n\t\s"]+|"[^"]+")\s+(?:b\/|"?b\/)?([^\r\n\t\s"]+|"[^"]+")/gi;
-const DIFF_OLD_FILE_RE = /(?:^|\n)---\s+(?:a\/|"?a\/)?([^\r\n\t]+)/gi;
-const DIFF_NEW_FILE_RE = /(?:^|\n)\+\+\+\s+(?:b\/|"?b\/)?([^\r\n\t]+)/gi;
-
-function cleanDiffPath(rawPath: string): string {
-  let p = rawPath.split('\t')[0].trim();
-  p = p.replace(/^["'`]|["'`]$/g, '').trim();
-  p = p.replace(/^[ab]\//, '');
-  p = p.replace(/[,;]+$/, '').trim();
-  return p;
-}
-
-function isNullDevice(p: string): boolean {
-  return p === '/dev/null' || p === 'dev/null' || p === 'null' || p === '';
-}
-
 export function extractFilesFromPatch(input: string): string[] {
   if (!input || typeof input !== 'string') return [];
-  const files: string[] = [];
-  const text = input.replace(/\\n/g, '\n');
-
-  const addFile = (raw: string) => {
-    const filePath = cleanDiffPath(raw);
-    if (filePath && !isNullDevice(filePath) && !files.includes(filePath)) {
-      files.push(filePath);
+  const files = new Set<string>();
+  const lines = input.split(/\r?\n/);
+  let gitHeader = false;
+  let inHunk = false;
+  const addDiffPath = (raw: string) => {
+    let file = raw.split('\t')[0].trim();
+    if (file.startsWith('"') && file.endsWith('"')) {
+      const decoded = safeParseJson(file);
+      file = typeof decoded === 'string' ? decoded : file.slice(1, -1);
     }
+    if (!file || file === '/dev/null') return;
+    if (gitHeader) file = file.replace(/^[ab]\//, '');
+    files.add(file);
   };
-
-  let m: RegExpExecArray | null;
-
-  PATCH_FILE_RE.lastIndex = 0;
-  while ((m = PATCH_FILE_RE.exec(text)) !== null) {
-    addFile(m[1]);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const native = /^\*{3}\s+(?:Add|Update|Delete)\s+File:?\s+([^\r\n]+)$/i.exec(line);
+    if (native) {
+      // Native patch paths are literal, not git-side paths or diff sentinels.
+      files.add(native[1].trim());
+      gitHeader = false;
+      inHunk = false;
+    } else if (/^diff\s+--git\s+/.test(line)) {
+      gitHeader = true;
+      inHunk = false;
+      const paths = line.replace(/^diff\s+--git\s+/, '').match(/"(?:[^"\\]|\\.)*"|\S+/g);
+      if (paths?.length === 2) paths.forEach(addDiffPath);
+    } else if (line.startsWith('@@')) {
+      inHunk = true;
+    } else if (!inHunk && line.startsWith('--- ') && lines[i + 1]?.startsWith('+++ ')) {
+      // Unified-diff headers must be a pair before the hunk, never hunk text.
+      addDiffPath(line.slice(4));
+      addDiffPath(lines[++i].slice(4));
+    }
   }
-
-  GIT_DIFF_RE.lastIndex = 0;
-  while ((m = GIT_DIFF_RE.exec(text)) !== null) {
-    addFile(m[1]);
-    addFile(m[2]);
-  }
-
-  DIFF_OLD_FILE_RE.lastIndex = 0;
-  while ((m = DIFF_OLD_FILE_RE.exec(text)) !== null) {
-    addFile(m[1]);
-  }
-
-  DIFF_NEW_FILE_RE.lastIndex = 0;
-  while ((m = DIFF_NEW_FILE_RE.exec(text)) !== null) {
-    addFile(m[1]);
-  }
-
-  return files;
+  return [...files];
 }
 
 // ── Tool-call / tool-output type guards ─────────────────────────────────────
