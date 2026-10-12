@@ -108,7 +108,7 @@ export async function read(ref: SessionRef, opts?: ReadOptions): Promise<ReadEnv
     messages = filterByRole(messages, roles);
   }
 
-  const totalMessages = messages.length;
+  const totalMessages = session.messages.length;
   const tokenBudget = opts?.tokens ?? getDefaultTokenBudget();
   const preset = opts?.preset ? getPreset(opts.preset) : undefined;
   const pendingToolCalls = findTurnPendingToolCalls(session.messages);
