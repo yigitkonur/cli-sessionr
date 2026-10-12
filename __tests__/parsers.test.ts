@@ -349,3 +349,8 @@ describe('Claude rawLineIndex preservation across de-duplication (Issue #15)', (
   });
 });
 
+
+it('20-A documents adapter-specific raw line index semantics', () => {
+  const types = fs.readFileSync(path.join(__dirname, '..', 'src', 'types.ts'), 'utf8');
+  expect(types).toMatch(/Claude: physical zero-based JSONL line; other adapters may use parsed-record indices/);
+});
