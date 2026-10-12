@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { parseCodexSession } from '../src/parsers/codex.js';
 import { parseClaudeSession } from '../src/parsers/claude.js';
@@ -300,3 +302,39 @@ describe('Source aliases', () => {
     expect(adapter!.name).toBe('factory');
   });
 });
+
+describe('Claude mid-turn absorbed commands and turn duration (Issue #14)', () => {
+  it('ingests queued_command attachment mid-turn and captures turn_duration for durationMs', async () => {
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:01.000Z', promptSource: 'typed', origin: { kind: 'human' }, message: { role: 'user', content: 'run the tests' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'sleep 5' } }] } }),
+      JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: '2026-01-01T00:00:03.000Z', content: 'also run the linter' }),
+      JSON.stringify({ type: 'attachment', uuid: 'x1', timestamp: '2026-01-01T00:00:04.000Z', attachment: { type: 'queued_command', prompt: 'also run the linter', commandMode: 'prompt', origin: { kind: 'human' } } }),
+      JSON.stringify({ type: 'queue-operation', operation: 'remove', timestamp: '2026-01-01T00:00:04.000Z', content: 'also run the linter', reason: 'absorbed_mid_turn' }),
+      JSON.stringify({ type: 'user', uuid: 'u2', timestamp: '2026-01-01T00:00:05.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a2', timestamp: '2026-01-01T00:00:06.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'done, tests and linter ran' }] } }),
+      JSON.stringify({ type: 'system', subtype: 'turn_duration', uuid: 's1', timestamp: '2026-01-01T00:00:07.000Z', durationMs: 6000 }),
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-issue-14-'));
+    const filePath = path.join(tmpDir, 'test-synth-14.jsonl');
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+
+    try {
+      const session = await parseClaudeSession(filePath);
+
+      // Acceptance: yields two user messages ('run the tests', then 'also run the linter' marked as absorbed mid-turn)
+      const userMsgs = session.messages.filter((m) => m.role === 'user');
+      expect(userMsgs.length).toBe(2);
+      expect(userMsgs[0].content).toBe('run the tests');
+      expect(userMsgs[1].content).toBe('also run the linter');
+      expect(userMsgs[1].source).toBe('queued');
+
+      // Acceptance: turn end with durationMs: 6000
+      expect(session.stats.durationMs).toBe(6000);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+

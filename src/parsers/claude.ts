@@ -4,6 +4,7 @@ import * as os from 'os';
 
 import type {
   ContentBlock,
+  MessageSource,
   NormalizedMessage,
   NormalizedSession,
   SessionListEntry,
@@ -22,6 +23,7 @@ type RawType =
   | 'user'
   | 'assistant'
   | 'system'
+  | 'attachment'
   | 'queue-operation'
   | 'file-history-snapshot'
   | 'progress'
@@ -65,6 +67,15 @@ interface RawLine {
   model?: string;
   isCompactSummary?: boolean;
   isMeta?: boolean;
+  attachment?: {
+    type?: string;
+    prompt?: string;
+    timestamp?: string;
+    commandMode?: string;
+    origin?: { kind?: string };
+    [key: string]: unknown;
+  };
+  durationMs?: number;
   message?: RawMessage;
   [key: string]: unknown;
 }
@@ -189,9 +200,15 @@ interface ExplodedMessage {
   blocks: ContentBlock[];
   timestamp: Date;
   rawLineIndex: number;
+  source?: MessageSource;
 }
 
 function shouldSkipLine(line: RawLine): boolean {
+  // Allow queued_command attachments mid-turn
+  if (line.type === 'attachment') {
+    return line.attachment?.type !== 'queued_command';
+  }
+
   // Skip non-conversation types
   if (
     line.type === 'system' ||
@@ -216,6 +233,21 @@ function shouldSkipLine(line: RawLine): boolean {
   if (line.isCompactSummary) return true;
 
   return false;
+}
+
+function explodeAttachmentMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
+  const ts = new Date(line.attachment?.timestamp || line.timestamp);
+  const prompt = line.attachment?.prompt || '[queued command]';
+  return [
+    {
+      role: 'user',
+      content: prompt,
+      blocks: [{ type: 'text', text: prompt }],
+      timestamp: ts,
+      rawLineIndex: lineIndex,
+      source: 'queued',
+    },
+  ];
 }
 
 function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
@@ -521,9 +553,34 @@ function computeStats(
     }
   }
 
-  // Duration from first to last timestamp
+  // Duration: captured from system/turn_duration records or fallback to message timestamps
+  let turnDurationSum = 0;
+  let hasTurnDuration = false;
+  for (const line of dedupedLines) {
+    if (
+      line.type === 'system' &&
+      (line.subtype === 'turn_duration' ||
+        line.kind === 'turn_duration' ||
+        line.durationMs !== undefined ||
+        (line as any).duration_ms !== undefined)
+    ) {
+      const dur =
+        typeof line.durationMs === 'number'
+          ? line.durationMs
+          : typeof (line as any).duration_ms === 'number'
+            ? (line as any).duration_ms
+            : undefined;
+      if (typeof dur === 'number' && !isNaN(dur)) {
+        turnDurationSum += dur;
+        hasTurnDuration = true;
+      }
+    }
+  }
+
   let durationMs: number | undefined;
-  if (messages.length >= 2) {
+  if (hasTurnDuration) {
+    durationMs = turnDurationSum;
+  } else if (messages.length >= 2) {
     const first = messages[0]!.timestamp.getTime();
     const last = messages[messages.length - 1]!.timestamp.getTime();
     if (last > first) durationMs = last - first;
@@ -576,6 +633,8 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
       exploded.push(...explodeAssistantMessage(line, i));
     } else if (line.type === 'user') {
       exploded.push(...explodeUserMessage(line, i));
+    } else if (line.type === 'attachment' && line.attachment?.type === 'queued_command') {
+      exploded.push(...explodeAttachmentMessage(line, i));
     }
   }
 
@@ -587,6 +646,7 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     content: e.content,
     blocks: e.blocks,
     rawLineIndex: e.rawLineIndex,
+    ...(e.source ? { source: e.source } : {}),
   }));
 
   // 5. Timestamps for metadata — use raw event timestamps so system lines
