@@ -10,6 +10,8 @@ import {
   getAntigravityDir,
 } from '../src/parsers/antigravity.js';
 import { resolveSource, getAdapter } from '../src/parsers/registry.js';
+import { getResumeHint } from '../src/resume.js';
+import { buildResumeCommand } from '../src/runners.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'antigravity-session');
@@ -267,4 +269,23 @@ describe('Antigravity transcript regressions', () => {
     }
   });
 
+});
+
+
+describe('Antigravity resume hints', () => {
+  it.each([
+    ['two words', "'two words'"],
+    ['id; printf injected; #', "'id; printf injected; #'"],
+    ['$(printf injected)', "'$(printf injected)'"],
+    ["it's a session", "'it'\\''s a session'"],
+  ])('quotes session id %s as a literal and mirrors the unverified runner form', (id, literal) => {
+    const hint = getResumeHint('antigravity', id);
+    expect(hint.resume).toContain(`send ${literal} -f prompt.md --source antigravity`);
+    expect(hint.resume_async).toBe(`${hint.resume} --async`);
+    const runner = buildResumeCommand('antigravity', id, 'prompt text');
+    expect(runner.args).toEqual(['--resume', id, 'prompt text']);
+    expect(hint.direct).toBe(`${runner.bin} --resume ${literal} "$(cat prompt.md)"`);
+    expect(hint.verified).toBe(false);
+    expect(getResumeHint('codex', id).resume).toContain(`send ${literal} -f prompt.md`);
+  });
 });

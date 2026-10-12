@@ -56,13 +56,17 @@ const TOOL_DIRECTS: Record<SessionSource, ToolDirect | null> = {
     verified: true,
   },
   antigravity: {
-    cmd: (id) => `antigravity --resume ${id} -p "$(cat prompt.md)"`,
-    verified: true,
+    cmd: (id) => `antigravity --resume ${shellQuote(id)} "$(cat prompt.md)"`,
+    verified: false,
   },
 };
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 export function getResumeHint(source: SessionSource, sessionId: string): ResumeHint {
-  const base = `${cmdPrefix()} send ${sessionId} -f prompt.md --source ${source}`;
+  const base = `${cmdPrefix()} send ${shellQuote(sessionId)} -f prompt.md --source ${source}`;
   const tool = TOOL_DIRECTS[source];
 
   const defaultTip = 'Write your prompt to prompt.md, then run resume. ' +
