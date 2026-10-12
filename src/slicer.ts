@@ -124,8 +124,8 @@ export function sliceByPage(
     range: { from: firstIdx, to: lastIdx },
     has_more_before: pageIdx > 0,
     has_more_after: pageIdx < totalPages - 1,
-    cursor_before: pageIdx > 0 ? firstIdx - 1 : null,
-    cursor_after: pageIdx < totalPages - 1 ? lastIdx + 1 : null,
+    cursor_before: pageIdx > 0 ? firstIdx : null,
+    cursor_after: pageIdx < totalPages - 1 ? lastIdx : null,
     cursor: { prev: null, next: null, first: null },
     page: { current: pageIdx + 1, total: totalPages },
   };
@@ -190,8 +190,8 @@ export function sliceByTokenBudget(
     range: { from: firstIdx, to: lastIdx },
     has_more_before: firstIdx > 1,
     has_more_after: lastIdx < totalMessages,
-    cursor_before: firstIdx > 1 ? firstIdx - 1 : null,
-    cursor_after: lastIdx < totalMessages ? lastIdx + 1 : null,
+    cursor_before: firstIdx > 1 ? firstIdx : null,
+    cursor_after: lastIdx < totalMessages ? lastIdx : null,
     cursor: { prev: null, next: null, first: null },
     partial: firstIdx > 1 || lastIdx < totalMessages,
   };

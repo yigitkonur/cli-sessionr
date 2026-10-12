@@ -426,16 +426,66 @@ export async function readCommand(
     // Cursor-based pagination: --before / --after override positional from/to
     let from: number;
     let to: number;
+    const isCursorQuery = opts?.after != null || opts?.before != null;
 
     if (opts?.before != null) {
-      to = opts.before;
+      // Issue #11: strictly exclusive before (< opts.before)
       from = 1;
+      to = opts.before - 1;
     } else if (opts?.after != null) {
-      from = opts.after;
-      to = messages.length;
+      // Issue #11: strictly exclusive after (> opts.after)
+      from = opts.after + 1;
+      to = totalMessages;
     } else {
       from = fromStr ? parseInt(fromStr, 10) : 1;
-      to = toStr ? parseInt(toStr, 10) : messages.length;
+      to = toStr ? parseInt(toStr, 10) : totalMessages;
+    }
+
+    // Boundary query on cursor pagination (e.g. --after totalMessages or --before 1)
+    if (isCursorQuery && (from > totalMessages || to < 1 || from > to)) {
+      const emptyMeta: SliceMeta = {
+        session_id: session.id,
+        source: session.source,
+        total_messages: totalMessages,
+        total_tokens_estimate: estimateSessionTokens(messages),
+        returned_tokens_estimate: 0,
+        token_budget: tokenBudget,
+        anchor: requestedAnchor ?? 'head',
+        range: { from: 0, to: 0 },
+        has_more_before: opts?.before != null ? false : (from > 1),
+        has_more_after: opts?.after != null ? false : (to < totalMessages),
+        cursor_before: null,
+        cursor_after: null,
+        cursor: { next: null, prev: null, first: null },
+        partial: false,
+      };
+      let meta = injectNextAction(emptyMeta);
+      meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
+      meta = attachETag(meta, session, {
+        preset,
+        tokenBudget,
+        anchor: requestedAnchor ?? 'head',
+        search: opts?.search,
+        page: undefined,
+        format: outputFormat,
+      });
+
+      if (outputFormat === 'json' || outputFormat === 'jsonl') {
+        emitReadEnvelope({
+          session,
+          messages: [],
+          meta,
+          summary,
+          includeSummary: shouldIncludeSummary(opts),
+          outputFormat,
+          timing: opts?.timing,
+          preset,
+          detail,
+        });
+      } else {
+        process.stdout.write(`No messages found in requested cursor range.\n`);
+      }
+      return;
     }
 
     if (from < 1 || to > totalMessages || from > to) {
@@ -445,10 +495,14 @@ export async function readCommand(
     // Apply range first (positional/cursor)
     let sliced = messages.slice(from - 1, to);
 
-    // Always apply token budget (8K max enforced)
+    // Directional anchor defaulting:
     const anchor = opts?.search
-      ? 'search' as const
-      : (requestedAnchor ?? 'head');
+      ? ('search' as const)
+      : (opts?.anchor
+          ? requestedAnchor
+          : (opts?.before != null
+              ? 'tail'
+              : (opts?.after != null ? 'head' : (requestedAnchor ?? 'head'))));
 
     const sliceResult = sliceByTokenBudget(
       sliced,

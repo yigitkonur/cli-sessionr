@@ -126,3 +126,27 @@ describe('filterByRole', () => {
     expect(filtered).toHaveLength(6);
   });
 });
+
+describe('Exclusive cursor semantics (Issue #11)', () => {
+  it('cursor_after matches range.to and agrees with cursor.next.command', () => {
+    const msgs = makeMsgs(20);
+    const singleTokens = estimateMessageTokens(msgs[0]);
+    const budget = singleTokens * 4;
+    const result = sliceByTokenBudget(msgs, budget, 'sess1', 'claude', 'head');
+
+    expect(result.meta.has_more_after).toBe(true);
+    expect(result.meta.cursor_after).toBe(result.meta.range.to);
+    expect(result.meta.cursor?.next?.command).toContain(`--after ${result.meta.cursor_after}`);
+  });
+
+  it('cursor_before matches range.from and agrees with cursor.prev.command', () => {
+    const msgs = makeMsgs(20);
+    const singleTokens = estimateMessageTokens(msgs[0]);
+    const budget = singleTokens * 4;
+    const result = sliceByTokenBudget(msgs, budget, 'sess1', 'claude', 'tail');
+
+    expect(result.meta.has_more_before).toBe(true);
+    expect(result.meta.cursor_before).toBe(result.meta.range.from);
+    expect(result.meta.cursor?.prev?.command).toContain(`--before ${result.meta.cursor_before}`);
+  });
+});
