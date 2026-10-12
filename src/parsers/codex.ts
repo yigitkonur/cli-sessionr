@@ -289,6 +289,33 @@ function extractPatchString(rawInput: string, code: string, callInput: string): 
   return value ? decode(value) : undefined;
 }
 
+// Recover only literal object properties; dynamic expressions remain in raw input.
+function parseStaticToolArgs(input: string): Record<string, unknown> {
+  const parsed = safeParseJson(input.trim());
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  const source = input.trim();
+  if (!source.startsWith('{') || !source.endsWith('}')) return {};
+  const code = maskJsNonCode(source);
+  const properties: [string, unknown][] = [];
+  let start = 1;
+  let depth = 0;
+  for (let i = 1; i < source.length; i++) {
+    if (depth === 0 && (code[i] === ',' || i === source.length - 1)) {
+      const property = source.slice(start, i).trim().match(/^(?:([\w$]+)|"([^"\\]+)"|'([^'\\]+)')\s*:\s*([\s\S]+)$/);
+      if (property) {
+        const key = property[1] ?? property[2] ?? property[3];
+        const value = property[4].trim();
+        const literal = /^(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|`((?:[^`\\]|\\[\s\S])*)`)$/s.exec(value);
+        if (literal) properties.push([key, unescapeJsString(literal[1] ?? literal[2] ?? literal[3])]);
+        else if (/^(?:-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|true|false|null)$/i.test(value)) properties.push([key, JSON.parse(value)]);
+      }
+      start = i + 1;
+    } else if ('{[('.includes(code[i])) depth++;
+    else if ('}])'.includes(code[i])) depth--;
+  }
+  return Object.fromEntries(properties);
+}
+
 export function unrollCodexExec(rawInput: string): UnrolledExec {
   const trimmed = rawInput.trim();
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
@@ -404,6 +431,15 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
         raw: rawInput,
       },
       patchContent: patch,
+    };
+  }
+
+  const innerCall = invocations[0];
+  if (innerCall) {
+    return {
+      toolName: innerCall.name,
+      args: { ...parseStaticToolArgs(invocationInput(rawInput, code, innerCall.start)), raw: rawInput },
+      patchContent,
     };
   }
 

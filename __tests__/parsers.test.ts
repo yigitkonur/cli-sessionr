@@ -705,4 +705,17 @@ describe('Codex exec review regressions', () => {
     expect(unrollCodexExec('const quoted = "tools.exec_command({cmd:wrong})";').toolName).toBe('exec');
   });
 
+  it('F4 keeps write_stdin and its static session reference from records 5-6', async () => {
+    const session = await regressionSession('poll-name');
+    expect(session.messages[0].blocks[0].name).toBe('write_stdin');
+    expect(session.messages[0].blocks[0].input).toMatchObject({ session_id: 123, chars: '' });
+    expect(session.stats.toolFrequency).toEqual([{ name: 'write_stdin', count: 1, errors: 1 }]);
+  });
+
+  it('F4 keeps arbitrary inner tool names and static JSON or scalar arguments', () => {
+    const plan = { explanation: 'next', plan: [{ step: 'test', status: 'in_progress' }] };
+    expect(unrollCodexExec(`await tools.update_plan(${JSON.stringify(plan)});`)).toMatchObject({ toolName: 'update_plan', args: plan });
+    expect(unrollCodexExec('await tools.other_tool({count:2, enabled:true, value:null, label:"a,b", dynamic:compute()});')).toMatchObject({ toolName: 'other_tool', args: { count: 2, enabled: true, value: null, label: 'a,b' } });
+  });
+
 });
