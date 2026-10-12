@@ -447,3 +447,8 @@ it('19-B recognizes the exact tool-use interrupt marker without a named tool', a
   expect(session.messages.map((m) => m.source)).toEqual(['interrupt', 'prompt']);
   expect(session.stats.byRole.user).toBe(1);
 });
+
+it('19-E documents interrupt linkage as deferred to the turns model', () => {
+  const types = fs.readFileSync(path.join(__dirname, '..', 'src', 'types.ts'), 'utf8');
+  expect(types).toContain('Interrupt-to-prompt references are deferred to the turns model (Issue #25).');
+});
