@@ -271,7 +271,11 @@ describe('Turn Execution Facts (Issue #13)', () => {
           },
         ],
       },
-      makeMsg(5, 'assistant', 'Done with edits.'),
+      ...['call-write-1', 'call-edit-1', 'call-del-1'].map((toolUseId, i): NormalizedMessage => ({
+        ...makeMsg(5 + i, 'tool_result', 'Success'),
+        blocks: [{ type: 'tool_result', toolUseId, isError: false, content: 'Success' }],
+      })),
+      makeMsg(8, 'assistant', 'Done with edits.'),
     ];
 
     const session = makeSession(msgs);
@@ -362,4 +366,21 @@ describe('Turn Execution Facts (Issue #13)', () => {
     expect(turn.pendingToolCalls).toHaveLength(1);
     expect(turn.pendingToolCalls![0].name).toBe('AskUserQuestion');
   });
+});
+
+
+it('reports two successful edits and a non-zero test exit in the same turn (Issue #13 acceptance)', () => {
+  const messages: NormalizedMessage[] = [makeMsg(1,'user','Edit both files and test')];
+  for (const [id,name,input,isError,content] of [
+    ['edit-a','Edit',{file_path:'a.ts'},false,'Success'],
+    ['edit-b','Edit',{file_path:'b.ts'},false,'Success'],
+    ['test','Bash',{command:'npm test'},true,'exit code 2'],
+  ] as const) {
+    messages.push({...makeMsg(messages.length+1,'tool_use',name),blocks:[{type:'tool_use',id,name,input}]});
+    messages.push({...makeMsg(messages.length+1,'tool_result',content),blocks:[{type:'tool_result',toolUseId:id,isError,content}]});
+  }
+  const turn=segmentTurns(messages)[0];
+  expect(turn.filesChanged.edited).toEqual(['a.ts','b.ts']);
+  expect(turn.commands[0].exitCode).toBe(2);
+  expect(turn.errorCount).toBe(1);
 });
