@@ -12,6 +12,7 @@ import type {
   CodexRateLimits,
   CodexRateLimitTier,
   MessageUsage,
+  CompactionMeta,
 } from '../types.js';
 
 import {
@@ -330,6 +331,48 @@ function isToolOutputType(type: string): boolean {
   return type === 'function_call_output' || type === 'custom_tool_call_output';
 }
 
+function compactionText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value || undefined;
+  if (!Array.isArray(value)) return undefined;
+  const text = value.filter(b => b && ['text', 'input_text', 'output_text'].includes(b.type) && typeof b.text === 'string').map(b => b.text).join('\n');
+  return text || undefined;
+}
+
+function compactionRecord(event: CodexEvent): { meta: CompactionMeta; representation: 'boundary' | 'item'; id?: string } | undefined {
+  let p = event.payload ?? {};
+  let representation: 'boundary' | 'item' = 'boundary';
+  const wrapped = event.type === 'event_msg' || event.type === 'response_item';
+  if (event.type === 'event_msg' && p.type === 'item_completed' && (p.item as Record<string, unknown> | undefined)?.type === 'ContextCompaction') {
+    p = p.item as Record<string, unknown>;
+    representation = 'item';
+  } else if (!['compacted', 'context_compaction'].includes(event.type) && !(wrapped && ['compacted', 'context_compaction', 'ContextCompaction'].includes(String(p.type)))) return undefined;
+
+  let summary = compactionText(p.summary) ?? compactionText(p.message);
+  if (!summary && Array.isArray(p.replacement_history)) {
+    for (const item of p.replacement_history) {
+      if (!item || !['compaction', 'context_compaction'].includes(item.type)) continue;
+      summary = compactionText(item.summary) ?? compactionText(item.message) ?? compactionText(item.content);
+      if (summary) break;
+    }
+  }
+  const trigger = typeof p.trigger === 'string' ? p.trigger : undefined;
+  const pre = p.pre_tokens ?? p.preTokens;
+  const post = p.post_tokens ?? p.postTokens;
+  const preTokens = typeof pre === 'number' ? pre : undefined;
+  const postTokens = typeof post === 'number' ? post : undefined;
+  const id = typeof p.compaction_response_id === 'string' ? p.compaction_response_id : typeof p.id === 'string' ? p.id : undefined;
+  return { representation, id, meta: {
+    ...(trigger !== undefined ? { trigger } : {}),
+    ...(preTokens !== undefined ? { preTokens } : {}),
+    ...(postTokens !== undefined ? { postTokens } : {}),
+    ...(summary !== undefined ? { summary } : {}),
+  } };
+}
+
+function compactionContent(meta: CompactionMeta): string {
+  return `Context compacted${meta.preTokens !== undefined && meta.postTokens !== undefined ? ` from ${meta.preTokens} to ${meta.postTokens} tokens` : ''}`;
+}
+
 // ── parseCodexSession ───────────────────────────────────────────────────────
 
 export async function parseCodexSession(filePath: string): Promise<NormalizedSession> {
@@ -520,7 +563,9 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
     toolCounts.set(name, existing);
   }
 
+  let lastCompaction: { message: NormalizedMessage; representation: 'boundary' | 'item'; id?: string; at: number; lineIndex: number } | undefined;
   function pushMessage(msg: Omit<NormalizedMessage, 'index'>): void {
+    if (msg.kind !== 'compaction') lastCompaction = undefined;
     messages.push({ ...settings.get(msg.rawLineIndex ?? 0), ...msg, index: messages.length + 1 });
   }
 
@@ -530,39 +575,24 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
 
     // ── compaction events ──────────────────────────────────────────────
 
-    if (
-      event.type === 'compacted' ||
-      event.type === 'context_compaction' ||
-      (event.type === 'event_msg' &&
-        event.payload &&
-        ((event.payload as Record<string, unknown>).type === 'compacted' ||
-          (event.payload as Record<string, unknown>).type === 'context_compaction'))
-    ) {
-      const p = (event.payload ?? {}) as Record<string, unknown>;
-      const trigger = typeof p.trigger === 'string' ? p.trigger : 'token_limit';
-      const preTokens = typeof p.pre_tokens === 'number' ? p.pre_tokens : typeof p.preTokens === 'number' ? p.preTokens : undefined;
-      const postTokens = typeof p.post_tokens === 'number' ? p.post_tokens : typeof p.postTokens === 'number' ? p.postTokens : undefined;
-      const summary = typeof p.summary === 'string' ? p.summary : undefined;
-
-      let content = summary || `Context compacted from ${preTokens ?? '?'} to ${postTokens ?? '?'} tokens`;
-      if (!content.includes('Compacted')) {
-        content = `Compacted historical conversation: ${content}`;
+    const compact = compactionRecord(event);
+    if (compact) {
+      const near = lastCompaction && lineIdx - lastCompaction.lineIndex <= 8 && Math.abs(ts.getTime() - lastCompaction.at) <= 1000;
+      const paired = near && (compact.representation !== lastCompaction!.representation || (compact.id !== undefined && compact.id === lastCompaction!.id));
+      if (paired) {
+        const previous = lastCompaction!.message;
+        previous.compactionMeta = { ...previous.compactionMeta, ...compact.meta };
+        previous.content = compactionContent(previous.compactionMeta);
+        previous.blocks = [{ type: 'text', text: previous.content }];
+        if (compact.representation === 'boundary') {
+          previous.rawLineIndex = lineIdx;
+          previous.timestamp = ts;
+        }
+      } else {
+        const content = compactionContent(compact.meta);
+        pushMessage({ role: 'system', timestamp: ts, content, blocks: [{ type: 'text', text: content }], rawLineIndex: lineIdx, kind: 'compaction', compactionMeta: compact.meta });
+        lastCompaction = { message: messages[messages.length - 1], representation: compact.representation, id: compact.id, at: ts.getTime(), lineIndex: lineIdx };
       }
-
-      pushMessage({
-        role: 'system',
-        timestamp: ts,
-        content,
-        blocks: [{ type: 'text', text: content }],
-        rawLineIndex: lineIdx,
-        kind: 'compaction',
-        compactionMeta: {
-          trigger,
-          preTokens,
-          postTokens,
-          summary,
-        },
-      });
       continue;
     }
 
@@ -575,34 +605,6 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
 
       // Skip developer role (system instructions injected by the CLI)
       if (pRole === 'developer') continue;
-
-      if (pType === 'context_compaction') {
-        const trigger = typeof p.trigger === 'string' ? p.trigger : 'token_limit';
-        const preTokens = typeof p.pre_tokens === 'number' ? p.pre_tokens : typeof p.preTokens === 'number' ? p.preTokens : undefined;
-        const postTokens = typeof p.post_tokens === 'number' ? p.post_tokens : typeof p.postTokens === 'number' ? p.postTokens : undefined;
-        const summary = typeof p.summary === 'string' ? p.summary : undefined;
-
-        let content = summary || `Context compacted from ${preTokens ?? '?'} to ${postTokens ?? '?'} tokens`;
-        if (!content.includes('Compacted')) {
-          content = `Compacted historical conversation: ${content}`;
-        }
-
-        pushMessage({
-          role: 'system',
-          timestamp: ts,
-          content,
-          blocks: [{ type: 'text', text: content }],
-          rawLineIndex: lineIdx,
-          kind: 'compaction',
-          compactionMeta: {
-            trigger,
-            preTokens,
-            postTokens,
-            summary,
-          },
-        });
-        continue;
-      }
 
       // ── message ─────────────────────────────────────────────────────
 

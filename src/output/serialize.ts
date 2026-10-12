@@ -61,6 +61,12 @@ export function serializeMessage(
   const resolved: SerializeMessageOpts =
     typeof opts === 'string' ? { preset: opts } : (opts ?? {});
 
+  if (m.kind === 'compaction') {
+    const { preTokens, postTokens } = m.compactionMeta ?? {};
+    const content = `Context compacted${preTokens !== undefined && postTokens !== undefined ? ` from ${preTokens} to ${postTokens} tokens` : ''}`;
+    m = { ...m, content, blocks: [{ type: 'text', text: content }] };
+  }
+
   const msg: Record<string, unknown> = {
     index: m.index,
     role: m.role,
@@ -79,23 +85,19 @@ export function serializeMessage(
     msg.kind = m.kind;
   }
   if (m.compactionMeta !== undefined) {
-    msg.compaction_meta = m.compactionMeta;
+    const { trigger, preTokens, postTokens, summary } = m.compactionMeta;
+    const showSummary = resolved.preset === 'full' && resolved.detail !== 'meta';
+    msg.compaction_meta = {
+      ...(trigger !== undefined ? { trigger } : {}),
+      ...(preTokens !== undefined ? { pre_tokens: preTokens } : {}),
+      ...(postTokens !== undefined ? { post_tokens: postTokens } : {}),
+      ...(showSummary && summary !== undefined ? { summary } : {}),
+    };
     if (m.kind === 'compaction') {
-      if (m.compactionMeta.trigger !== undefined) {
-        msg.trigger = m.compactionMeta.trigger;
-      }
-      if (m.compactionMeta.preTokens !== undefined) {
-        msg.pre_tokens = m.compactionMeta.preTokens;
-      }
-      if (m.compactionMeta.postTokens !== undefined) {
-        msg.post_tokens = m.compactionMeta.postTokens;
-      }
-      if (
-        m.compactionMeta.summary !== undefined &&
-        (resolved.preset === 'verbose' || resolved.preset === 'full' || !resolved.preset)
-      ) {
-        msg.summary = m.compactionMeta.summary;
-      }
+      if (trigger !== undefined) msg.trigger = trigger;
+      if (preTokens !== undefined) msg.pre_tokens = preTokens;
+      if (postTokens !== undefined) msg.post_tokens = postTokens;
+      if (showSummary && summary !== undefined) msg.summary = summary;
     }
   }
 

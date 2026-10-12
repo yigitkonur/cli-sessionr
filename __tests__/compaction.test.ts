@@ -130,7 +130,7 @@ describe('Compaction Normalization (Issue #9)', () => {
     });
   });
 
-  it('serializes compaction fields and gates summary behind verbose/full preset', () => {
+  it('serializes compaction fields and gates summary behind full preset', () => {
     const msg = {
       index: 3,
       role: 'system' as const,
@@ -154,9 +154,9 @@ describe('Compaction Normalization (Issue #9)', () => {
     expect(serializedStandard['post_tokens']).toBe(20000);
     expect(serializedStandard['summary']).toBeUndefined();
 
-    // Verbose preset: surfaces summary
+    // Verbose preset: summary still hidden
     const serializedVerbose = serializeMessage(msg, { preset: 'verbose' });
-    expect(serializedVerbose['summary']).toBe('Detailed summary of conversation history');
+    expect(serializedVerbose['summary']).toBeUndefined();
 
     // Full preset: surfaces summary
     const serializedFull = serializeMessage(msg, { preset: 'full' });

@@ -248,6 +248,16 @@ function shouldSkipLine(line: RawLine): boolean {
   return false;
 }
 
+function compactionSummary(line: RawLine): string | undefined {
+  const content = line.message?.content;
+  if (typeof content === 'string') return content || undefined;
+  if (Array.isArray(content)) {
+    const text = content.filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n');
+    return text || undefined;
+  }
+  return undefined;
+}
+
 function explodeCompactionMessage(
   line: RawLine,
   lineIndex: number,
@@ -262,22 +272,11 @@ function explodeCompactionMessage(
     summary?: string;
   };
 
-  const trigger = rawMeta.trigger;
+  const trigger = typeof rawMeta.trigger === 'string' ? rawMeta.trigger : undefined;
   const preTokens = typeof rawMeta.preTokens === 'number' ? rawMeta.preTokens : undefined;
   const postTokens = typeof rawMeta.postTokens === 'number' ? rawMeta.postTokens : undefined;
-  const summary =
-    overrideSummary ||
-    rawMeta.summary ||
-    (typeof line.message?.content === 'string' ? line.message.content : undefined);
-
-  let content = '';
-  if (typeof line.message?.content === 'string' && line.message.content.trim()) {
-    content = line.message.content;
-  } else if (summary) {
-    content = summary;
-  } else {
-    content = `Context compacted${preTokens != null && postTokens != null ? ` from ${preTokens} to ${postTokens} tokens` : ''}`;
-  }
+  const summary = overrideSummary ?? (typeof rawMeta.summary === 'string' ? rawMeta.summary : undefined) ?? compactionSummary(line);
+  const content = `Context compacted${preTokens !== undefined && postTokens !== undefined ? ` from ${preTokens} to ${postTokens} tokens` : ''}`;
 
   return [
     {
@@ -670,6 +669,20 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
   const exploded: ExplodedMessage[] = [];
   const usageLines = new Map<string | RawLine, RawLine>();
   const usageTargets = new Map<string | RawLine, ExplodedMessage>();
+  const pairedSummaries = new Map<number, RawLine>();
+  const consumedSummaries = new Set<RawLine>();
+  let pendingBoundary: number | undefined;
+  for (let i = 0; i < deduped.length; i++) {
+    const line = deduped[i]!;
+    if (line.isCompactSummary) {
+      if (pendingBoundary !== undefined) {
+        pairedSummaries.set(pendingBoundary, line);
+        consumedSummaries.add(line);
+      }
+      pendingBoundary = undefined;
+    } else if (isCompactionLine(line)) pendingBoundary = i;
+    else if (line.type === 'user' || line.type === 'assistant') pendingBoundary = undefined;
+  }
   let model: string | undefined;
   let reasoningEffort: string | undefined;
   let maxContext = 0;
@@ -688,17 +701,12 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     if (typeof compact?.preTokens === 'number') maxContext = Math.max(maxContext, compact.preTokens);
     contextWindow = model?.startsWith('claude-') && maxContext > 200_000 ? 1_000_000 : deriveContextWindow(model);
 
-    if (shouldSkipLine(line)) continue;
+    if (shouldSkipLine(line) || consumedSummaries.has(line)) continue;
 
     let chunks: ExplodedMessage[];
     if (isCompactionLine(line)) {
-      if ((line.subtype === 'compact_boundary' || Boolean(line.compactMetadata)) && deduped[i + 1]?.isCompactSummary) {
-        const next = deduped[i + 1]!;
-        const summary = typeof next.message?.content === 'string' ? next.message.content
-          : next.message?.content?.filter(b => b.type === 'text').map(b => b.text).join('\n');
-        chunks = explodeCompactionMessage(line, i, summary);
-        i++;
-      } else chunks = explodeCompactionMessage(line, i);
+      const paired = pairedSummaries.get(i);
+      chunks = explodeCompactionMessage(line, i, paired ? compactionSummary(paired) : undefined);
     } else chunks = line.type === 'assistant' ? explodeAssistantMessage(line, i)
       : line.type === 'user' ? explodeUserMessage(line, i) : [];
     for (const chunk of chunks) {
@@ -708,7 +716,7 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
       chunk.reasoningEffort = reasoningEffort;
       chunk.contextWindow = contextWindow;
     }
-    if (line.type === 'assistant') {
+    if (line.type === 'assistant' && !isCompactionLine(line)) {
       const key = line.message?.id || line.uuid || line;
       const target = chunks.find(m => m.role === 'assistant') ?? chunks[0];
       if (target) usageTargets.set(key, target);
