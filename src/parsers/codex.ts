@@ -343,6 +343,26 @@ function extractPatchString(rawInput: string): string | undefined {
   return undefined;
 }
 
+// Slice a call's arguments without letting later calls or unrelated objects leak in.
+function invocationInput(source: string, start: number): string {
+  let depth = 1;
+  let quote = '';
+  for (let i = start; i < source.length; i++) {
+    const ch = source[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = '';
+    } else if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+    } else if (ch === '(') {
+      depth++;
+    } else if (ch === ')' && --depth === 0) {
+      return source.slice(start, i);
+    }
+  }
+  return source.slice(start);
+}
+
 export function unrollCodexExec(rawInput: string): UnrolledExec {
   const trimmed = rawInput.trim();
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
@@ -391,14 +411,16 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
 
   // 1. Check for tools.exec_command
   if (rawInput.includes('tools.exec_command') || rawInput.includes('exec_command(')) {
+    const invocation = /(?:tools\.)?exec_command\s*\(/.exec(rawInput);
+    const callInput = invocation ? invocationInput(rawInput, invocation.index + invocation[0].length) : '';
     const cmdMatch =
-      rawInput.match(
-        /(?:cmd|command)\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
+      callInput.match(
+        /(?:\b(?:cmd|command)|"(?:cmd|command)"|'(?:cmd|command)')\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
       ) ??
-      rawInput.match(
-        /(?:tools\.)?exec_command\s*\(\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
+      callInput.match(
+        /^\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
       );
-    let cmd = '';
+    let cmd: string | undefined;
     if (cmdMatch) {
       const rawMatch = cmdMatch[1] ?? cmdMatch[2] ?? cmdMatch[3] ?? '';
       try {
@@ -413,7 +435,7 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
     }
 
     let workdir: string | undefined;
-    const wdMatch = rawInput.match(
+    const wdMatch = callInput.match(
       /workdir\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
     );
     if (wdMatch) {
@@ -429,7 +451,7 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
     return {
       toolName: 'exec_command',
       args: {
-        cmd,
+        ...(cmd !== undefined ? { cmd } : {}),
         ...(workdir ? { workdir } : {}),
         raw: rawInput,
       },

@@ -667,4 +667,21 @@ describe('Codex exec review regressions', () => {
     expect(session.messages.filter((message) => message.role === 'tool_result').map((message) => message.blocks[0].isError)).toEqual([false, true]);
     expect(session.stats.toolFrequency.find((tool) => tool.name === 'exec_command')!.errors).toBe(1);
   });
+  it('F2 accepts the quoted cmd key from record 3', () => {
+    expect(unrollCodexExec(regressionCall('quoted-key').input).args.cmd).toBe('echo hello');
+  });
+
+  it.each(['"cmd"', "'command'"])('F2 preserves long commands with the %s key', (key) => {
+    const command = 'echo ' + 'x'.repeat(350);
+    expect(unrollCodexExec(`text(await tools.exec_command({${key}:${JSON.stringify(command)}}));`).args.cmd).toBe(command);
+  });
+
+  it('F2 reads only the selected invocation and retains opaque commands without an empty cmd', () => {
+    const input = 'const unrelated = {cmd:"wrong"}; await tools.exec_command({"cmd":"right"}); await tools.exec_command({cmd:"later"});';
+    expect(unrollCodexExec(input).args.cmd).toBe('right');
+    const opaque = 'await tools.exec_command({cmd:dynamicCommand}); const unrelated = {cmd:"wrong"};';
+    expect(unrollCodexExec(opaque).args).not.toHaveProperty('cmd');
+    expect(unrollCodexExec(opaque).args.raw).toBe(opaque);
+  });
+
 });
