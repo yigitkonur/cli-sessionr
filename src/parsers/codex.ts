@@ -351,8 +351,6 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
             toolName: 'apply_patch',
             args: {
               patch,
-              input: patch,
-              raw: rawInput,
             },
             patchContent: patch,
           };
@@ -415,8 +413,6 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
       toolName: 'apply_patch',
       args: {
         patch,
-        input: patch,
-        raw: rawInput,
       },
       patchContent: patch,
     };

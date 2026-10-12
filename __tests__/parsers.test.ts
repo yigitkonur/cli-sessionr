@@ -376,7 +376,7 @@ describe('Milestone 1: Codex Deep Tool & Patch Parsing (Issue #7)', () => {
     expect(toolResults.some((r) => r.blocks[0].isError === false)).toBe(true);
   });
 
-  it('preserves untruncated commands and patches exceeding 300 characters in tool input', () => {
+  it('preserves untruncated commands exceeding 300 characters in tool input', () => {
     const longCmd = 'curl -X POST https://api.example.com/v1/deploy ' + 'a'.repeat(400);
     const jsSnippet = `const r = await tools.exec_command({ cmd: "${longCmd}" });\ntext(r.output);`;
     const unrolled = unrollCodexExec(jsSnippet);
@@ -766,6 +766,21 @@ describe('Codex exec review regressions', () => {
     const raw = '{"tool":"exec_command","command":{"dynamic":true}}';
     expect(unrollCodexExec(raw).args).not.toHaveProperty('cmd');
     expect(unrollCodexExec(raw).args.raw).toBe(raw);
+  });
+
+  it('cubic 4244115926 preserves the full long patch from records 29-30', async () => {
+    const patch = '*** Begin Patch\n*** Add File: long.txt\n+' + 'x'.repeat(600) + '\n*** End Patch';
+    const session = await regressionSession('long-patch');
+    expect(session.messages[0].blocks[0].input.patch).toBe(patch);
+  });
+
+  it.each(['direct', 'JSON', 'variable'])('F8 stores one canonical full patch for the %s wrapper', (kind) => {
+    const patch = '*** Begin Patch\n*** Add File: long.txt\n+' + 'x'.repeat(600) + '\n*** End Patch';
+    const input = kind === 'direct' ? regressionCall('long-patch').input : kind === 'JSON' ? JSON.stringify({ tool: 'apply_patch', patch }) : `const diff = ${JSON.stringify(patch)}; await tools.apply_patch(diff);`;
+    const result = unrollCodexExec(input);
+    expect(result.patchContent).toBe(patch);
+    expect(result.args).toEqual({ patch });
+    expect(JSON.stringify(result.args)).toBe(JSON.stringify({ patch }));
   });
 
 });
