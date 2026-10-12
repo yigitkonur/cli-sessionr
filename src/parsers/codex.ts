@@ -251,116 +251,42 @@ function unescapeJsString(raw: string): string {
   });
 }
 
-function extractPatchString(rawInput: string): string | undefined {
-  // 1. Direct string argument in tools.apply_patch("..." | '...' | `...`)
-  //    or tools.apply_patch({ patch: "..." | '...' | `...` })
-  const directMatch = rawInput.match(
-    /(?:tools\.)?apply_patch\s*\(\s*(?:\{\s*patch\s*:\s*)?(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
-  );
-  if (directMatch) {
-    const rawVal = directMatch[1] ?? directMatch[2] ?? directMatch[3] ?? '';
-    if (directMatch[1] !== undefined) {
-      try {
-        return JSON.parse(`"${rawVal}"`);
-      } catch {
-        return unescapeJsString(rawVal);
-      }
-    }
-    return unescapeJsString(rawVal);
-  }
-
-  // 2. Variable passed to tools.apply_patch(varName) or tools.apply_patch({ patch: varName })
-  const varCallMatch = rawInput.match(
-    /(?:tools\.)?apply_patch\s*\(\s*(?:\{\s*patch\s*:\s*)?([a-zA-Z0-9_$]+)/s,
-  );
-  if (varCallMatch) {
-    const varName = varCallMatch[1];
-    if (!['function', 'async', 'true', 'false', 'null', 'undefined'].includes(varName)) {
-      const varDefRe = new RegExp(
-        `(?:const|let|var)\\s+${varName}\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|'((?:[^'\\\\]|\\\\.)*)'|` +
-          '`((?:[^`\\\\]|\\\\.)*)`' +
-          ')',
-        's',
-      );
-      const varDefMatch = rawInput.match(varDefRe);
-      if (varDefMatch) {
-        const rawVal = varDefMatch[1] ?? varDefMatch[2] ?? varDefMatch[3] ?? '';
-        if (varDefMatch[1] !== undefined) {
-          try {
-            return JSON.parse(`"${rawVal}"`);
-          } catch {
-            return unescapeJsString(rawVal);
-          }
-        }
-        return unescapeJsString(rawVal);
-      }
-    }
-  }
-
-  // 3. Any variable assignment: const|let|var <identifier> = "..." | '...' | `...`
-  //    where variable name or value contains patch indicators
-  const anyVarRegex = /(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/gs;
-  let varMatch: RegExpExecArray | null;
-  while ((varMatch = anyVarRegex.exec(rawInput)) !== null) {
-    const varName = varMatch[1];
-    const rawVal = varMatch[2] ?? varMatch[3] ?? varMatch[4] ?? '';
-    const hasPatchContent =
-      rawVal.includes('***') ||
-      rawVal.includes('diff --git') ||
-      rawVal.includes('--- ') ||
-      rawVal.includes('+++ ');
-    if (hasPatchContent || /patch|diff/i.test(varName)) {
-      if (varMatch[2] !== undefined) {
-        try {
-          return JSON.parse(`"${rawVal}"`);
-        } catch {
-          return unescapeJsString(rawVal);
-        }
-      }
-      return unescapeJsString(rawVal);
-    }
-  }
-
-  // 4. *** Begin Patch ... *** End Patch block anywhere in input
-  const beginEndMatch = rawInput.match(/\*\*\*\s+Begin\s+Patch[\s\S]*?\*\*\*\s+End\s+Patch/i);
-  if (beginEndMatch) {
-    return unescapeJsString(beginEndMatch[0]);
-  }
-
-  // 5. Fallback: *** Add|Update|Delete File or diff --git headers
-  const headerMatch = rawInput.match(
-    /(?:\*{3}\s+(?:Add|Update|Delete)\s+File|diff\s+--git\s+)[\s\S]*?(?=(?:\*{3}\s+End\s+Patch|$))/i,
-  );
-  if (headerMatch) {
-    let patch = headerMatch[0];
-    if (rawInput.match(/\*{3}\s+End\s+Patch/i)) {
-      patch += '*** End Patch';
-    }
-    patch = patch.replace(/["'`]\s*(?:\)|;|\n)*$/, '');
-    return unescapeJsString(patch);
-  }
-
-  return undefined;
+// Keep offsets, but hide strings/templates and comments from invocation matching.
+// Transcript JavaScript is data: it must never be evaluated.
+function maskJsNonCode(source: string): string {
+  return source.replace(/"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'|`(?:[^`\\]|\\[\s\S])*`|\/\/[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$)/g,
+    (literal) => ' '.repeat(literal.length));
 }
 
 // Slice a call's arguments without letting later calls or unrelated objects leak in.
-function invocationInput(source: string, start: number): string {
+function invocationInput(source: string, code: string, start: number): string {
   let depth = 1;
-  let quote = '';
-  for (let i = start; i < source.length; i++) {
-    const ch = source[i];
-    if (quote) {
-      if (ch === '\\') i++;
-      else if (ch === quote) quote = '';
-    } else if (ch === '"' || ch === "'" || ch === '`') {
-      quote = ch;
-    } else if (ch === '(') {
-      depth++;
-    } else if (ch === ')' && --depth === 0) {
-      return source.slice(start, i);
-    }
+  for (let i = start; i < code.length; i++) {
+    if (code[i] === '(') depth++;
+    else if (code[i] === ')' && --depth === 0) return source.slice(start, i);
   }
   return source.slice(start);
+}
+
+function extractPatchString(rawInput: string, code: string, callInput: string): string | undefined {
+  const argument = callInput.replace(/^\s*\{\s*(?:patch|"patch"|'patch')\s*:\s*/, '').trimStart();
+  const literal = /^(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|`((?:[^`\\]|\\[\s\S])*)`)/;
+  const decode = (match: RegExpMatchArray): string => {
+    const raw = match[1] ?? match[2] ?? match[3] ?? '';
+    if (match[1] !== undefined) {
+      try { return JSON.parse(`"${raw}"`); } catch { /* JavaScript, not JSON */ }
+    }
+    return unescapeJsString(raw);
+  };
+  const direct = argument.match(literal);
+  if (direct) return decode(direct);
+  const variable = /^([a-zA-Z_$][\w$]*)\s*(?:[,}]|$)/.exec(argument);
+  if (!variable) return undefined;
+  const escapedName = variable[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const definition = new RegExp(`\\b(?:const|let|var)\\s+${escapedName}\\s*=`).exec(code);
+  if (!definition) return undefined;
+  const value = rawInput.slice(definition.index + definition[0].length).trimStart().match(literal);
+  return value ? decode(value) : undefined;
 }
 
 export function unrollCodexExec(rawInput: string): UnrolledExec {
@@ -409,10 +335,18 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
     }
   }
 
-  // 1. Check for tools.exec_command
-  if (rawInput.includes('tools.exec_command') || rawInput.includes('exec_command(')) {
-    const invocation = /(?:tools\.)?exec_command\s*\(/.exec(rawInput);
-    const callInput = invocation ? invocationInput(rawInput, invocation.index + invocation[0].length) : '';
+  const code = maskJsNonCode(rawInput);
+  const invocations = [...code.matchAll(/\b(?:tools\.(\w+)|(exec_command|apply_patch))\s*\(/g)]
+    .map((match) => ({ name: match[1] ?? match[2], start: match.index + match[0].length }));
+  const patches = invocations.filter((call) => call.name === 'apply_patch')
+    .map((call) => extractPatchString(rawInput, code, invocationInput(rawInput, code, call.start)))
+    .filter((patch): patch is string => patch !== undefined);
+  const patchContent = patches.length ? patches.join('\n') : undefined;
+
+  // Prefer a command for the summary, but preserve patches from mixed wrappers.
+  const commandCall = invocations.find((call) => call.name === 'exec_command');
+  if (commandCall) {
+    const callInput = invocationInput(rawInput, code, commandCall.start);
     const cmdMatch =
       callInput.match(
         /(?:\b(?:cmd|command)|"(?:cmd|command)"|'(?:cmd|command)')\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|`((?:[^`\\]|\\.)*)`)/s,
@@ -455,16 +389,12 @@ export function unrollCodexExec(rawInput: string): UnrolledExec {
         ...(workdir ? { workdir } : {}),
         raw: rawInput,
       },
+      patchContent,
     };
   }
 
-  // 2. Check for tools.apply_patch
-  if (
-    rawInput.includes('tools.apply_patch') ||
-    rawInput.includes('apply_patch(') ||
-    rawInput.includes('*** Begin Patch')
-  ) {
-    const patch = extractPatchString(rawInput) || rawInput;
+  if (invocations.some((call) => call.name === 'apply_patch')) {
+    const patch = patchContent ?? rawInput;
 
     return {
       toolName: 'apply_patch',
@@ -493,10 +423,6 @@ function parseToolArgs(payload: Record<string, unknown>): Record<string, unknown
   }
   if (payload.type === 'custom_tool_call') {
     const raw = String(payload.input || '');
-    if (payload.name === 'exec') {
-      const unrolled = unrollCodexExec(raw);
-      return unrolled.args;
-    }
     return { input: truncateSingleLine(raw, 300) };
   }
   if (payload.type === 'web_search_call') {
@@ -820,7 +746,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
 
         if (pType === 'custom_tool_call') {
           const rawInput = String(p.input || '');
-          if (toolName === 'exec' || rawInput.includes('tools.')) {
+          if (toolName === 'exec') {
             const unrolled = unrollCodexExec(rawInput);
             toolName = unrolled.toolName;
             args = unrolled.args;
@@ -837,7 +763,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
         addToolCount(toolName, false);
 
         // Extract files modified from apply_patch
-        if (toolName === 'apply_patch') {
+        if (toolName === 'apply_patch' || patchToExtract !== undefined) {
           const inputStr =
             patchToExtract ||
             (pType === 'custom_tool_call'

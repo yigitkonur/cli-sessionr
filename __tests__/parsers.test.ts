@@ -684,4 +684,25 @@ describe('Codex exec review regressions', () => {
     expect(unrollCodexExec(opaque).args.raw).toBe(opaque);
   });
 
+  it.each(['patch-literal-native', 'patch-literal-wrapper'])('F3 keeps %s as a patch despite tool names in added code', async (id) => {
+    const session = await regressionSession(id);
+    expect(session.messages[0].blocks[0].name).toBe('apply_patch');
+    expect(session.stats.filesModified).toEqual(['generated.js']);
+  });
+
+  it('F3 extracts a preceding patch independently of the mixed wrapper summary name', async () => {
+    const session = await regressionSession('mixed-inner');
+    expect(session.messages[0].blocks[0].name).toBe('exec_command');
+    expect(session.messages[0].blocks[0].input.cmd).toBe('cat a.txt');
+    expect(session.stats.filesModified).toEqual(['a.txt']);
+  });
+
+  it('F3 ignores invocation-looking text inside strings, templates and comments', () => {
+    const input = '// tools.exec_command({cmd:"wrong"})\nconst quoted = "tools.exec_command({cmd:wrong})"; const template = `tools.exec_command({cmd:wrong})`; /* tools.exec_command({cmd:"wrong"}) */ await tools.apply_patch("*** Add File: real.txt\\n+tools.exec_command({cmd:wrong})");';
+    const result = unrollCodexExec(input);
+    expect(result.toolName).toBe('apply_patch');
+    expect(result.patchContent).toBe('*** Add File: real.txt\n+tools.exec_command({cmd:wrong})');
+    expect(unrollCodexExec('const quoted = "tools.exec_command({cmd:wrong})";').toolName).toBe('exec');
+  });
+
 });
