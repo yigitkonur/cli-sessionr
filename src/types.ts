@@ -53,6 +53,8 @@ export interface NormalizedMessage {
   rawLineIndex?: number;
   /** Source classification for origin/provenance */
   source?: MessageSource;
+  /** Original attachment origin.kind; absent on legacy records. */
+  originKind?: string;
 }
 
 // ── Session Metadata ───────────────────────────────────────────────────────
@@ -73,6 +75,9 @@ export interface SessionMetadata {
 export interface SessionStats {
   totalMessages: number;
   byRole: {
+    /** Human prompting, including steers absorbed mid-turn (source "queued").
+     * Slash commands, interrupts, system preambles and task notifications are excluded,
+     * as are attachments whose origin.kind is not "human". */
     user: number;
     assistant: number;
     system: number;
@@ -94,12 +99,21 @@ export interface SessionStats {
 
 // ── Normalized Session ─────────────────────────────────────────────────────
 
+export interface TurnEndEvent {
+  timestamp: Date;
+  durationMs: number;
+  /** Claude physical JSONL index when available; otherwise parsed-record index. */
+  rawLineIndex: number;
+}
+
 export interface NormalizedSession {
   id: string;
   source: SessionSource;
   filePath: string;
   metadata: SessionMetadata;
   messages: NormalizedMessage[];
+  /** Per-turn completion records, separate from the conversation messages. */
+  turnEnds?: TurnEndEvent[];
   stats: SessionStats;
 }
 

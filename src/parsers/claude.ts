@@ -10,6 +10,7 @@ import type {
   SessionListEntry,
   SessionMetadata,
   SessionStats,
+  TurnEndEvent,
 } from '../types.js';
 import { readJsonlFile, readJsonlFileWithLineIndex, scanJsonlHead, getFileStats } from './common.js';
 import { registerSource } from './registry.js';
@@ -68,6 +69,16 @@ interface RawLine {
   isCompactSummary?: boolean;
   isMeta?: boolean;
   rawLineIndex?: number;
+  attachment?: {
+    type?: string;
+    prompt?: unknown;
+    timestamp?: string;
+    commandMode?: string;
+    isMeta?: boolean;
+    origin?: { kind?: string };
+    [key: string]: unknown;
+  };
+  durationMs?: number;
   message?: RawMessage;
   [key: string]: unknown;
 }
@@ -90,7 +101,8 @@ function extractToolResultContent(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
-      .filter((b: { type?: string; text?: string }) => b.type === 'text' && b.text)
+      .filter((b): b is { type: 'text'; text: string } =>
+        b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
       .map((b: { text?: string }) => b.text!)
       .join('\n');
   }
@@ -193,6 +205,7 @@ interface ExplodedMessage {
   timestamp: Date;
   rawLineIndex: number;
   source?: MessageSource;
+  originKind?: string;
 }
 
 export function classifyUserSource(text: string, line: RawLine): MessageSource {
@@ -248,6 +261,14 @@ export function classifyUserSource(text: string, line: RawLine): MessageSource {
 }
 
 function shouldSkipLine(line: RawLine): boolean {
+  // Allow queued_command attachments mid-turn
+  if (line.type === 'attachment') {
+    if (line.isMeta || line.attachment?.isMeta) return true;
+    const mode = line.attachment?.commandMode;
+    return line.attachment?.type !== 'queued_command' ||
+      (mode !== undefined && mode !== 'prompt' && mode !== 'task-notification');
+  }
+
   // Skip non-conversation types
   if (
     line.type === 'system' ||
@@ -272,6 +293,30 @@ function shouldSkipLine(line: RawLine): boolean {
   if (line.isCompactSummary) return true;
 
   return false;
+}
+
+function explodeAttachmentMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
+  const ts = new Date(line.attachment?.timestamp || line.timestamp);
+  const extracted = extractToolResultContent(line.attachment?.prompt);
+  const prompt = extracted.trim() ? extracted : '[queued command]';
+  const trimmedPrompt = prompt.trimStart();
+  const notification =
+    line.attachment?.commandMode === 'task-notification' ||
+    line.attachment?.origin?.kind === 'task-notification' ||
+    trimmedPrompt.startsWith('<task-notification') ||
+    trimmedPrompt.startsWith('<task-id>');
+  return [
+    {
+      role: notification ? 'system' : 'user',
+      content: prompt,
+      blocks: [{ type: 'text', text: prompt }],
+      timestamp: ts,
+      rawLineIndex: typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex,
+      source: notification ? 'task_notification' : 'queued',
+      ...(typeof line.attachment?.origin?.kind === 'string'
+        ? { originKind: line.attachment.origin.kind } : {}),
+    },
+  ];
 }
 
 function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
@@ -485,9 +530,38 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
 
 // ── Stats computation ────────────────────────────────────────────────────────
 
+function collectTurnEnds(lines: RawLine[]): TurnEndEvent[] {
+  const turnEnds: TurnEndEvent[] = [];
+  for (const [lineIndex, line] of lines.entries()) {
+    if (
+      line.type === 'system' &&
+      line.subtype === 'turn_duration'
+    ) {
+      const dur =
+        typeof line.durationMs === 'number'
+          ? line.durationMs
+          : typeof (line as any).duration_ms === 'number'
+            ? (line as any).duration_ms
+            : undefined;
+      const timestamp = new Date(line.timestamp);
+      // A malformed timestamp would later throw in toISOString(); skip the record instead.
+      if (typeof dur === 'number' && Number.isFinite(dur) && dur >= 0 && !Number.isNaN(timestamp.getTime())) {
+        turnEnds.push({
+          timestamp,
+          durationMs: dur,
+          rawLineIndex: typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex,
+        });
+      }
+    }
+  }
+
+  return turnEnds;
+}
+
 function computeStats(
   messages: NormalizedMessage[],
   dedupedLines: RawLine[],
+  turnEnds: TurnEndEvent[],
 ): SessionStats {
   const byRole = { user: 0, assistant: 0, system: 0, toolUse: 0, toolResult: 0 };
   const byBlockType: Record<string, number> = {};
@@ -500,7 +574,11 @@ function computeStats(
   for (const msg of messages) {
     switch (msg.role) {
       case 'user':
-        if (!msg.source || msg.source === 'prompt') {
+        // A message counts as a user prompt only if it is a prompt/queued steer AND not a non-human origin.
+        if (
+          (!msg.source || msg.source === 'prompt' || msg.source === 'queued') &&
+          (!msg.originKind || msg.originKind === 'human')
+        ) {
           byRole.user++;
         }
         break;
@@ -585,9 +663,11 @@ function computeStats(
     }
   }
 
-  // Duration from first to last timestamp
+  // Aggregate the same completion events exposed on the normalized session.
   let durationMs: number | undefined;
-  if (messages.length >= 2) {
+  if (turnEnds.length > 0) {
+    durationMs = turnEnds.reduce((sum, end) => sum + end.durationMs, 0);
+  } else if (messages.length >= 2) {
     const first = messages[0]!.timestamp.getTime();
     const last = messages[messages.length - 1]!.timestamp.getTime();
     if (last > first) durationMs = last - first;
@@ -640,6 +720,8 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
       exploded.push(...explodeAssistantMessage(line, i));
     } else if (line.type === 'user') {
       exploded.push(...explodeUserMessage(line, i));
+    } else if (line.type === 'attachment' && line.attachment?.type === 'queued_command') {
+      exploded.push(...explodeAttachmentMessage(line, i));
     }
   }
 
@@ -652,6 +734,7 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     blocks: e.blocks,
     rawLineIndex: e.rawLineIndex,
     ...(e.source ? { source: e.source } : {}),
+    ...(e.originKind ? { originKind: e.originKind } : {}),
   }));
 
   // 5. Timestamps for metadata — use raw event timestamps so system lines
@@ -672,7 +755,8 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
   const sessionId = meta.sessionId || basename;
 
   // 6. Compute stats from deduplicated raw lines (for token usage)
-  const stats = computeStats(messages, deduped);
+  const turnEnds = collectTurnEnds(deduped);
+  const stats = computeStats(messages, deduped, turnEnds);
 
   const metadata: SessionMetadata = {
     cwd: meta.cwd || path.dirname(filePath),
@@ -690,6 +774,7 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     filePath,
     metadata,
     messages,
+    turnEnds,
     stats,
   };
 }

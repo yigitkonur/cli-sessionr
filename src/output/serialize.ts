@@ -64,14 +64,12 @@ export function serializeMessage(
   const msg: Record<string, unknown> = {
     index: m.index,
     role: m.role,
+    ...(m.source ? { source: m.source } : {}),
+    ...(m.originKind ? { origin_kind: m.originKind } : {}),
     timestamp: m.timestamp,
     tokens_estimate: estimateMessageTokens(m),
     content: m.content,
   };
-
-  if (m.source !== undefined) {
-    msg.source = m.source;
-  }
 
   // M3 — `--detail meta`: emit a thin per-message stub so agents can
   // enumerate without paying for decoded content. For tool_use /
@@ -218,6 +216,8 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   toolFrequency: 'tool_frequency',
   filesModified: 'files_modified',
   durationMs: 'duration_ms',
+  turnEnds: 'turn_ends',
+  rawLineIndex: 'raw_line_index',
   gitBranch: 'git_branch',
   gitRepo: 'git_repo',
   createdAt: 'created_at',
@@ -229,6 +229,7 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   isError: 'is_error',
   toolUseId: 'tool_use_id',
   isEmpty: 'is_empty',
+  originKind: 'origin_kind',
   // Nested enum-style keys that also surface as map keys in byRole /
   // byBlockType / tokenUsage. Because the camelCase form is unambiguous
   // (only ever a contract-leak in our types), we rename them globally
