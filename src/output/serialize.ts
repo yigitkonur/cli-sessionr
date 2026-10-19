@@ -70,6 +70,8 @@ export function serializeMessage(
   const msg: Record<string, unknown> = {
     index: m.index,
     role: m.role,
+    ...(m.source ? { source: m.source } : {}),
+    ...(m.originKind ? { origin_kind: m.originKind } : {}),
     timestamp: m.timestamp,
     tokens_estimate: estimateMessageTokens(m),
     content: m.content,
@@ -246,6 +248,8 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   toolFrequency: 'tool_frequency',
   filesModified: 'files_modified',
   durationMs: 'duration_ms',
+  turnEnds: 'turn_ends',
+  rawLineIndex: 'raw_line_index',
   gitBranch: 'git_branch',
   gitRepo: 'git_repo',
   createdAt: 'created_at',
@@ -257,6 +261,7 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   isError: 'is_error',
   toolUseId: 'tool_use_id',
   isEmpty: 'is_empty',
+  originKind: 'origin_kind',
   // Nested enum-style keys that also surface as map keys in byRole /
   // byBlockType / tokenUsage. Because the camelCase form is unambiguous
   // (only ever a contract-leak in our types), we rename them globally
@@ -275,13 +280,8 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   pendingToolCalls: 'pending_tool_calls',
   contextWindowSize: 'context_window_size',
   contextWindow: 'context_window',
-  contextTokens: 'context_tokens',
   reasoningEffort: 'reasoning_effort',
   rateLimits: 'rate_limits',
-  usedPercent: 'used_percent',
-  windowMinutes: 'window_minutes',
-  resetsAt: 'resets_at',
-  cacheWrite: 'cache_write',
   preTokens: 'pre_tokens',
   postTokens: 'post_tokens',
   compactionMeta: 'compaction_meta',
@@ -289,6 +289,16 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   exitCode: 'exit_code',
   startedAt: 'started_at',
   messageIndex: 'message_index',
+  cacheWrite: 'cache_write',
+  contextTokens: 'context_tokens',
+  inputTokens: 'input_tokens',
+  outputTokens: 'output_tokens',
+  cacheReadTokens: 'cache_read_tokens',
+  cacheWriteTokens: 'cache_write_tokens',
+  usedPercent: 'used_percent',
+  windowMinutes: 'window_minutes',
+  resetsAt: 'resets_at',
+  matchIndex: 'match_index',
 };
 
 /**

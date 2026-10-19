@@ -13,6 +13,7 @@ import type {
   CodexRateLimitTier,
   MessageUsage,
   CompactionMeta,
+  MessageSource,
 } from '../types.js';
 
 import {
@@ -90,7 +91,7 @@ function extractUserText(content: unknown): string {
   return content
     .filter(
       (item: Record<string, unknown>) =>
-        item && item.type === 'input_text' && typeof item.text === 'string',
+        item && ['input_text', 'text'].includes(String(item.type)) && typeof item.text === 'string',
     )
     .map((item: Record<string, unknown>) => (item.text as string).trim())
     .filter(Boolean)
@@ -265,12 +266,206 @@ function truncateSingleLine(text: string, maxLen: number): string {
   return oneLine.length > maxLen ? oneLine.substring(0, maxLen) + '\u2026' : oneLine;
 }
 
+export interface UnrolledExec {
+  toolName: string;
+  args: Record<string, unknown>;
+  patchContent?: string;
+}
+
+function unescapeJsString(raw: string): string {
+  let output = '';
+  const escapes: Record<string, string> = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v', '0': '\0' };
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== '\\') { output += raw[i]; continue; }
+    const next = raw[++i];
+    if (next === '\n' || next === '\u2028' || next === '\u2029') continue;
+    if (next === '\r') { if (raw[i + 1] === '\n') i++; continue; }
+    if (next === 'x' || next === 'u') {
+      const braced = next === 'u' && raw[i + 1] === '{';
+      const end = braced ? raw.indexOf('}', i + 2) : i + (next === 'x' ? 2 : 4) + 1;
+      const hex = raw.slice(i + (braced ? 2 : 1), end);
+      if (/^[\da-f]+$/i.test(hex) && (braced ? hex.length <= 6 : hex.length === (next === 'x' ? 2 : 4))) {
+        const value = parseInt(hex, 16);
+        if (value <= 0x10ffff) {
+          output += String.fromCodePoint(value);
+          i = braced ? end : end - 1;
+          continue;
+        }
+      }
+    }
+    // Quotes, backticks, backslashes and identity escapes all decode here.
+    output += escapes[next] ?? next ?? '\\';
+  }
+  return output;
+}
+
+// Keep offsets, but hide strings/templates and comments from invocation matching.
+// Transcript JavaScript is data: it must never be evaluated.
+function maskJsNonCode(source: string): string {
+  return source.replace(/"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'|`(?:[^`\\]|\\[\s\S])*`|\/\/[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$)/g,
+    (literal) => ' '.repeat(literal.length));
+}
+
+// Slice a call's arguments without letting later calls or unrelated objects leak in.
+function invocationInput(source: string, code: string, start: number): string {
+  let depth = 1;
+  for (let i = start; i < code.length; i++) {
+    if (code[i] === '(') depth++;
+    else if (code[i] === ')' && --depth === 0) return source.slice(start, i);
+  }
+  return source.slice(start);
+}
+
+function extractPatchString(rawInput: string, code: string, callInput: string): string | undefined {
+  const argument = callInput.replace(/^\s*\{\s*(?:patch|"patch"|'patch')\s*:\s*/, '').trimStart();
+  const literal = /^(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|`((?:[^`\\]|\\[\s\S])*)`)/;
+  const decode = (match: RegExpMatchArray): string =>
+    unescapeJsString(match[1] ?? match[2] ?? match[3] ?? '');
+  const direct = argument.match(literal);
+  if (direct) return decode(direct);
+  const variable = /^([a-zA-Z_$][\w$]*)\s*(?:[,}]|$)/.exec(argument);
+  if (!variable) return undefined;
+  const escapedName = variable[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const definition = new RegExp(`\\b(?:const|let|var)\\s+${escapedName}\\s*=`).exec(code);
+  if (!definition) return undefined;
+  const value = rawInput.slice(definition.index + definition[0].length).trimStart().match(literal);
+  return value ? decode(value) : undefined;
+}
+
+// Recover only literal object properties; dynamic expressions remain in raw input.
+function parseStaticToolArgs(input: string): Record<string, unknown> {
+  const parsed = safeParseJson(input.trim());
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  const source = input.trim();
+  if (!source.startsWith('{') || !source.endsWith('}')) return {};
+  const code = maskJsNonCode(source);
+  const properties: [string, unknown][] = [];
+  let start = 1;
+  let depth = 0;
+  for (let i = 1; i < source.length; i++) {
+    if (depth === 0 && (code[i] === ',' || i === source.length - 1)) {
+      const property = source.slice(start, i).trim().match(/^(?:([\w$]+)|"([^"\\]+)"|'([^'\\]+)')\s*:\s*([\s\S]+)$/);
+      if (property) {
+        const key = property[1] ?? property[2] ?? property[3];
+        const value = property[4].trim();
+        const literal = /^(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|`((?:[^`\\]|\\[\s\S])*)`)$/s.exec(value);
+        if (literal) properties.push([key, unescapeJsString(literal[1] ?? literal[2] ?? literal[3])]);
+        else if (/^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)$/.test(value)) properties.push([key, JSON.parse(value)]);
+      }
+      start = i + 1;
+    } else if ('{[('.includes(code[i])) depth++;
+    else if ('}])'.includes(code[i])) depth--;
+  }
+  return Object.fromEntries(properties);
+}
+
+export function unrollCodexExec(rawInput: string): UnrolledExec {
+  const trimmed = rawInput.trim();
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') {
+        if (parsed.tool === 'exec_command' || parsed.command || parsed.cmd) {
+          const isCommand = (value: unknown): value is string | string[] =>
+            typeof value === 'string' || Array.isArray(value) && value.every((part) => typeof part === 'string');
+          const cmd = isCommand(parsed.command) ? parsed.command : isCommand(parsed.cmd) ? parsed.cmd : undefined;
+          return {
+            toolName: 'exec_command',
+            args: {
+              ...(cmd !== undefined ? { cmd, command: cmd } : {}),
+              ...(parsed.workdir ? { workdir: parsed.workdir } : {}),
+              raw: rawInput,
+            },
+          };
+        }
+        if (parsed.tool === 'apply_patch' || parsed.patch) {
+          const patch =
+            typeof parsed.patch === 'string'
+              ? parsed.patch
+              : typeof parsed.input === 'string'
+                ? parsed.input
+                : '';
+          return {
+            toolName: 'apply_patch',
+            args: {
+              patch,
+            },
+            patchContent: patch,
+          };
+        }
+      }
+    } catch {
+      // Not JSON, continue to JS code analysis
+    }
+  }
+
+  const code = maskJsNonCode(rawInput);
+  const invocations = [...code.matchAll(/\b(?:tools\.(\w+)|(exec_command|apply_patch))\s*\(/g)]
+    .map((match) => ({ name: match[1] ?? match[2], start: match.index + match[0].length }));
+  const patches = invocations.filter((call) => call.name === 'apply_patch')
+    .map((call) => extractPatchString(rawInput, code, invocationInput(rawInput, code, call.start)))
+    .filter((patch): patch is string => patch !== undefined);
+  const patchContent = patches.length ? patches.join('\n') : undefined;
+
+  // Prefer a command for the summary, but preserve patches from mixed wrappers.
+  const commandCall = invocations.find((call) => call.name === 'exec_command');
+  if (commandCall) {
+    const callInput = invocationInput(rawInput, code, commandCall.start);
+    const staticArgs = parseStaticToolArgs(callInput);
+    const direct = callInput.match(/^\s*(?:"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'|`((?:[^`\\]|\\[\s\S])*)`)/);
+    const cmd = direct ? unescapeJsString(direct[1] ?? direct[2] ?? direct[3]) :
+      typeof staticArgs.cmd === 'string' ? staticArgs.cmd :
+        typeof staticArgs.command === 'string' ? staticArgs.command : undefined;
+    const workdir = typeof staticArgs.workdir === 'string' ? staticArgs.workdir : undefined;
+
+    return {
+      toolName: 'exec_command',
+      args: {
+        ...(cmd !== undefined ? { cmd } : {}),
+        ...(workdir ? { workdir } : {}),
+        raw: rawInput,
+      },
+      patchContent,
+    };
+  }
+
+  if (invocations.some((call) => call.name === 'apply_patch')) {
+    const patch = patchContent ?? rawInput;
+
+    return {
+      toolName: 'apply_patch',
+      args: {
+        patch,
+      },
+      patchContent: patch,
+    };
+  }
+
+  const innerCall = invocations[0];
+  if (innerCall) {
+    return {
+      toolName: innerCall.name,
+      args: { ...parseStaticToolArgs(invocationInput(rawInput, code, innerCall.start)), raw: rawInput },
+      patchContent,
+    };
+  }
+
+  // Fallback: generic exec
+  return {
+    toolName: 'exec',
+    args: {
+      input: rawInput,
+      raw: rawInput,
+    },
+  };
+}
+
 function parseToolArgs(payload: Record<string, unknown>): Record<string, unknown> {
   if (payload.type === 'function_call') {
     return parseJsonRecord(payload.arguments);
   }
   if (payload.type === 'custom_tool_call') {
-    return { input: truncateSingleLine(String(payload.input || ''), 300) };
+    return { input: String(payload.input || '') };
   }
   if (payload.type === 'web_search_call') {
     return parseJsonRecord(payload.arguments ?? payload.input ?? payload.query);
@@ -307,24 +502,75 @@ function previewToolOutput(output: unknown): string {
 // ── Error detection (conservative) ──────────────────────────────────────────
 
 function detectToolError(output: string): boolean {
-  return output.startsWith('Error:') || output.startsWith('FAILED');
+  return output.startsWith('Error:') || output.startsWith('FAILED') ||
+    output.startsWith('Script failed') ||
+    [...output.matchAll(/^Process exited with code (-?\d+)\b/gm)].some((match) => Number(match[1]) !== 0);
+}
+
+export function parseToolOutputError(rawOutput: unknown): boolean {
+  if (rawOutput == null) return false;
+  if (Array.isArray(rawOutput)) {
+    // A successful block must not hide a later failure.
+    return rawOutput.some((item) => parseToolOutputError(item));
+  }
+  if (typeof rawOutput === 'string') {
+    const trimmed = rawOutput.trim();
+    const parsed = safeParseJson(trimmed);
+    if (parsed && typeof parsed === 'object') return parseToolOutputError(parsed);
+    return detectToolError(trimmed);
+  }
+  if (typeof rawOutput === 'object') {
+    const obj = rawOutput as Record<string, unknown>;
+    if (obj.type === 'error' || obj.is_error === true) return true;
+    for (const key of ['exit_code', 'returncode', 'status']) {
+      if (typeof obj[key] === 'number' && obj[key] !== 0) return true;
+    }
+    return parseToolOutputError(obj.metadata) || parseToolOutputError(obj.text) ||
+      parseToolOutputError(obj.output);
+  }
+  return false;
 }
 
 // ── File extraction from apply_patch ────────────────────────────────────────
 
-const PATCH_FILE_RE = /\*{3}\s+(?:Add|Update|Delete)\s+File:\s+(.+)/g;
-
-function extractFilesFromPatch(input: string): string[] {
-  const files: string[] = [];
-  let m: RegExpExecArray | null;
-  PATCH_FILE_RE.lastIndex = 0;
-  while ((m = PATCH_FILE_RE.exec(input)) !== null) {
-    const filePath = m[1].trim();
-    if (filePath && !files.includes(filePath)) {
-      files.push(filePath);
+export function extractFilesFromPatch(input: string): string[] {
+  if (!input || typeof input !== 'string') return [];
+  const files = new Set<string>();
+  const lines = input.split(/\r?\n/);
+  let gitHeader = false;
+  let inHunk = false;
+  const addDiffPath = (raw: string) => {
+    let file = raw.split('\t')[0].trim();
+    if (file.startsWith('"') && file.endsWith('"')) {
+      const decoded = safeParseJson(file);
+      file = typeof decoded === 'string' ? decoded : file.slice(1, -1);
+    }
+    if (!file || file === '/dev/null') return;
+    if (gitHeader) file = file.replace(/^[ab]\//, '');
+    files.add(file);
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const native = /^\*{3}\s+(?:Add|Update|Delete)\s+File:?\s+([^\r\n]+)$/i.exec(line);
+    if (native) {
+      // Native patch paths are literal, not git-side paths or diff sentinels.
+      files.add(native[1].trim());
+      gitHeader = false;
+      inHunk = false;
+    } else if (/^diff\s+--git\s+/.test(line)) {
+      gitHeader = true;
+      inHunk = false;
+      const paths = line.replace(/^diff\s+--git\s+/, '').match(/"(?:[^"\\]|\\.)*"|\S+/g);
+      if (paths?.length === 2) paths.forEach(addDiffPath);
+    } else if (line.startsWith('@@')) {
+      inHunk = true;
+    } else if (!inHunk && line.startsWith('--- ') && lines[i + 1]?.startsWith('+++ ')) {
+      // Unified-diff headers must be a pair before the hunk, never hunk text.
+      addDiffPath(line.slice(4));
+      addDiffPath(lines[++i].slice(4));
     }
   }
-  return files;
+  return [...files];
 }
 
 // ── Tool-call / tool-output type guards ─────────────────────────────────────
@@ -565,6 +811,33 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
   // Determine whether response_item events exist (newer format preferred)
   const hasResponseItems = events.some((e) => e.type === 'response_item');
 
+  // Modern UserMessage items identify real prompts; response_item user records also carry context.
+  const hasUserItems = events.some(e => e.type === 'event_msg' && e.payload?.type === 'item_completed' &&
+    (e.payload.item as Record<string, unknown> | undefined)?.type === 'UserMessage');
+  const userSources = new Map<number, MessageSource>();
+  const candidates = new Map<string, number[]>();
+  let taskHasPrompt = false;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    const p = e.payload;
+    if (!p) continue;
+    if (e.type === 'event_msg' && p.type === 'task_started') { taskHasPrompt = false; candidates.clear(); }
+    if (e.type === 'response_item' && p.type === 'message' && p.role === 'user') {
+      const text = extractUserText(p.content);
+      const list = candidates.get(text) ?? [];
+      list.push(i); candidates.set(text, list);
+    }
+    if (e.type === 'event_msg' && p.type === 'item_completed') {
+      const item = p.item as Record<string, unknown> | undefined;
+      if (item?.type !== 'UserMessage') continue;
+      const text = extractUserText(item.content);
+      const source = text.trimStart().startsWith('<send_user_message_question_reply>') ? 'injected' : taskHasPrompt ? 'queued' : 'prompt';
+      if (source === 'prompt') taskHasPrompt = true;
+      const line = candidates.get(text)?.pop();
+      userSources.set(line ?? i, source);
+    }
+  }
+
   function addToolCount(name: string, isError: boolean): void {
     const existing = toolCounts.get(name) ?? { count: 0, errors: 0 };
     existing.count++;
@@ -581,6 +854,21 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
   for (let lineIdx = 0; lineIdx < events.length; lineIdx++) {
     const event = events[lineIdx];
     const ts = event.timestamp ? new Date(event.timestamp) : (lastTimestamp ?? now);
+
+    if (event.type === 'event_msg' && event.payload &&
+        ['task_complete', 'turn_aborted'].includes(String(event.payload.type))) {
+      const last = messages[messages.length - 1];
+      if (last) {
+        last.terminal = event.payload.type === 'turn_aborted' ? 'interrupted' : 'complete';
+        if (typeof event.payload.duration_ms === 'number') last.durationMs = event.payload.duration_ms;
+      }
+    }
+    // Rare modern records without a response_item copy still contain a real prompt.
+    if (userSources.has(lineIdx) && event.type === 'event_msg') {
+      const item = event.payload?.item as Record<string, unknown> | undefined;
+      const text = extractUserText(item?.content);
+      if (text) pushMessage({role: 'user', timestamp: ts, content: text, blocks: [{type: 'text', text}], source: userSources.get(lineIdx), rawLineIndex: lineIdx});
+    }
 
     // ── compaction events ──────────────────────────────────────────────
 
@@ -622,7 +910,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
           const text = extractUserText(p.content);
           if (!text || isBootstrapMessage(text)) continue;
           const blocks: ContentBlock[] = [{ type: 'text', text }];
-          pushMessage({ role: 'user', timestamp: ts, content: text, blocks, rawLineIndex: lineIdx });
+          pushMessage({ role: 'user', timestamp: ts, content: text, blocks, rawLineIndex: lineIdx, source: hasUserItems ? (userSources.get(lineIdx) ?? 'injected') : undefined });
         } else if (pRole === 'system') {
           const text = extractAssistantText(p.content);
           if (!text) continue;
@@ -635,6 +923,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
           const blocks: ContentBlock[] = [{ type: 'text', text }];
           pushMessage({
             role: 'assistant',
+            kind: p.phase === 'commentary' ? 'commentary' : undefined,
             timestamp: ts,
             content: text,
             blocks,
@@ -663,13 +952,25 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
       // ── tool calls (function_call, custom_tool_call, web_search_call) ─
 
       if (isToolCallType(pType)) {
-        const toolName =
+        let toolName =
           typeof p.name === 'string' && p.name
             ? p.name
             : pType === 'web_search_call'
               ? 'web_search'
               : 'unknown';
-        const args = parseToolArgs(p);
+        let args = parseToolArgs(p);
+        let patchToExtract: string | undefined;
+
+        if (pType === 'custom_tool_call') {
+          const rawInput = String(p.input || '');
+          if (toolName === 'exec') {
+            const unrolled = unrollCodexExec(rawInput);
+            toolName = unrolled.toolName;
+            args = unrolled.args;
+            patchToExtract = unrolled.patchContent;
+          }
+        }
+
         const callId =
           (typeof p.call_id === 'string' && p.call_id) ||
           (typeof p.id === 'string' && p.id) ||
@@ -679,13 +980,16 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
         addToolCount(toolName, false);
 
         // Extract files modified from apply_patch
-        if (toolName === 'apply_patch') {
+        if (toolName === 'apply_patch' || patchToExtract !== undefined) {
           const inputStr =
-            pType === 'custom_tool_call'
+            patchToExtract ||
+            (pType === 'custom_tool_call'
               ? String(p.input || '')
-              : typeof (args as Record<string, unknown>).input === 'string'
-                ? (args as Record<string, unknown>).input as string
-                : '';
+              : typeof (args as Record<string, unknown>).patch === 'string'
+                ? (args as Record<string, unknown>).patch as string
+                : typeof (args as Record<string, unknown>).input === 'string'
+                  ? (args as Record<string, unknown>).input as string
+                  : '');
           if (inputStr) {
             for (const f of extractFilesFromPatch(inputStr)) {
               if (!filesModified.includes(f)) filesModified.push(f);
@@ -720,7 +1024,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
               ? JSON.stringify(rawOutput)
               : '';
 
-        const isError = detectToolError(fullOutput);
+        const isError = parseToolOutputError(rawOutput);
         const toolName = toolCallMap.get(callId);
 
         if (toolName && isError) {
@@ -737,7 +1041,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
         pushMessage({
           role: 'tool_result',
           timestamp: ts,
-          content: outputStr || fullOutput,
+          content: outputStr || fullOutput || (isError ? '[error]' : '[empty]'),
           blocks: [block],
           rawLineIndex: lineIdx,
         });
