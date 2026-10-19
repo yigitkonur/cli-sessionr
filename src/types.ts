@@ -75,8 +75,9 @@ export interface SessionMetadata {
 export interface SessionStats {
   totalMessages: number;
   byRole: {
-    /** Human prompting; source-aware adapters count new turns, not absorbed steers.
-     * promptSource "queued" user records are new turns, unlike source "queued" attachments. */
+    /** Human prompting, including steers absorbed mid-turn (source "queued").
+     * Slash commands, interrupts, system preambles and task notifications are excluded,
+     * as are attachments whose origin.kind is not "human". */
     user: number;
     assistant: number;
     system: number;

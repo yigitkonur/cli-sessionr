@@ -299,7 +299,12 @@ function explodeAttachmentMessage(line: RawLine, lineIndex: number): ExplodedMes
   const ts = new Date(line.attachment?.timestamp || line.timestamp);
   const extracted = extractToolResultContent(line.attachment?.prompt);
   const prompt = extracted.trim() ? extracted : '[queued command]';
-  const notification = line.attachment?.commandMode === 'task-notification';
+  const trimmedPrompt = prompt.trimStart();
+  const notification =
+    line.attachment?.commandMode === 'task-notification' ||
+    line.attachment?.origin?.kind === 'task-notification' ||
+    trimmedPrompt.startsWith('<task-notification') ||
+    trimmedPrompt.startsWith('<task-id>');
   return [
     {
       role: notification ? 'system' : 'user',
