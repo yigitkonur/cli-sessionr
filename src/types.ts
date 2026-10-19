@@ -16,7 +16,8 @@ export type SessionSource =
   | 'codex' | 'claude'
   | 'gemini' | 'copilot' | 'cursor-agent' | 'commandcode'
   | 'goose' | 'opencode' | 'kiro' | 'zed'
-  | 'factory';
+  | 'factory'
+  | 'antigravity';
 
 // ── Content Blocks ─────────────────────────────────────────────────────────
 
@@ -33,6 +34,7 @@ export type MessageSource =
   | 'queued'
   | 'system'
   | 'local_command'
+  // Interrupt-to-prompt references are deferred to the turns model (Issue #25).
   | 'interrupt'
   | 'task_notification';
 
@@ -47,7 +49,7 @@ export interface NormalizedMessage {
   content: string;
   /** All content blocks for rich rendering */
   blocks: ContentBlock[];
-  /** Original JSONL line number for debugging */
+  /** Claude: physical zero-based JSONL line; other adapters may use parsed-record indices */
   rawLineIndex?: number;
   /** Source classification for origin/provenance */
   source?: MessageSource;

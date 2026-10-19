@@ -12,7 +12,7 @@ import type {
   SessionStats,
   TurnEndEvent,
 } from '../types.js';
-import { readJsonlFile, scanJsonlHead, getFileStats } from './common.js';
+import { readJsonlFile, readJsonlFileWithLineIndex, scanJsonlHead, getFileStats } from './common.js';
 import { registerSource } from './registry.js';
 
 // ── Raw JSONL types ──────────────────────────────────────────────────────────
@@ -68,6 +68,7 @@ interface RawLine {
   model?: string;
   isCompactSummary?: boolean;
   isMeta?: boolean;
+  rawLineIndex?: number;
   attachment?: {
     type?: string;
     prompt?: unknown;
@@ -207,6 +208,58 @@ interface ExplodedMessage {
   originKind?: string;
 }
 
+export function classifyUserSource(text: string, line: RawLine): MessageSource {
+  if (line.source && typeof line.source === 'string') {
+    return line.source as MessageSource;
+  }
+  if (line.promptSource && typeof line.promptSource === 'string') {
+    if (line.origin && (line.origin as any).kind === 'task-notification') {
+      return 'task_notification';
+    }
+    if (line.promptSource === 'system') {
+      return 'system';
+    }
+  }
+  if (line.origin && (line.origin as any).kind === 'task-notification') {
+    return 'task_notification';
+  }
+  if (line.type === 'attachment' && (line as any).attachment?.type === 'queued_command') {
+    return 'queued';
+  }
+  const trimmed = text.trim();
+  if (/^\[Request interrupted by user(?: for tool use(?: "[^"\n]+")?)?\]$/.test(trimmed)) {
+    return 'interrupt';
+  }
+  // Explicit human provenance wins over heuristics for conversational text.
+  if ((line.origin as { kind?: string } | undefined)?.kind === 'human') {
+    return 'prompt';
+  }
+  if (trimmed.startsWith('<task-notification') || trimmed.startsWith('<task-id>')) {
+    return 'task_notification';
+  }
+  if (
+    trimmed.startsWith('<command-name>') ||
+    trimmed.startsWith('<command-message>') ||
+    trimmed.startsWith('<command-args>') ||
+    trimmed.startsWith('<local-command-') ||
+    line.subtype === 'local_command' ||
+    /^\/(compact|clear|model|effort|config|copy|export|doctor|cost)(\s|$|<)/.test(trimmed)
+  ) {
+    return 'local_command';
+  }
+  if (
+    line.isMeta ||
+    trimmed.startsWith('<environment_context>') ||
+    trimmed.startsWith('<system-reminder>') ||
+    /^<agent-message(?:\s|>)/.test(trimmed) ||
+    /^Another Claude session sent a message:\s*<teammate-message(?:\s|>)/.test(trimmed) ||
+    trimmed.startsWith('This session is being continued from a previous conversation')
+  ) {
+    return 'system';
+  }
+  return 'prompt';
+}
+
 function shouldSkipLine(line: RawLine): boolean {
   // Allow queued_command attachments mid-turn
   if (line.type === 'attachment') {
@@ -262,6 +315,7 @@ function explodeAttachmentMessage(line: RawLine, lineIndex: number): ExplodedMes
 }
 
 function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
+  const actualLineIndex = typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex;
   const results: ExplodedMessage[] = [];
   const ts = new Date(line.timestamp);
   const content = line.message?.content;
@@ -275,7 +329,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
         content: text,
         blocks: [{ type: 'text', text }],
         timestamp: ts,
-        rawLineIndex: lineIndex,
+        rawLineIndex: actualLineIndex,
       });
     }
     return results;
@@ -322,7 +376,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
             content: flushedContent,
             blocks: [...textBlocks],
             timestamp: ts,
-            rawLineIndex: lineIndex,
+            rawLineIndex: actualLineIndex,
           });
           textBlocks.length = 0;
           textContent = '';
@@ -339,7 +393,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
           content: `Tool: ${block.name || 'unknown'}`,
           blocks: [toolBlock],
           timestamp: ts,
-          rawLineIndex: lineIndex,
+          rawLineIndex: actualLineIndex,
         });
         break;
       }
@@ -358,7 +412,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
           content: resultContent,
           blocks: [resultBlock],
           timestamp: ts,
-          rawLineIndex: lineIndex,
+          rawLineIndex: actualLineIndex,
         });
         break;
       }
@@ -385,7 +439,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
       content: flushedContent,
       blocks: [...textBlocks],
       timestamp: ts,
-      rawLineIndex: lineIndex,
+      rawLineIndex: actualLineIndex,
     });
   }
 
@@ -393,6 +447,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
 }
 
 function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
+  const actualLineIndex = typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex;
   const results: ExplodedMessage[] = [];
   const ts = new Date(line.timestamp);
   const content = line.message?.content;
@@ -402,12 +457,14 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
   // Simple string content
   if (typeof content === 'string') {
     if (content.trim()) {
+      const source = classifyUserSource(content, line);
       results.push({
-        role: 'user',
+        role: source === 'system' || source === 'task_notification' ? 'system' : 'user',
         content,
         blocks: [{ type: 'text', text: content }],
         timestamp: ts,
-        rawLineIndex: lineIndex,
+        rawLineIndex: actualLineIndex,
+        source,
       });
     }
     return results;
@@ -431,7 +488,7 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
           content: resultContent,
           blocks: [resultBlock],
           timestamp: ts,
-          rawLineIndex: lineIndex,
+          rawLineIndex: actualLineIndex,
         });
         break;
       }
@@ -452,12 +509,14 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
   // Combine real user text blocks into a single user message
   if (textBlocks.length > 0) {
     const joined = textBlocks.join('\n');
+    const source = classifyUserSource(joined, line);
     results.push({
-      role: 'user',
+      role: source === 'system' || source === 'task_notification' ? 'system' : 'user',
       content: joined,
       blocks: textBlocks.map((t) => ({ type: 'text' as const, text: t })),
       timestamp: ts,
-      rawLineIndex: lineIndex,
+      rawLineIndex: actualLineIndex,
+      source,
     });
   }
 
@@ -508,7 +567,13 @@ function computeStats(
   for (const msg of messages) {
     switch (msg.role) {
       case 'user':
-        if (!msg.originKind || msg.originKind === 'human') byRole.user++;
+        // A message counts as a user prompt only if it is a prompt/queued steer AND not a non-human origin.
+        if (
+          (!msg.source || msg.source === 'prompt' || msg.source === 'queued') &&
+          (!msg.originKind || msg.originKind === 'human')
+        ) {
+          byRole.user++;
+        }
         break;
       case 'assistant':
         byRole.assistant++;
@@ -626,8 +691,8 @@ function computeStats(
 // ── Main parser ──────────────────────────────────────────────────────────────
 
 export async function parseClaudeSession(filePath: string): Promise<NormalizedSession> {
-  // 1. Read all JSONL lines
-  const rawLines = await readJsonlFile<RawLine>(filePath);
+  // 1. Read all JSONL lines preserving physical line indices
+  const rawLines = await readJsonlFileWithLineIndex<RawLine>(filePath);
   const { lines: rawLineCount, bytes: fileBytes } = await getFileStats(filePath);
 
   // 2. Deduplicate by UUID (last entry wins)

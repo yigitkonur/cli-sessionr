@@ -71,6 +71,10 @@ export function serializeMessage(
     content: m.content,
   };
 
+  if (m.source !== undefined) {
+    msg.source = m.source;
+  }
+
   // M3 — `--detail meta`: emit a thin per-message stub so agents can
   // enumerate without paying for decoded content. For tool_use /
   // tool_result we PRESERVE two load-bearing fields:

@@ -141,3 +141,27 @@ describe('readCommand validation', () => {
     expect(process.exitCode).toBe(EXIT.PARTIAL);
   });
 });
+
+describe('19-D Claude preset filtering', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks(); process.exitCode = undefined; });
+
+  it.each(['minimal', 'standard', 'full'] as const)('filters non-prompts before slicing at %s without renumbering', async (preset) => {
+    const sources = ['prompt', 'interrupt', 'local_command', 'system', 'task_notification', 'queued', 'prompt'] as const;
+    const messages = sources.map((source, i) => ({
+      ...makeMessage(i + 1), source,
+      role: (source === 'system' || source === 'task_notification' ? 'system' : 'user') as NormalizedMessage['role'],
+    }));
+    const session = { ...makeSession(messages), source: 'claude' as const };
+    vi.mocked(loadSession).mockResolvedValue(session);
+    const stdout = captureStdout();
+    try {
+      await readCommand('sess-test', undefined, undefined, { output: 'json', preset, tokens: 10000 });
+      const all = JSON.parse(stdout.chunks.join(''));
+      expect(all.result.messages.map((m: { index: number }) => m.index)).toEqual(preset === 'full' ? [1, 2, 3, 4, 5, 6, 7] : [1, 6, 7]);
+      stdout.chunks.length = 0;
+      await readCommand('sess-test', undefined, undefined, { output: 'json', preset, role: 'user', tokens: 10000 });
+      const users = JSON.parse(stdout.chunks.join(''));
+      expect(users.result.messages.map((m: { index: number }) => m.index)).toEqual(preset === 'full' ? [1, 2, 3, 6, 7] : [1, 6, 7]);
+    } finally { stdout.restore(); }
+  });
+});
