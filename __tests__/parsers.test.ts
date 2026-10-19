@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { parseCodexSession, unrollCodexExec, extractFilesFromPatch, parseToolOutputError } from '../src/parsers/codex.js';
-import { parseClaudeSession } from '../src/parsers/claude.js';
+import { parseClaudeSession, classifyUserSource } from '../src/parsers/claude.js';
 import { parseFactorySession } from '../src/parsers/factory.js';
 import { getAdapter, resolveSourceAlias } from '../src/parsers/registry.js';
 import '../src/parsers/index.js';
@@ -25,6 +25,7 @@ const CODEX_EXEC_PATCH = [
   '*** End Patch',
 ].join('\n');
 const CLAUDE_FIXTURE = path.join(__dirname, 'fixtures', 'claude-session.jsonl');
+const CLAUDE_HARDENED_FIXTURE = path.join(__dirname, 'fixtures', 'claude-hardened-session.jsonl');
 const FACTORY_FIXTURE = path.join(__dirname, 'fixtures', 'factory-session.jsonl');
 
 describe('Codex parser', () => {
@@ -314,6 +315,376 @@ describe('Source aliases', () => {
     expect(adapter).toBeDefined();
     expect(adapter!.name).toBe('factory');
   });
+});
+
+describe('Claude rawLineIndex preservation across de-duplication (Issue #15)', () => {
+  it('preserves exact physical file line indices across streaming de-duplication (Issue #15 minimal synthetic example)', async () => {
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:01.000Z', promptSource: 'typed', message: { role: 'user', content: 'hello' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Hel' }] } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello there' }] } }),
+      JSON.stringify({ type: 'user', uuid: 'u2', timestamp: '2026-01-01T00:00:03.000Z', promptSource: 'typed', message: { role: 'user', content: 'thanks' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a2', timestamp: '2026-01-01T00:00:04.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'You are welcome' }] } }),
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-issue-15-'));
+    const filePath = path.join(tmpDir, 'test-synth.jsonl');
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+
+    try {
+      const session = await parseClaudeSession(filePath);
+      expect(session.messages.length).toBe(4);
+      // Acceptance criteria: rawLineIndex 0, 2, 3, 4 (surviving duplicate a1 is on line 2)
+      expect(session.messages.map((m) => m.rawLineIndex)).toEqual([0, 2, 3, 4]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('tracks true 0-based physical file line index across blank and corrupt lines without drift', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-issue-15-drift-'));
+    const filePath = path.join(tmpDir, 'test-drift.jsonl');
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u-1', timestamp: '2026-10-11T12:00:00Z', message: { role: 'user', content: 'Line 0 prompt' } }),
+      '', // Physical line 1: empty line
+      '{"invalid": json_error...', // Physical line 2: malformed JSON
+      JSON.stringify({ type: 'assistant', uuid: 'a-1', timestamp: '2026-10-11T12:00:01Z', message: { role: 'assistant', content: [{ type: 'text', text: 'Line 3 response' }] } }),
+    ].join('\n');
+    fs.writeFileSync(filePath, lines, 'utf8');
+
+    try {
+      const session = await parseClaudeSession(filePath);
+      expect(session.messages.length).toBe(2);
+      expect(session.messages[0].rawLineIndex).toBe(0);
+      expect(session.messages[1].rawLineIndex).toBe(3);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+
+it('20-A documents adapter-specific raw line index semantics', () => {
+  const types = fs.readFileSync(path.join(__dirname, '..', 'src', 'types.ts'), 'utf8');
+  expect(types).toMatch(/Claude: physical zero-based JSONL line; other adapters may use parsed-record indices/);
+});
+
+it('20-B retains physical indices on every exploded assistant block after duplicate UUIDs', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-review-20-'));
+  const file = path.join(dir, 'session.jsonl');
+  const assistant = { type: 'assistant', uuid: 'same', timestamp: '2026-01-01T00:00:02Z', message: { content: [
+    { type: 'text', text: 'before' },
+    { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'true' } },
+    { type: 'tool_result', tool_use_id: 't1', content: 'ok' },
+    { type: 'text', text: 'after' },
+  ] } };
+  fs.writeFileSync(file, [JSON.stringify({ ...assistant, message: { content: [{ type: 'text', text: 'partial' }] } }), '', 'invalid', JSON.stringify(assistant)].join('\n'));
+  try {
+    const session = await parseClaudeSession(file);
+    expect(session.messages.map((m) => m.role)).toEqual(['assistant', 'tool_use', 'tool_result', 'assistant']);
+    expect(session.messages.map((m) => m.rawLineIndex)).toEqual([3, 3, 3, 3]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+describe('Claude message source classification (Issue #16)', () => {
+  it('anchors user source classification preventing false positives on human conversational prompts', () => {
+    const dummyLine = { type: 'user' } as any;
+
+    // Conversational prompts discussing keywords must be classified as 'prompt'
+    expect(classifyUserSource('How do I handle [Request interrupted by user] in my agent loop?', dummyLine)).toBe('prompt');
+    expect(classifyUserSource('Can you show me what <task-notification> looks like?', dummyLine)).toBe('prompt');
+    expect(classifyUserSource('Is /compact command destructive?', dummyLine)).toBe('prompt');
+    expect(classifyUserSource('Why does <command-name> appear in my logs?', dummyLine)).toBe('prompt');
+    expect(classifyUserSource('Why does "This session is being continued from a previous conversation" show up?', dummyLine)).toBe('prompt');
+
+    // Genuine system/interrupt/notification/local-command records
+    expect(classifyUserSource('[Request interrupted by user]', dummyLine)).toBe('interrupt');
+    expect(classifyUserSource('[Request interrupted by user for tool use "Bash"]', dummyLine)).toBe('interrupt');
+    expect(classifyUserSource('User interrupted execution', dummyLine)).toBe('prompt');
+    expect(classifyUserSource('<task-notification><task-id>task-1</task-id></task-notification>', dummyLine)).toBe('task_notification');
+    expect(classifyUserSource('<command-name>/compact</command-name>', dummyLine)).toBe('local_command');
+    expect(classifyUserSource('/compact', dummyLine)).toBe('local_command');
+    expect(classifyUserSource('<environment_context>cwd</environment_context>', dummyLine)).toBe('system');
+  });
+
+  it('correctly handles the minimal synthetic example from Issue #16', async () => {
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:01.000Z', promptSource: 'typed', origin: { kind: 'human' }, message: { role: 'user', content: 'fix the bug' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] } }),
+      JSON.stringify({ type: 'user', uuid: 'u2', timestamp: '2026-01-01T00:00:03.000Z', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } }),
+      JSON.stringify({ type: 'user', uuid: 'u3', timestamp: '2026-01-01T00:00:04.000Z', message: { role: 'user', content: '<command-name>/model</command-name>\n<command-args>x</command-args>' } }),
+      JSON.stringify({ type: 'user', uuid: 'u4', timestamp: '2026-01-01T00:00:05.000Z', message: { role: 'user', content: '<local-command-stdout>Set model to x</local-command-stdout>' } }),
+      JSON.stringify({ type: 'user', uuid: 'u5', timestamp: '2026-01-01T00:00:06.000Z', promptSource: 'system', origin: { kind: 'task-notification' }, message: { role: 'user', content: '<task-notification><task-id>b1</task-id><status>completed</status></task-notification>' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a2', timestamp: '2026-01-01T00:00:07.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'the background task finished' }] } }),
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-issue-16-'));
+    const filePath = path.join(tmpDir, 'test-synth.jsonl');
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+
+    try {
+      const session = await parseClaudeSession(filePath);
+      // Exactly 1 genuine human prompt counts in stats.byRole.user
+      expect(session.stats.byRole.user).toBe(1);
+
+      // Verify classifications on individual messages
+      const u1 = session.messages.find((m) => m.content === 'fix the bug');
+      expect(u1).toBeDefined();
+      expect(u1!.source).toBe('prompt');
+
+      const u2 = session.messages.find((m) => m.content.includes('[Request interrupted by user]'));
+      expect(u2).toBeDefined();
+      expect(u2!.source).toBe('interrupt');
+
+      const u3 = session.messages.find((m) => m.content.includes('<command-name>'));
+      expect(u3).toBeDefined();
+      expect(u3!.source).toBe('local_command');
+
+      const u4 = session.messages.find((m) => m.content.includes('<local-command-stdout>'));
+      expect(u4).toBeDefined();
+      expect(u4!.source).toBe('local_command');
+
+      const u5 = session.messages.find((m) => m.content.includes('<task-notification>'));
+      expect(u5).toBeDefined();
+      expect(u5!.source).toBe('task_notification');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes non-human prompts from stats.byRole.user in claude-hardened fixture', async () => {
+    const session = await parseClaudeSession(CLAUDE_HARDENED_FIXTURE);
+    // Despite having interrupt and local_command messages,
+    // only the single genuine human prompt counts towards stats.byRole.user
+    expect(session.stats.byRole.user).toBe(1);
+    expect(session.messages[0].source).toBe('prompt');
+    const interruptMsg = session.messages.find((m) => m.source === 'interrupt');
+    expect(interruptMsg).toBeDefined();
+    const cmdMsg = session.messages.find((m) => m.source === 'local_command');
+    expect(cmdMsg).toBeDefined();
+  });
+});
+
+
+async function parseReview19Records(records: unknown[]) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-review-19-'));
+  const file = path.join(dir, 'session.jsonl');
+  fs.writeFileSync(file, records.map((r) => JSON.stringify(r)).join('\n'));
+  try { return await parseClaudeSession(file); }
+  finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+it('19-A excludes harness peer wrappers but preserves legacy and queued new-turn prompts', async () => {
+  const session = await parseReview19Records([
+    { type: 'user', uuid: 'peer', timestamp: '2026-01-01T00:00:01Z', message: { content: '<agent-message from="worker">done</agent-message>' } },
+    { type: 'user', uuid: 'human', timestamp: '2026-01-01T00:00:02Z', message: { content: 'please fix this' } },
+    { type: 'user', uuid: 'queued', timestamp: '2026-01-01T00:00:03Z', promptSource: 'queued', origin: { kind: 'human' }, message: { content: 'next request' } },
+  ]);
+  expect(session.messages[0].source).toBe('system');
+  expect(session.messages.slice(1).map((m) => m.source)).toEqual(['prompt', 'prompt']);
+  expect(session.stats.byRole.user).toBe(2);
+});
+
+it('19-B keeps conversational interrupt text human and exact bracketed markers interrupts', async () => {
+  const session = await parseReview19Records([
+    { type: 'user', uuid: 'human', timestamp: '2026-01-01T00:00:01Z', promptSource: 'typed', origin: { kind: 'human' }, message: { content: 'User interrupted execution while my script was running; explain the error.' } },
+    { type: 'user', uuid: 'marker', timestamp: '2026-01-01T00:00:02Z', message: { content: '[Request interrupted by user]' } },
+    { type: 'user', uuid: 'tool-marker', timestamp: '2026-01-01T00:00:03Z', message: { content: '[Request interrupted by user for tool use "Bash"]' } },
+  ]);
+  expect(session.messages.map((m) => m.source)).toEqual(['prompt', 'interrupt', 'interrupt']);
+  expect(session.stats.byRole.user).toBe(1);
+  expect(classifyUserSource('[Request interrupted by user] how do I handle this?', { type: 'user' } as any)).toBe('prompt');
+  expect(classifyUserSource('<command-name> is literal text', { type: 'user', origin: { kind: 'human' }, promptSource: 'typed' } as any)).toBe('prompt');
+});
+
+it('19-C gives notifications and system classifications the system role for both content shapes', async () => {
+  const notification = '<task-notification><task-id>b1</task-id><status>completed</status></task-notification>';
+  const session = await parseReview19Records([
+    { type: 'user', uuid: 'human', timestamp: '2026-01-01T00:00:01Z', message: { content: 'fix the bug' } },
+    ...[notification, [{ type: 'text', text: notification }]].map((content, i) => ({ type: 'user', uuid: `notification-${i}`, timestamp: '2026-01-01T00:00:02Z', origin: { kind: 'task-notification' }, message: { content } })),
+    { type: 'user', uuid: 'system', timestamp: '2026-01-01T00:00:03Z', promptSource: 'system', message: { content: 'harness metadata' } },
+  ]);
+  expect(session.messages.slice(1).map((m) => m.role)).toEqual(['system', 'system', 'system']);
+  expect(session.messages.slice(1).map((m) => m.source)).toEqual(['task_notification', 'task_notification', 'system']);
+  expect(session.stats.byRole.user).toBe(1);
+  expect(session.stats.byRole.system).toBe(3);
+});
+
+it('19-A recognizes the fixed cross-session harness preamble observed in R4', async () => {
+  const text = 'Another Claude session sent a message:\n<teammate-message teammate_id="worker">done</teammate-message>';
+  const session = await parseReview19Records([
+    { type: 'user', uuid: 'peer', timestamp: '2026-01-01T00:00:01Z', message: { content: text } },
+    { type: 'user', uuid: 'peer-block', timestamp: '2026-01-01T00:00:02Z', message: { content: [{ type: 'text', text }] } },
+    { type: 'user', uuid: 'human', timestamp: '2026-01-01T00:00:03Z', message: { content: 'Another Claude session sent a message: can you explain that phrase?' } },
+  ]);
+  expect(session.messages.map((m) => m.source)).toEqual(['system', 'system', 'prompt']);
+  expect(session.stats.byRole.user).toBe(1);
+});
+
+it('19-B recognizes the exact tool-use interrupt marker without a named tool', async () => {
+  const session = await parseReview19Records([
+    { type: 'user', uuid: 'marker', timestamp: '2026-01-01T00:00:01Z', message: { content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } },
+    { type: 'user', uuid: 'human', timestamp: '2026-01-01T00:00:02Z', message: { content: '[Request interrupted by user for tool use] what does this mean?' } },
+  ]);
+  expect(session.messages.map((m) => m.source)).toEqual(['interrupt', 'prompt']);
+  expect(session.stats.byRole.user).toBe(1);
+});
+
+it('19-E documents interrupt linkage as deferred to the turns model', () => {
+  const types = fs.readFileSync(path.join(__dirname, '..', 'src', 'types.ts'), 'utf8');
+  expect(types).toContain('Interrupt-to-prompt references are deferred to the turns model (Issue #25).');
+});
+describe('Claude mid-turn absorbed commands and turn duration (Issue #14)', () => {
+  it('ingests queued_command attachment mid-turn and captures turn_duration for durationMs', async () => {
+    const lines = [
+      JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:01.000Z', promptSource: 'typed', origin: { kind: 'human' }, message: { role: 'user', content: 'run the tests' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'sleep 5' } }] } }),
+      JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: '2026-01-01T00:00:03.000Z', content: 'also run the linter' }),
+      JSON.stringify({ type: 'attachment', uuid: 'x1', timestamp: '2026-01-01T00:00:04.000Z', attachment: { type: 'queued_command', prompt: 'also run the linter', commandMode: 'prompt', origin: { kind: 'human' } } }),
+      JSON.stringify({ type: 'queue-operation', operation: 'remove', timestamp: '2026-01-01T00:00:04.000Z', content: 'also run the linter', reason: 'absorbed_mid_turn' }),
+      JSON.stringify({ type: 'user', uuid: 'u2', timestamp: '2026-01-01T00:00:05.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a2', timestamp: '2026-01-01T00:00:06.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'done, tests and linter ran' }] } }),
+      JSON.stringify({ type: 'system', subtype: 'turn_duration', uuid: 's1', timestamp: '2026-01-01T00:00:07.000Z', durationMs: 6000 }),
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-issue-14-'));
+    const filePath = path.join(tmpDir, 'test-synth-14.jsonl');
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+
+    try {
+      const session = await parseClaudeSession(filePath);
+
+      // Acceptance: yields two user messages ('run the tests', then 'also run the linter' marked as absorbed mid-turn)
+      const userMsgs = session.messages.filter((m) => m.role === 'user');
+      expect(userMsgs.length).toBe(2);
+      expect(userMsgs[0].content).toBe('run the tests');
+      expect(userMsgs[1].content).toBe('also run the linter');
+      expect(userMsgs[1].source).toBe('queued');
+
+      // Acceptance: turn end with durationMs: 6000
+      expect(session.stats.durationMs).toBe(6000);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+
+async function parseReview21Records(records: unknown[], raw?: string) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessionr-review-21-'));
+  const file = path.join(dir, 'session.jsonl');
+  fs.writeFileSync(file, raw ?? records.map((r) => JSON.stringify(r)).join('\n'));
+  try { return await parseClaudeSession(file); }
+  finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function review21Attachment(uuid: string, attachment: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  return { type: 'attachment', uuid, timestamp: '2026-01-01T00:00:04Z', ...extra, attachment: { type: 'queued_command', prompt: 'steer', ...attachment } };
+}
+
+it('21-A accepts prompt and absent modes but never treats notifications as human steers', async () => {
+  const session = await parseReview21Records([
+    review21Attachment('prompt', { commandMode: 'prompt', origin: { kind: 'human' } }),
+    review21Attachment('legacy', { origin: { kind: 'human' } }),
+    review21Attachment('notification', { commandMode: 'task-notification', prompt: '<task-notification>done</task-notification>', origin: { kind: 'task-notification' } }),
+  ]);
+  expect(session.messages.filter((m) => m.role === 'user').map((m) => m.source)).toEqual(['queued', 'queued']);
+  expect(session.stats.byRole.user).toBe(2);
+  expect(session.messages[2]).toMatchObject({ role: 'system', source: 'task_notification' });
+});
+
+it('21-B retains distinct attachment origins and counts only human prompting', async () => {
+  const session = await parseReview21Records([
+    review21Attachment('human', { commandMode: 'prompt', origin: { kind: 'human' } }),
+    review21Attachment('peer', { commandMode: 'prompt', origin: { kind: 'peer' } }),
+  ]);
+  expect(session.messages.map((m) => m.originKind)).toEqual(['human', 'peer']);
+  expect(session.stats.byRole.user).toBe(1);
+  const { serializeMessage } = await import('../src/output/serialize.js');
+  expect(session.messages.map((m) => serializeMessage(m, { preset: 'full' }).origin_kind)).toEqual(['human', 'peer']);
+});
+
+it('21-C serializes queued provenance in direct, JSON and JSONL output', async () => {
+  const session = await parseReview21Records([review21Attachment('human', { origin: { kind: 'human' } })]);
+  const { serializeMessage } = await import('../src/output/serialize.js');
+  const { createJsonFormatter } = await import('../src/output/json.js');
+  const { createJsonlFormatter } = await import('../src/output/jsonl.js');
+  const { getPreset } = await import('../src/config.js');
+  const message = session.messages[0];
+  expect(serializeMessage(message, { preset: 'full' })).toMatchObject({ source: 'queued', origin_kind: 'human' });
+  expect(serializeMessage(message, { detail: 'meta' })).toMatchObject({ source: 'queued', origin_kind: 'human' });
+  const json = JSON.parse(createJsonFormatter().read(session, session.messages, 1, 1, getPreset('full')));
+  expect(json.result.messages[0]).toMatchObject({ source: 'queued', origin_kind: 'human' });
+  const jsonl = createJsonlFormatter().read(session, session.messages, 1, 1, getPreset('full')).split('\n').map((s) => JSON.parse(s));
+  expect(jsonl[1]).toMatchObject({ source: 'queued', origin_kind: 'human' });
+});
+
+it('21-D exposes individual turn ends outside messages and through the external session', async () => {
+  const record = { type: 'system', subtype: 'turn_duration', uuid: 'end-1', timestamp: '2026-01-01T00:00:07Z', durationMs: 6000 };
+  const one = await parseReview21Records([record]);
+  expect(one.turnEnds).toEqual([{ timestamp: new Date(record.timestamp), durationMs: 6000, rawLineIndex: 0 }]);
+  const two = await parseReview21Records([record, { ...record, uuid: 'end-2', timestamp: '2026-01-01T00:00:10Z', durationMs: 3000 }, { type: 'system', subtype: 'stop_hook_summary', uuid: 'hook', timestamp: '2026-01-01T00:00:11Z' }]);
+  expect(two.turnEnds).toHaveLength(2);
+  expect(two.stats.durationMs).toBe(9000);
+  expect(two.messages).toEqual([]);
+  const { toExternalSession } = await import('../src/output/serialize.js');
+  expect(toExternalSession(one).turn_ends).toEqual([{ timestamp: '2026-01-01T00:00:07.000Z', duration_ms: 6000, raw_line_index: 0 }]);
+});
+
+it('21-E safely extracts text from unknown queued prompt content', async () => {
+  const prompts: unknown[] = [
+    [{ type: 'text', text: 'inspect image' }, { type: 'image', source: { data: 'abc' } }],
+    [{ type: 'image', source: { data: 'abc' } }],
+    [null, 7, { type: 'text', text: 42 }, { type: 'text', text: 'safe text' }],
+    { broken: true }, null,
+  ];
+  const session = await parseReview21Records(prompts.map((prompt, i) => review21Attachment(`array-${i}`, { prompt })));
+  expect(session.messages.map((m) => m.content)).toEqual(['inspect image', '[queued command]', 'safe text', '[queued command]', '[queued command]']);
+  expect(session.messages.every((m) => typeof m.content === 'string')).toBe(true);
+  expect(session.messages[0].blocks).toEqual([{ type: 'text', text: 'inspect image' }]);
+});
+
+it('21-F excludes attachments hidden by line-level or attachment-level metadata', async () => {
+  const session = await parseReview21Records([
+    review21Attachment('line-hidden', { origin: { kind: 'human' } }, { isMeta: true }),
+    review21Attachment('attachment-hidden', { origin: { kind: 'human' }, isMeta: true }),
+    review21Attachment('visible', { origin: { kind: 'human' }, isMeta: false }, { isMeta: false }),
+  ]);
+  expect(session.messages).toHaveLength(1);
+  expect(session.messages[0]).toMatchObject({ source: 'queued', originKind: 'human' });
+  expect(session.stats.byRole.user).toBe(1);
+});
+
+it('21-G counts only finite non-negative system turn_duration completions', async () => {
+  const end = { type: 'system', subtype: 'turn_duration', uuid: 'end', timestamp: '2026-01-01T00:00:07Z', durationMs: 6000 };
+  const records = [
+    end,
+    { ...end, uuid: 'hook', subtype: 'stop_hook_summary', durationMs: 100000 },
+    { ...end, uuid: 'kind-only', subtype: undefined, kind: 'turn_duration', durationMs: 100000 },
+    { ...end, uuid: 'negative', durationMs: -1 },
+    { ...end, uuid: 'string', durationMs: '6000' },
+    { ...end, uuid: 'wrong-type', type: 'user', durationMs: 100000 },
+    { ...end, uuid: 'zero', durationMs: 0 },
+  ];
+  const unrelated = await parseReview21Records(records.slice(0, 2));
+  expect(unrelated.stats.durationMs).toBe(6000);
+  const raw = records.map((r) => JSON.stringify(r)).join('\n') + '\n' + JSON.stringify({ ...end, uuid: 'infinite', durationMs: 'INFINITY' }).replace('"INFINITY"', '1e309');
+  const session = await parseReview21Records(records, raw);
+  expect(session.stats.durationMs).toBe(6000);
+  expect(session.turnEnds?.map((e) => e.durationMs)).toEqual([6000, 0]);
+  expect(session.messages).toEqual([]);
+});
+
+it('X-1 prefers reader-supplied physical attachment indices and retains the standalone fallback', async () => {
+  const user = { type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:01Z', message: { content: 'start' } };
+  const assistant = { type: 'assistant', uuid: 'a1', timestamp: '2026-01-01T00:00:02Z', message: { content: 'working' } };
+  const records = [user, assistant, '', 'invalid', assistant, { type: 'queue-operation', timestamp: '2026-01-01T00:00:03Z', operation: 'enqueue' }, review21Attachment('attachment', { origin: { kind: 'human' } })];
+  const encode = (withPhysicalIndex: boolean) => records.map((r, i) => typeof r === 'string' ? r : JSON.stringify(withPhysicalIndex ? { ...r, rawLineIndex: i } : r)).join('\n');
+  // Emulate #20's reader annotation; #21 alone deliberately keeps parsed-index fallback.
+  const indexed = await parseReview21Records([], encode(true));
+  expect(indexed.messages.find((m) => m.source === 'queued')?.rawLineIndex).toBe(6);
+  const unindexed = await parseReview21Records([], encode(false));
+  expect(unindexed.messages.find((m) => m.source === 'queued')?.content).toBe('steer');
 });
 
 describe('Milestone 1: Codex Deep Tool & Patch Parsing (Issue #7)', () => {
