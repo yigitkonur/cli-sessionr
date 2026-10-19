@@ -447,6 +447,11 @@ export function sliceByTokenBudget(
     : estimateSessionTokens(trimmed);
   const firstIdx = trimmed[0].index;
   const lastIdx = trimmed[trimmed.length - 1].index;
+  // `partial` (exit 10) means the token budget cut the slice we were handed. Measure it against that
+  // slice, not the whole session, so an explicit range like `read <id> 1 2` is not reported as
+  // truncated. has_more_* and the cursors stay session-wide.
+  const sliceFirstIdx = allMessages[0].index;
+  const sliceLastIdx = allMessages[allMessages.length - 1].index;
 
   const meta: SliceMeta = {
     session_id: sessionId,
@@ -462,7 +467,7 @@ export function sliceByTokenBudget(
     cursor_before: firstIdx > 1 ? firstIdx - 1 : null,
     cursor_after: lastIdx < totalMessages ? lastIdx + 1 : null,
     cursor: { prev: null, next: null, first: null },
-    partial: firstIdx > 1 || lastIdx < totalMessages,
+    partial: firstIdx > sliceFirstIdx || lastIdx < sliceLastIdx,
   };
 
   if (anchor === 'search' && searchQuery !== undefined) {
