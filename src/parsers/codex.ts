@@ -9,6 +9,7 @@ import type {
   SessionMetadata,
   SessionStats,
   SessionListEntry,
+  MessageSource,
 } from '../types.js';
 
 import {
@@ -83,7 +84,7 @@ function extractUserText(content: unknown): string {
   return content
     .filter(
       (item: Record<string, unknown>) =>
-        item && item.type === 'input_text' && typeof item.text === 'string',
+        item && ['input_text', 'text'].includes(String(item.type)) && typeof item.text === 'string',
     )
     .map((item: Record<string, unknown>) => (item.text as string).trim())
     .filter(Boolean)
@@ -427,8 +428,7 @@ function parseToolArgs(payload: Record<string, unknown>): Record<string, unknown
     return parseJsonRecord(payload.arguments);
   }
   if (payload.type === 'custom_tool_call') {
-    const raw = String(payload.input || '');
-    return { input: truncateSingleLine(raw, 300) };
+    return { input: String(payload.input || '') };
   }
   if (payload.type === 'web_search_call') {
     return parseJsonRecord(payload.arguments ?? payload.input ?? payload.query);
@@ -652,6 +652,33 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
   // Determine whether response_item events exist (newer format preferred)
   const hasResponseItems = events.some((e) => e.type === 'response_item');
 
+  // Modern UserMessage items identify real prompts; response_item user records also carry context.
+  const hasUserItems = events.some(e => e.type === 'event_msg' && e.payload?.type === 'item_completed' &&
+    (e.payload.item as Record<string, unknown> | undefined)?.type === 'UserMessage');
+  const userSources = new Map<number, MessageSource>();
+  const candidates = new Map<string, number[]>();
+  let taskHasPrompt = false;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    const p = e.payload;
+    if (!p) continue;
+    if (e.type === 'event_msg' && p.type === 'task_started') { taskHasPrompt = false; candidates.clear(); }
+    if (e.type === 'response_item' && p.type === 'message' && p.role === 'user') {
+      const text = extractUserText(p.content);
+      const list = candidates.get(text) ?? [];
+      list.push(i); candidates.set(text, list);
+    }
+    if (e.type === 'event_msg' && p.type === 'item_completed') {
+      const item = p.item as Record<string, unknown> | undefined;
+      if (item?.type !== 'UserMessage') continue;
+      const text = extractUserText(item.content);
+      const source = text.trimStart().startsWith('<send_user_message_question_reply>') ? 'injected' : taskHasPrompt ? 'queued' : 'prompt';
+      if (source === 'prompt') taskHasPrompt = true;
+      const line = candidates.get(text)?.pop();
+      userSources.set(line ?? i, source);
+    }
+  }
+
   function addToolCount(name: string, isError: boolean): void {
     const existing = toolCounts.get(name) ?? { count: 0, errors: 0 };
     existing.count++;
@@ -666,6 +693,21 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
   for (let lineIdx = 0; lineIdx < events.length; lineIdx++) {
     const event = events[lineIdx];
     const ts = event.timestamp ? new Date(event.timestamp) : (lastTimestamp ?? now);
+
+    if (event.type === 'event_msg' && event.payload &&
+        ['task_complete', 'turn_aborted'].includes(String(event.payload.type))) {
+      const last = messages[messages.length - 1];
+      if (last) {
+        last.terminal = event.payload.type === 'turn_aborted' ? 'interrupted' : 'complete';
+        if (typeof event.payload.duration_ms === 'number') last.durationMs = event.payload.duration_ms;
+      }
+    }
+    // Rare modern records without a response_item copy still contain a real prompt.
+    if (userSources.has(lineIdx) && event.type === 'event_msg') {
+      const item = event.payload?.item as Record<string, unknown> | undefined;
+      const text = extractUserText(item?.content);
+      if (text) pushMessage({role: 'user', timestamp: ts, content: text, blocks: [{type: 'text', text}], source: userSources.get(lineIdx), rawLineIndex: lineIdx});
+    }
 
     // ── response_item events ──────────────────────────────────────────
 
@@ -684,7 +726,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
           const text = extractUserText(p.content);
           if (!text || isBootstrapMessage(text)) continue;
           const blocks: ContentBlock[] = [{ type: 'text', text }];
-          pushMessage({ role: 'user', timestamp: ts, content: text, blocks, rawLineIndex: lineIdx });
+          pushMessage({ role: 'user', timestamp: ts, content: text, blocks, rawLineIndex: lineIdx, source: hasUserItems ? (userSources.get(lineIdx) ?? 'injected') : undefined });
         } else if (pRole === 'system') {
           const text = extractAssistantText(p.content);
           if (!text) continue;
@@ -697,6 +739,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
           const blocks: ContentBlock[] = [{ type: 'text', text }];
           pushMessage({
             role: 'assistant',
+            kind: p.phase === 'commentary' ? 'commentary' : undefined,
             timestamp: ts,
             content: text,
             blocks,

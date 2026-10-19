@@ -357,6 +357,7 @@ export function sliceByTokenBudget(
   arg7?: VerbosityPreset,
   arg8?: number | SearchField[] | string | string[] | Set<SearchField>,
   arg9?: number,
+  arg10?: { preserveTrailing?: boolean; window?: { from: number; to: number } },
 ): SliceResult {
   let sessionId = 'default';
   let source: SessionSource = 'claude';
@@ -387,6 +388,10 @@ export function sliceByTokenBudget(
 
   const totalTokens = estimateSessionTokens(allMessages);
   const totalMessages = totalSessionMessages ?? allMessages.length;
+  // Turn-scoped reads (--turn) keep the turn's final message and page against the turn's own window (passed in,
+  // because a cursor may already have clamped allMessages); every other read pages against the whole session.
+  const preserveTrailing = arg10?.preserveTrailing === true;
+  const turnWindow = arg10?.window;
 
   if (allMessages.length === 0 && !(anchor === 'search' && searchQuery !== undefined)) {
     return {
@@ -437,9 +442,10 @@ export function sliceByTokenBudget(
   }
 
   const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor, preset);
-  // Only head windows trim a trailing non-assistant message: tail walks keep a trailing prompt (#24) and
-  // search windows are centered on the match (#23). Unresolved tool calls are never trimmed.
-  const trimmed = anchor === 'head'
+  // Only head windows trim a trailing non-assistant message: tail walks keep a trailing prompt (#24), search
+  // windows are centered on the match (#23) and turn-scoped reads keep the turn's final message (#25).
+  // Unresolved tool calls are never trimmed.
+  const trimmed = anchor === 'head' && !preserveTrailing
     ? trimToAssistantLast(selected, getUnresolvedToolCallIds(allMessages))
     : selected;
 
@@ -450,9 +456,11 @@ export function sliceByTokenBudget(
   const lastIdx = trimmed[trimmed.length - 1].index;
   // `partial` (exit 10) means the token budget cut the slice we were handed. Measure it against that
   // slice, not the whole session, so an explicit range like `read <id> 1 2` is not reported as
-  // truncated. has_more_* and the cursors stay session-wide.
+  // truncated. has_more_* and the cursors page against the session (or the turn window in --turn mode).
   const sliceFirstIdx = allMessages[0].index;
   const sliceLastIdx = allMessages[allMessages.length - 1].index;
+  const boundsFirstIdx = turnWindow ? turnWindow.from : 1;
+  const boundsLastIdx = turnWindow ? turnWindow.to : totalMessages;
 
   const meta: SliceMeta = {
     session_id: sessionId,
@@ -463,10 +471,10 @@ export function sliceByTokenBudget(
     token_budget: budget,
     anchor,
     range: { from: firstIdx, to: lastIdx },
-    has_more_before: firstIdx > 1,
-    has_more_after: lastIdx < totalMessages,
-    cursor_before: firstIdx > 1 ? firstIdx : null,
-    cursor_after: lastIdx < totalMessages ? lastIdx : null,
+    has_more_before: firstIdx > boundsFirstIdx,
+    has_more_after: lastIdx < boundsLastIdx,
+    cursor_before: firstIdx > boundsFirstIdx ? firstIdx : null,
+    cursor_after: lastIdx < boundsLastIdx ? lastIdx : null,
     cursor: { prev: null, next: null, first: null },
     partial: firstIdx > sliceFirstIdx || lastIdx < sliceLastIdx,
   };
