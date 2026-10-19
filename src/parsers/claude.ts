@@ -361,7 +361,7 @@ function explodeCompactionMessage(
       content,
       blocks: [{ type: 'text', text: content }],
       timestamp: ts,
-      rawLineIndex: lineIndex,
+      rawLineIndex: typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex,
       kind: 'compaction',
       compactionMeta: {
         trigger,
