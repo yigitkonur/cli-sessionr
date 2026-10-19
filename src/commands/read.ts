@@ -510,12 +510,14 @@ export async function readCommand(
         partial: false,
       };
       let meta = injectNextAction(emptyMeta);
+      // Polling past the end is exactly when an unanswered tool call matters: keep it in the envelope.
+      meta.pending_tool_calls = pendingToolCalls;
       meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
       meta = attachETag(meta, session, {
         preset,
         tokenBudget,
         anchor: requestedAnchor ?? 'head',
-        search: opts?.search,
+        search: opts?.search == null ? undefined : JSON.stringify([opts.search, Array.from(normalizeSearchFields(opts.searchIn)).sort()]),
         page: undefined,
         format: outputFormat,
       });
