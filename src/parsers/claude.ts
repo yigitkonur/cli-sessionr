@@ -543,9 +543,11 @@ function collectTurnEnds(lines: RawLine[]): TurnEndEvent[] {
           : typeof (line as any).duration_ms === 'number'
             ? (line as any).duration_ms
             : undefined;
-      if (typeof dur === 'number' && Number.isFinite(dur) && dur >= 0) {
+      const timestamp = new Date(line.timestamp);
+      // A malformed timestamp would later throw in toISOString(); skip the record instead.
+      if (typeof dur === 'number' && Number.isFinite(dur) && dur >= 0 && !Number.isNaN(timestamp.getTime())) {
         turnEnds.push({
-          timestamp: new Date(line.timestamp),
+          timestamp,
           durationMs: dur,
           rawLineIndex: typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex,
         });
