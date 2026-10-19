@@ -67,6 +67,14 @@ function buildSessionSummary(
  * or a { id } / { path, source } reference object.
  */
 export async function read(ref: SessionRef, opts?: ReadOptions): Promise<ReadEnvelope> {
+  if (opts?.page != null) {
+    throw new SessionReaderError('read() does not support page-based reads; page with cursors instead.', {
+      code: 'UNSUPPORTED_OPTION', errorClass: 'validation', exitCode: EXIT.USAGE,
+      detail: { option: 'page' },
+      suggestion: 'Use meta.cursor_after / meta.cursor_before (after / before), or from / to.',
+    });
+  }
+
   let session: NormalizedSession;
 
   if (typeof ref === 'object' && ref !== null) {
@@ -151,8 +159,19 @@ export async function read(ref: SessionRef, opts?: ReadOptions): Promise<ReadEnv
 
   const summary = buildSessionSummary(session, tokenBudget);
 
-  // Exhaustion guard on cursor queries
-  if (isCursorQuery && (from > totalMessages || to < 1 || from > to)) {
+  // An empty session, or a cursor query past either end, is a terminal empty response (as in the CLI):
+  // no messages, no continuation flags and no cursors.
+  if (totalMessages === 0 || (isCursorQuery && (from > totalMessages || to < 1 || from > to))) {
+    const emptyAnchor = (opts?.anchor as 'head' | 'tail' | 'search' | undefined) ?? 'head';
+    const emptyEtag = computeETag(session, {
+      preset: preset?.name,
+      tokenBudget,
+      anchor: emptyAnchor,
+      search: opts?.search,
+      role: opts?.role,
+      from: 0,
+      to: 0,
+    });
     const emptyMeta: SliceMeta = {
       session_id: session.id,
       source: session.source,
@@ -160,25 +179,28 @@ export async function read(ref: SessionRef, opts?: ReadOptions): Promise<ReadEnv
       total_tokens_estimate: estimateSessionTokens(messages),
       returned_tokens_estimate: 0,
       token_budget: tokenBudget,
-      anchor: (opts?.anchor as any) ?? 'head',
+      anchor: emptyAnchor,
       range: { from: 0, to: 0 },
-      has_more_before: opts?.before != null ? false : from > 1,
-      has_more_after: opts?.after != null ? false : to < totalMessages,
+      has_more_before: false,
+      has_more_after: false,
       cursor_before: null,
       cursor_after: null,
       cursor: { next: null, prev: null, first: null },
       partial: false,
+      etag: emptyEtag,
       context_window: session.metadata.contextWindow,
       context_tokens: session.stats.tokenUsage?.contextTokens,
       pending_tool_calls: pendingToolCalls,
       pendingToolCalls: pendingToolCalls,
+      ...(selectedTurn ? { turn: selectedTurn, turns: session.turns ?? segmentTurns(session) } : {}),
     };
+    const emptyUnchanged = opts?.ifChanged !== undefined && opts.ifChanged === emptyEtag;
     return {
       ok: true,
       sessionId: session.id,
       session_id: session.id,
       source: session.source,
-      meta: emptyMeta,
+      meta: emptyUnchanged ? ({ ...emptyMeta, unchanged: true } as any) : emptyMeta,
       messages: [],
       summary,
     };
@@ -207,7 +229,8 @@ export async function read(ref: SessionRef, opts?: ReadOptions): Promise<ReadEnv
     session.source,
     anchor,
     opts?.search,
-    preset,
+    // read() returns normalized messages unrendered, so the budget is measured on what is returned (no preset).
+    undefined,
     opts?.searchIn,
     totalMessages,
     {
