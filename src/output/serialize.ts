@@ -240,6 +240,7 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   cacheCreation: 'cache_creation',
   pendingToolCalls: 'pending_tool_calls',
   messageIndex: 'message_index',
+  matchIndex: 'match_index',
 };
 
 /**
