@@ -97,6 +97,20 @@ export interface SessionStats {
   durationMs?: number;
 }
 
+// ── Pending Tool Calls ──────────────────────────────────────────────────────
+
+export interface PendingToolCall {
+  /** A later user prompt exists; this is historical, not necessarily a current waiter. */
+  superseded: boolean;
+  id: string;
+  tool_use_id?: string;
+  name: string;
+  input: Record<string, unknown>;
+  messageIndex: number;
+  index: number;
+  timestamp?: string;
+}
+
 // ── Normalized Session ─────────────────────────────────────────────────────
 
 export interface TurnEndEvent {
@@ -115,6 +129,8 @@ export interface NormalizedSession {
   /** Per-turn completion records, separate from the conversation messages. */
   turnEnds?: TurnEndEvent[];
   stats: SessionStats;
+  pendingToolCalls?: PendingToolCall[];
+  pending_tool_calls?: PendingToolCall[];
 }
 
 // ── Session List Entry (lightweight, for list command) ─────────────────────
@@ -278,6 +294,8 @@ export interface SliceMeta {
       command: string;
     }>;
   };
+  pendingToolCalls?: PendingToolCall[];
+  pending_tool_calls?: PendingToolCall[];
 }
 
 // ── Output Resolution Options ──────────────────────────────────────────────

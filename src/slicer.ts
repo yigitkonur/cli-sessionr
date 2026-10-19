@@ -1,5 +1,5 @@
 import { cmdPrefix } from "./util/invocation.js";
-import type { NormalizedMessage, SessionSource, SliceMeta, CursorCommands, VerbosityPreset } from './types.js';
+import type { NormalizedMessage, SessionSource, SliceMeta, CursorCommands, VerbosityPreset, PendingToolCall } from './types.js';
 import { estimateMessageTokens, estimateSessionTokens, estimateRenderedMessageTokens, estimateRenderedSessionTokens } from './tokens.js';
 
 export interface SliceResult {
@@ -47,12 +47,121 @@ export function estimatePageCount(messages: NormalizedMessage[], budget: number)
   return Math.max(1, Math.ceil(totalTokens / budget));
 }
 
-function trimToAssistantLast(messages: NormalizedMessage[]): NormalizedMessage[] {
+// ── Pending Tool Calls Tracking (Issue #6) ─────────────────────────────────
+
+export function getUnresolvedToolCallIds(messages: NormalizedMessage[]): Set<string> {
+  const unresolved = new Set<string>();
+  for (const msg of messages) {
+    if (msg.blocks && Array.isArray(msg.blocks)) {
+      for (const b of msg.blocks) {
+        if (b.type === 'tool_use') {
+          unresolved.add(b.id || `tool-${msg.index}`);
+        } else if (b.type === 'tool_result') {
+          const callId = b.toolUseId ?? (b as any).tool_use_id ?? (b as any).id;
+          if (callId) {
+            unresolved.delete(callId);
+          }
+        }
+      }
+    }
+    if (msg.role === 'tool_result') {
+      const callId = (msg as any).toolUseId ?? (msg as any).tool_use_id;
+      if (callId) {
+        unresolved.delete(callId);
+      }
+    }
+  }
+  return unresolved;
+}
+
+export function computePendingToolCalls(messages: NormalizedMessage[]): PendingToolCall[] {
+  const pendingMap = new Map<string, PendingToolCall>();
+  const lastUserIndex = messages.reduce((last, msg) => msg.role === 'user' ? Math.max(last, msg.index) : last, 0);
+  for (const msg of messages) {
+    if (msg.blocks && Array.isArray(msg.blocks)) {
+      for (const b of msg.blocks) {
+        if (b.type === 'tool_use') {
+          const callId = b.id || `tool-${msg.index}`;
+          pendingMap.set(callId, {
+            id: callId,
+            tool_use_id: callId,
+            name: b.name,
+            input: b.input ?? {},
+            messageIndex: msg.index,
+            index: msg.index,
+            superseded: msg.index < lastUserIndex,
+            timestamp: typeof msg.timestamp === 'string'
+              ? msg.timestamp
+              : msg.timestamp instanceof Date && !isNaN(msg.timestamp.getTime())
+                ? msg.timestamp.toISOString()
+                : undefined,
+          });
+        } else if (b.type === 'tool_result') {
+          const callId = b.toolUseId ?? (b as any).tool_use_id ?? (b as any).id;
+          if (callId) {
+            pendingMap.delete(callId);
+          }
+        }
+      }
+    } else if (msg.role === 'tool_use') {
+      const callId = (msg as any).toolUseId ?? (msg as any).id ?? `tool-${msg.index}`;
+      pendingMap.set(callId, {
+        id: callId,
+        tool_use_id: callId,
+        name: msg.content.replace(/^Tool:\s*/, ''),
+        input: {},
+        messageIndex: msg.index,
+        index: msg.index,
+        superseded: msg.index < lastUserIndex,
+        timestamp: typeof msg.timestamp === 'string'
+          ? msg.timestamp
+          : msg.timestamp instanceof Date && !isNaN(msg.timestamp.getTime())
+            ? msg.timestamp.toISOString()
+            : undefined,
+      });
+    } else if (msg.role === 'tool_result') {
+      const callId = (msg as any).toolUseId ?? (msg as any).tool_use_id;
+      if (callId) {
+        pendingMap.delete(callId);
+      }
+    }
+  }
+  return Array.from(pendingMap.values());
+}
+
+function isUnresolvedToolMessage(msg: NormalizedMessage, unresolved: Set<string>): boolean {
+  if (msg.role === 'tool_use') {
+    if (msg.blocks && msg.blocks.length > 0) {
+      return msg.blocks.some((b) => b.type === 'tool_use' && unresolved.has(b.id || `tool-${msg.index}`));
+    }
+    return unresolved.size > 0;
+  }
+  if (msg.role === 'assistant' && msg.blocks) {
+    return msg.blocks.some((b) => b.type === 'tool_use' && unresolved.has(b.id || `tool-${msg.index}`));
+  }
+  return false;
+}
+
+function trimToAssistantLast(
+  messages: NormalizedMessage[],
+  unresolvedToolCallIds?: Set<string>,
+): NormalizedMessage[] {
   if (messages.length === 0) return messages;
-  if (messages[messages.length - 1].role === 'assistant') return messages;
+
+  const last = messages[messages.length - 1];
+  if (last.role === 'assistant') return messages;
+
+  const unresolved = unresolvedToolCallIds ?? getUnresolvedToolCallIds(messages);
+  if (isUnresolvedToolMessage(last, unresolved)) {
+    return messages;
+  }
+
   let end = messages.length - 1;
   while (end >= 0 && messages[end].role !== 'assistant') {
     end--;
+  }
+  if (messages.slice(end + 1).some((msg) => isUnresolvedToolMessage(msg, unresolved))) {
+    return messages;
   }
   if (end >= 0 && end + 1 >= messages.length / 2) {
     return messages.slice(0, end + 1);
@@ -105,7 +214,8 @@ export function sliceByPage(
   const pageIdx = Math.max(0, Math.min(page - 1, totalPages - 1));
   const pageRange = pages[pageIdx];
   let selected = allMessages.slice(pageRange.from, pageRange.to + 1);
-  selected = trimToAssistantLast(selected);
+  const unresolvedPageIds = getUnresolvedToolCallIds(allMessages);
+  selected = trimToAssistantLast(selected, unresolvedPageIds);
   const returnedTokens = preset
     ? estimateRenderedSessionTokens(selected, preset)
     : estimateSessionTokens(selected);
@@ -171,7 +281,8 @@ export function sliceByTokenBudget(
   }
 
   const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor, preset);
-  const trimmed = trimToAssistantLast(selected);
+  const unresolvedIds = getUnresolvedToolCallIds(allMessages);
+  const trimmed = trimToAssistantLast(selected, unresolvedIds);
 
   const returnedTokens = preset
     ? estimateRenderedSessionTokens(trimmed, preset)

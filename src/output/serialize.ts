@@ -238,6 +238,8 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   toolResult: 'tool_result',
   cacheRead: 'cache_read',
   cacheCreation: 'cache_creation',
+  pendingToolCalls: 'pending_tool_calls',
+  messageIndex: 'message_index',
 };
 
 /**

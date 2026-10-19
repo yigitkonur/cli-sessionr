@@ -49,8 +49,16 @@ function collectCamelCaseKeys(value: unknown, path: string[] = []): string[] {
     value.forEach((v, i) => offenders.push(...collectCamelCaseKeys(v, [...path, `[${i}]`])));
     return offenders;
   }
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+  const record = value as Record<string, unknown>;
+  const isToolCall = record.type === 'tool_use' || record.role === 'tool_use' ||
+    (typeof record.name === 'string' && ('tool_use_id' in record || ('id' in record && 'index' in record)));
+  const isToolResult = record.type === 'tool_result' || record.role === 'tool_result';
+  for (const [k, v] of Object.entries(record)) {
     if (isCamelCase(k)) offenders.push([...path, k].join('.'));
+    // Tool inputs/arguments belong to the upstream tool, not our envelope
+    // schema. Never normalize or validate their arbitrary nested key names.
+    if (isToolCall && (k === 'input' || k === 'args' || k === 'arguments')) continue;
+    if (isToolResult && (k === 'content' || k === 'output')) continue;
     offenders.push(...collectCamelCaseKeys(v, [...path, k]));
   }
   return offenders;
@@ -97,5 +105,28 @@ describe('v2 envelope keys are snake_case', () => {
   it('read: meta + result keys are all snake_case', () => {
     const env = runJson(['--output', 'json', 'read', SESSION_ID, '--tokens', '500']);
     expect(collectCamelCaseKeys(env)).toEqual([]);
+  });
+});
+
+// Inline fixture: upstream tool argument names are not sessionr envelope fields.
+vitestDescribe('opaque tool payloads', () => {
+  it('allows upstream argument keys but still rejects camelCase envelope keys', () => {
+    const input = {
+      questions: [{ multiSelect: true }], AbsolutePath: '/tmp/fake', CommandLine: 'echo ok',
+      WaitMsBeforeAsync: 1, toolAction: 'run', toolSummary: 'fixture',
+    };
+    const envelope = {
+      ok: true, schema_version: 'v2',
+      result: {
+        messages: [
+          { index: 1, role: 'tool_use', blocks: [{ type: 'tool_use', id: 'call', name: 'Bash', input, args: input }] },
+          { index: 2, role: 'tool_result', blocks: [{ type: 'tool_result', tool_use_id: 'call', content: { exitCode: 0 } }] },
+        ],
+        pending_tool_calls: [{ id: 'call', tool_use_id: 'call', name: 'Bash', index: 1, input }],
+      },
+      meta: { session_id: 'fixture' },
+    };
+    expect(collectCamelCaseKeys(envelope)).toEqual([]);
+    expect(collectCamelCaseKeys({ ...envelope, meta: { pendingToolCalls: [] } })).toEqual(['meta.pendingToolCalls']);
   });
 });

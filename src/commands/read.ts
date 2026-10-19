@@ -8,7 +8,7 @@ import { emit } from '../output/emit.js';
 import { computeETag } from '../etag.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
 import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '../errors.js';
-import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount } from '../slicer.js';
+import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount, computePendingToolCalls } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
 import { which } from '../utils/which.js';
@@ -309,6 +309,9 @@ export async function readCommand(
     let messages = session.messages;
     const totalMessages = session.stats.totalMessages;
 
+    const pendingToolCalls = computePendingToolCalls(session.messages);
+    session.pending_tool_calls = pendingToolCalls;
+
     // Role filtering (applied before slicing)
     if (opts?.role) {
       const roles = validateRoles(opts.role);
@@ -371,6 +374,7 @@ export async function readCommand(
         cursor_after: null,
         cursor: { next: null, prev: null, first: null },
       };
+      emptyMeta.pending_tool_calls = pendingToolCalls;
       const meta = injectNextAction(emptyMeta);
 
       if (outputFormat === 'json' || outputFormat === 'jsonl') {
@@ -396,6 +400,7 @@ export async function readCommand(
     if (opts?.page != null) {
       const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, preset);
       let meta = injectNextAction(result.meta);
+      meta.pending_tool_calls = pendingToolCalls;
       meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
       meta = attachETag(meta, session, {
         preset,
@@ -471,6 +476,7 @@ export async function readCommand(
     );
 
     let meta = injectNextAction(sliceResult.meta);
+    meta.pending_tool_calls = pendingToolCalls;
     meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
     meta = attachETag(meta, session, {
       preset,
@@ -609,6 +615,7 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
         preset,
       );
       let meta = injectNextAction(result.meta);
+      meta.pending_tool_calls = computePendingToolCalls(session.messages);
       meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts.preset, detail });
       meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
 
@@ -757,8 +764,21 @@ function emitReadEnvelope(args: EmitReadArgs): void {
   };
   if (args.summary && args.includeSummary) result.session = args.summary;
   if (args.notice) result.notice = args.notice;
+  const pendingToolCalls = args.meta.pending_tool_calls?.map(({ messageIndex, ...call }) => {
+    const rawInput = JSON.stringify(call.input);
+    const inputLimit = args.preset?.maxToolInputChars ?? Infinity;
+    const input = args.preset?.showToolArgs === false ? {}
+      : rawInput.length > inputLimit ? rawInput.slice(0, inputLimit) + '…' : call.input;
+    return { ...call, input, message_index: messageIndex, input_truncated: input !== call.input };
+  });
+  if (pendingToolCalls) result.pending_tool_calls = pendingToolCalls;
 
-  const meta: V2Meta = { ...args.meta } as unknown as V2Meta;
+  const { pending_tool_calls, pendingToolCalls: _unusedAlias, ...sliceMeta } = args.meta;
+  const meta: V2Meta = { ...sliceMeta } as unknown as V2Meta;
+  if (pending_tool_calls) {
+    meta.pending_tool_call_count = pending_tool_calls.length;
+    meta.pending_tool_call_ids = pending_tool_calls.map((call) => call.id);
+  }
   meta.session_id = args.meta.session_id;
   meta.source = args.meta.source;
   // Note: SliceMeta already lives flat under meta — V2Meta extends Record

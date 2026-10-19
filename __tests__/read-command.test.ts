@@ -165,3 +165,53 @@ describe('19-D Claude preset filtering', () => {
     } finally { stdout.restore(); }
   });
 });
+
+vi.mock('node:fs/promises', () => ({ readFile: vi.fn().mockResolvedValue('sess-test\n') }));
+describe('pending envelope regression', () => {
+  afterEach(() => { vi.restoreAllMocks(); process.exitCode = undefined; });
+  it('bounds large pending inputs in meta detail and retains complete inputs in full preset', async () => {
+    const input = { file_path: '/tmp/fake', content: 'A'.repeat(50000) };
+    const pending: NormalizedMessage = { ...makeMessage(3), role: 'tool_use', content: 'Tool: Write', blocks: [{ type: 'tool_use', id: 'large', name: 'Write', input }] };
+    vi.mocked(loadSession).mockResolvedValue(makeSession([makeMessage(1), makeMessage(2), pending]));
+    const thin = captureStdout();
+    await readCommand('sess-test', undefined, undefined, { output: 'json', tokens: 100, detail: 'meta' });
+    const text = thin.chunks.join(''); thin.restore();
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
+    const body = JSON.parse(text);
+    expect(body.meta.pending_tool_call_count).toBe(1);
+    expect(body.meta.pending_tool_call_ids).toEqual(['large']);
+    expect(body.meta).not.toHaveProperty('pending_tool_calls');
+    expect(body.result.pending_tool_calls[0].input).toEqual({});
+    const full = captureStdout();
+    await readCommand('sess-test', undefined, undefined, { output: 'json', tokens: 100, preset: 'full' });
+    const fullBody = JSON.parse(full.chunks.join('')); full.restore();
+    expect(fullBody.result.pending_tool_calls[0].input).toEqual(input);
+  });
+  it('returns changed for a same-size pending-input rewrite', async () => {
+    const pending: NormalizedMessage = { ...makeMessage(3), role: 'tool_use', content: 'Tool: Write', blocks: [{ type: 'tool_use', id: 'write', name: 'Write', input: { content: 'AAAA' } }] };
+    const session = makeSession([makeMessage(1), makeMessage(2), pending]);
+    vi.mocked(loadSession).mockResolvedValue(session);
+    const first = captureStdout();
+    await readCommand('sess-test', undefined, undefined, { output: 'json', anchor: 'tail' });
+    const original = JSON.parse(first.chunks.join('')); first.restore();
+    (pending.blocks[0] as { input: Record<string, unknown> }).input.content = 'BBBB';
+    const second = captureStdout();
+    await readCommand('sess-test', undefined, undefined, { output: 'json', anchor: 'tail', ifChanged: original.meta.etag });
+    const changed = JSON.parse(second.chunks.join('')); second.restore();
+    expect(changed.result.unchanged).not.toBe(true);
+    expect(changed.meta.etag).not.toBe(original.meta.etag);
+    expect(changed.result.pending_tool_calls[0].input.content).toBe('BBBB');
+  });
+  it.each([false, true])('emits canonical whole-session pending calls (batch=%s)', async (batch) => {
+    const pending: NormalizedMessage = { ...makeMessage(3), role: 'tool_use', content: 'Tool: AskUserQuestion', blocks: [{ type: 'tool_use', id: 'ask', name: 'AskUserQuestion', input: { question: 'Proceed?' } }] };
+    vi.mocked(loadSession).mockResolvedValue(makeSession([makeMessage(1), makeMessage(2), pending]));
+    const out = captureStdout();
+    await readCommand('sess-test', undefined, undefined, { output: 'json', anchor: 'tail', ...(batch ? { batch: 'ids.txt' } : {}) });
+    const text = out.chunks.join(''); out.restore();
+    const body = batch ? JSON.parse(text.trim().split('\n').at(-1)!) : JSON.parse(text);
+    expect(body.result.pending_tool_calls).toHaveLength(1);
+    expect(body.result.pending_tool_calls[0]).toMatchObject({ index: 3, tool_use_id: 'ask', name: 'AskUserQuestion' });
+    expect(body.meta).not.toHaveProperty('pendingToolCalls');
+    expect(body.result.pending_tool_calls[0]).not.toHaveProperty('messageIndex');
+  });
+});
