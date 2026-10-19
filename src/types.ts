@@ -41,6 +41,13 @@ export type MessageSource =
 
 // ── Normalized Message ─────────────────────────────────────────────────────
 
+export interface CompactionMeta {
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+  summary?: string;
+}
+
 export interface MessageUsage {
   input_tokens?: number;
   output_tokens?: number;
@@ -66,6 +73,8 @@ export interface NormalizedMessage {
   originKind?: string;
   /** Kind classification (e.g. compaction, turn_duration) */
   kind?: string;
+  /** Compaction metadata */
+  compactionMeta?: CompactionMeta;
   usage?: MessageUsage;
   contextTokens?: number;
   model?: string;
@@ -118,6 +127,7 @@ export interface SessionStats {
   toolFrequency: Array<{ name: string; count: number; errors: number }>;
   filesModified: string[];
   durationMs?: number;
+  compactions?: number;
   rateLimits?: CodexRateLimits;
 }
 

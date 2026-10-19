@@ -594,7 +594,8 @@ export function segmentTurns(
     const hasPending = Boolean(facts.pendingToolCalls?.length);
     const finalAssistant = [...turnMessages].reverse().find((m) => m.role === 'assistant' && m.kind !== 'commentary');
     const terminal = [...turnMessages].reverse().find((m) => m.terminal !== undefined)?.terminal;
-    const lastActivity = turnMessages[turnMessages.length - 1];
+    // Compaction markers are bookkeeping, not conversation: an assistant reply followed by one is still the last activity.
+    const lastActivity = [...turnMessages].reverse().find((m) => m.kind !== 'compaction') ?? turnMessages[turnMessages.length - 1];
     const completed = !interrupted && !hasPending && (terminal === 'complete' ||
       (terminal === undefined && finalAssistant !== undefined && lastActivity.role === 'assistant'));
 

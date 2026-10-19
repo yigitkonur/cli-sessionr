@@ -10,6 +10,7 @@ import type {
   SessionListEntry,
   SessionMetadata,
   SessionStats,
+  CompactionMeta,
   MessageUsage,
   TurnEndEvent,
 } from '../types.js';
@@ -212,6 +213,8 @@ interface ExplodedMessage {
   rawLineIndex: number;
   usage?: MessageUsage;
   contextTokens?: number;
+  kind?: string;
+  compactionMeta?: CompactionMeta;
   model?: string;
   contextWindow?: number;
   reasoningEffort?: string;
@@ -271,7 +274,23 @@ export function classifyUserSource(text: string, line: RawLine): MessageSource {
   return 'prompt';
 }
 
+function isCompactionLine(line: RawLine): boolean {
+  return (
+    line.kind === 'compaction' ||
+    line.subtype === 'compact_boundary' ||
+    line.subtype === 'compaction' ||
+    Boolean(line.isCompactSummary) ||
+    Boolean(line.compactionMeta) ||
+    Boolean((line as any).compactMetadata)
+  );
+}
+
 function shouldSkipLine(line: RawLine): boolean {
+  // Never skip compaction records!
+  if (isCompactionLine(line)) {
+    return false;
+  }
+
   // Allow queued_command attachments mid-turn
   if (line.type === 'attachment') {
     if (line.isMeta || line.attachment?.isMeta) return true;
@@ -300,10 +319,58 @@ function shouldSkipLine(line: RawLine): boolean {
     }
   }
 
-  // Skip compact summaries (just note for metadata)
+  // Skip compact summaries (handled in compaction explosion)
   if (line.isCompactSummary) return true;
 
   return false;
+}
+
+function compactionSummary(line: RawLine): string | undefined {
+  const content = line.message?.content;
+  if (typeof content === 'string') return content || undefined;
+  if (Array.isArray(content)) {
+    const text = content.filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n');
+    return text || undefined;
+  }
+  return undefined;
+}
+
+function explodeCompactionMessage(
+  line: RawLine,
+  lineIndex: number,
+  overrideSummary?: string,
+): ExplodedMessage[] {
+  const ts = line.timestamp ? new Date(line.timestamp) : new Date();
+
+  const rawMeta = (line.compactionMeta || (line as any).compactMetadata || {}) as {
+    trigger?: string;
+    preTokens?: number;
+    postTokens?: number;
+    summary?: string;
+  };
+
+  const trigger = typeof rawMeta.trigger === 'string' ? rawMeta.trigger : undefined;
+  const preTokens = typeof rawMeta.preTokens === 'number' ? rawMeta.preTokens : undefined;
+  const postTokens = typeof rawMeta.postTokens === 'number' ? rawMeta.postTokens : undefined;
+  const summary = overrideSummary ?? (typeof rawMeta.summary === 'string' ? rawMeta.summary : undefined) ?? compactionSummary(line);
+  const content = `Context compacted${preTokens !== undefined && postTokens !== undefined ? ` from ${preTokens} to ${postTokens} tokens` : ''}`;
+
+  return [
+    {
+      role: 'system',
+      content,
+      blocks: [{ type: 'text', text: content }],
+      timestamp: ts,
+      rawLineIndex: typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex,
+      kind: 'compaction',
+      compactionMeta: {
+        trigger,
+        preTokens,
+        postTokens,
+        summary,
+      },
+    },
+  ];
 }
 
 function explodeAttachmentMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
@@ -714,6 +781,8 @@ function computeStats(
     .map(([name, { count, errors }]) => ({ name, count, errors }))
     .sort((a, b) => b.count - a.count);
 
+  const compactionsCount = messages.filter((m) => m.kind === 'compaction' || m.compactionMeta !== undefined).length;
+
   return {
     totalMessages: messages.length,
     byRole,
@@ -730,6 +799,7 @@ function computeStats(
     toolFrequency,
     filesModified: Array.from(filesModifiedSet).sort(),
     durationMs,
+    compactions: compactionsCount > 0 ? compactionsCount : undefined,
   };
 }
 
@@ -751,6 +821,20 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
   const exploded: ExplodedMessage[] = [];
   const usageLines = new Map<string | RawLine, RawLine>();
   const usageTargets = new Map<string | RawLine, ExplodedMessage>();
+  const pairedSummaries = new Map<number, RawLine>();
+  const consumedSummaries = new Set<RawLine>();
+  let pendingBoundary: number | undefined;
+  for (let i = 0; i < deduped.length; i++) {
+    const line = deduped[i]!;
+    if (line.isCompactSummary) {
+      if (pendingBoundary !== undefined) {
+        pairedSummaries.set(pendingBoundary, line);
+        consumedSummaries.add(line);
+      }
+      pendingBoundary = undefined;
+    } else if (isCompactionLine(line)) pendingBoundary = i;
+    else if (line.type === 'user' || line.type === 'assistant') pendingBoundary = undefined;
+  }
   let model: string | undefined;
   let reasoningEffort: string | undefined;
   let maxContext = 0;
@@ -770,9 +854,13 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     if (typeof compact?.preTokens === 'number') maxContext = Math.max(maxContext, compact.preTokens);
     contextWindow = model?.startsWith('claude-') && maxContext > 200_000 ? 1_000_000 : deriveContextWindow(model);
 
-    if (shouldSkipLine(line)) continue;
+    if (shouldSkipLine(line) || consumedSummaries.has(line)) continue;
 
-    const chunks = line.type === 'assistant' ? explodeAssistantMessage(line, i)
+    let chunks: ExplodedMessage[];
+    if (isCompactionLine(line)) {
+      const paired = pairedSummaries.get(i);
+      chunks = explodeCompactionMessage(line, i, paired ? compactionSummary(paired) : undefined);
+    } else chunks = line.type === 'assistant' ? explodeAssistantMessage(line, i)
       : line.type === 'user' ? explodeUserMessage(line, i)
       : line.type === 'attachment' && line.attachment?.type === 'queued_command' ? explodeAttachmentMessage(line, i)
       : [];
@@ -783,7 +871,7 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
       chunk.reasoningEffort = reasoningEffort;
       chunk.contextWindow = contextWindow;
     }
-    if (line.type === 'assistant') {
+    if (line.type === 'assistant' && !isCompactionLine(line)) {
       const key = line.message?.id || line.uuid || line;
       const target = chunks.find(m => m.role === 'assistant') ?? chunks[0];
       if (target) usageTargets.set(key, target);
@@ -829,6 +917,8 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     };
     if (e.usage) m.usage = e.usage;
     if (e.contextTokens !== undefined) m.contextTokens = e.contextTokens;
+    if (e.kind) m.kind = e.kind;
+    if (e.compactionMeta) m.compactionMeta = e.compactionMeta;
     return m;
   });
 
