@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import chalk from 'chalk';
 import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { serializeMessage, toExternal } from '../output/serialize.js';
@@ -8,13 +9,13 @@ import { emit } from '../output/emit.js';
 import { computeETag } from '../etag.js';
 import { getPreset, getPresetForDetail, getDefaultTokenBudget, getDefaultPresetName, MAX_CHUNK_BUDGET } from '../config.js';
 import { EXIT, InvalidRangeError, SessionReaderError, exitCodeForError } from '../errors.js';
-import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount } from '../slicer.js';
+import { sliceByTokenBudget, sliceByPage, filterByRole, estimatePageCount, computePendingToolCalls, VALID_SEARCH_FIELDS, normalizeSearchFields } from '../slicer.js';
 import { segmentTurns, getTurn } from '../turns.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
 import { which } from '../utils/which.js';
 import { cmdPrefix } from '../util/invocation.js';
-import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning, V2Action, V2Meta, Turn } from '../types.js';
+import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning, V2Action, V2Meta, Turn, SearchField } from '../types.js';
 
 // it/12: per-source spawn binary, mirroring src/commands/doctor.ts. Looked up
 // once via which() and cached so we don't fork a child every read.
@@ -30,6 +31,7 @@ const SPAWN_BINS: Record<SessionSource, string> = {
   kiro: 'kiro',
   zed: 'zed',
   factory: 'factory',
+  antigravity: 'antigravity',
 };
 
 const _spawnBinCache = new Map<SessionSource, boolean>();
@@ -70,6 +72,26 @@ function validateAnchor(raw: string | undefined): 'head' | 'tail' | 'search' {
     });
   }
   return raw as 'head' | 'tail' | 'search';
+}
+
+function validateSearchIn(raw?: string | string[]): Set<SearchField> {
+  if (!raw) return new Set(['content']);
+  const fields = typeof raw === 'string'
+    ? raw.split(',').map((f) => f.trim().toLowerCase().replace(/-/g, '_')).filter(Boolean)
+    : Array.isArray(raw)
+      ? raw.map((f) => String(f).trim().toLowerCase().replace(/-/g, '_')).filter(Boolean)
+      : [];
+  const unknown = fields.filter((f) => f !== 'all' && !(VALID_SEARCH_FIELDS as readonly string[]).includes(f as any));
+  if (unknown.length > 0) {
+    throw new SessionReaderError(`Unknown search field(s): ${unknown.join(', ')}`, {
+      code: 'INVALID_SEARCH_FIELD',
+      exitCode: EXIT.USAGE,
+      errorClass: 'validation',
+      detail: { provided: raw, unknown, valid: [...VALID_SEARCH_FIELDS] },
+      suggestion: `${cmdPrefix()} read <id> --search "<query>" --search-in content,tool_input,tool_result`,
+    });
+  }
+  return normalizeSearchFields(raw);
 }
 
 function shortenPath(p: string): string {
@@ -270,6 +292,13 @@ function computeDetailHint(
   };
 }
 
+function filterByPreset(messages: NormalizedMessage[], preset: VerbosityPreset): NormalizedMessage[] {
+  if (preset.name !== 'minimal' && preset.name !== 'standard') return messages;
+  // Keep human prompts (including absorbed steers) and normal assistant/tool
+  // messages. Original indices remain stable for later, higher-detail reads.
+  return messages.filter((m) => !m.source || m.source === 'prompt' || m.source === 'queued');
+}
+
 export async function readCommand(
   sessionId: string,
   fromStr?: string,
@@ -290,20 +319,37 @@ export async function readCommand(
     if (opts?.turn != null && (opts.page != null || opts.batch)) {
       throw new SessionReaderError('--turn cannot be combined with --page or --batch', { code: 'INVALID_TURN_USAGE', errorClass: 'validation', exitCode: EXIT.USAGE });
     }
+    if (opts?.searchIn) {
+      if (!opts?.search) {
+        throw new SessionReaderError('--search-in requires --search <query>', {
+          code: 'INVALID_SEARCH_USAGE',
+          errorClass: 'validation',
+          exitCode: EXIT.USAGE,
+          detail: { provided: opts.searchIn },
+          suggestion: `${cmdPrefix()} read <id> --search "<query>" --search-in ${opts.searchIn}`,
+        });
+      }
+      validateSearchIn(opts.searchIn);
+    }
+
     if (opts?.batch) {
       await readBatchCommand(opts, isTTY);
       return;
     }
 
-    const warnings: DiscoveryWarning[] = [];
+    const rawWarnings: DiscoveryWarning[] = [];
     const session = await loadSession(
       sessionId,
       opts?.source as SessionSource | undefined,
-      (warning: DiscoveryWarning) => warnings.push(warning),
+      (warning: DiscoveryWarning) => rawWarnings.push(warning),
     );
+    const warnings: string[] = rawWarnings.map((w) => `[${w.source}] adapter failed: ${w.error.message}`);
 
     let messages = session.messages;
     const totalMessages = session.stats.totalMessages;
+
+    const pendingToolCalls = computePendingToolCalls(session.messages);
+    session.pending_tool_calls = pendingToolCalls;
 
     // Role filtering (applied before slicing)
     if (opts?.role) {
@@ -330,6 +376,8 @@ export async function readCommand(
       ? getPresetForDetail(detail)
       : getPreset(presetName!);
 
+    messages = filterByPreset(messages, preset);
+
     // Token budget: --tokens flag > SESSIONREADER_MAX_TOKENS env > default 8K, always capped
     if (opts?.tokens != null && (!Number.isFinite(opts.tokens) || opts.tokens <= 0)) {
       throw new SessionReaderError('--tokens must be > 0', {
@@ -349,7 +397,7 @@ export async function readCommand(
     // Sessions can be opened without any user/assistant exchange (Factory "New Session",
     // Claude blank sessions, etc.); list filters them out, but a direct ID paste can
     // still land here.
-    if (totalMessages === 0) {
+    if (totalMessages === 0 && !opts?.search) {
       const emptyMeta: SliceMeta = {
         session_id: session.id,
         source: session.source,
@@ -365,6 +413,7 @@ export async function readCommand(
         cursor_after: null,
         cursor: { next: null, prev: null, first: null },
       };
+      emptyMeta.pending_tool_calls = pendingToolCalls;
       const meta = injectNextAction(emptyMeta);
 
       if (outputFormat === 'json' || outputFormat === 'jsonl') {
@@ -390,12 +439,13 @@ export async function readCommand(
     if (opts?.page != null) {
       const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, preset);
       let meta = injectNextAction(result.meta);
+      meta.pending_tool_calls = pendingToolCalls;
       meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
       meta = attachETag(meta, session, {
         preset,
         tokenBudget,
         anchor: undefined,
-        search: opts?.search,
+        search: opts?.search == null ? undefined : JSON.stringify([opts.search, Array.from(normalizeSearchFields(opts.searchIn)).sort()]),
         page: opts.page,
         format: outputFormat,
       });
@@ -430,6 +480,7 @@ export async function readCommand(
     // Cursor/turn-based pagination: --turn / --before / --after override positional from/to
     let from: number;
     let to: number;
+    const isCursorQuery = opts?.after != null || opts?.before != null;
     let selectedTurn: Turn | undefined;
 
     if (opts?.turn != null) {
@@ -437,32 +488,92 @@ export async function readCommand(
       selectedTurn = getTurn(turns, opts.turn);
       from = selectedTurn.startIndex;
       to = selectedTurn.endIndex;
-      if (opts.after != null) from = Math.max(from, opts.after);
-      if (opts.before != null) to = Math.min(to, opts.before);
+      // Cursors are strictly exclusive (#11), so inside a turn they clamp the window one index inward.
+      if (opts.after != null) from = Math.max(from, opts.after + 1);
+      if (opts.before != null) to = Math.min(to, opts.before - 1);
     } else if (opts?.before != null) {
-      to = opts.before;
+      // Issue #11: strictly exclusive before (< opts.before)
       from = 1;
+      to = opts.before - 1;
     } else if (opts?.after != null) {
-      from = opts.after;
-      to = messages.length;
+      // Issue #11: strictly exclusive after (> opts.after)
+      from = opts.after + 1;
+      to = totalMessages;
     } else {
       from = fromStr ? parseInt(fromStr, 10) : 1;
-      to = toStr ? parseInt(toStr, 10) : messages.length;
+      to = toStr ? parseInt(toStr, 10) : totalMessages;
     }
 
-    if (from < 1 || to > totalMessages || from > to) {
+    // Boundary query on cursor pagination (e.g. --after totalMessages or --before 1)
+    if (isCursorQuery && (from > totalMessages || to < 1 || from > to)) {
+      const emptyMeta: SliceMeta = {
+        session_id: session.id,
+        source: session.source,
+        total_messages: totalMessages,
+        total_tokens_estimate: estimateSessionTokens(messages),
+        returned_tokens_estimate: 0,
+        token_budget: tokenBudget,
+        anchor: requestedAnchor ?? 'head',
+        range: { from: 0, to: 0 },
+        has_more_before: false,
+        has_more_after: false,
+        cursor_before: null,
+        cursor_after: null,
+        cursor: { next: null, prev: null, first: null },
+        partial: false,
+      };
+      let meta = injectNextAction(emptyMeta);
+      // Polling past the end is exactly when an unanswered tool call matters: keep it in the envelope.
+      meta.pending_tool_calls = pendingToolCalls;
+      if (selectedTurn) attachTurnMeta(meta, selectedTurn, session, preset, detail);
+      meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
+      meta = attachETag(meta, session, {
+        preset,
+        tokenBudget,
+        anchor: requestedAnchor ?? 'head',
+        search: opts?.search == null ? undefined : JSON.stringify([opts.search, Array.from(normalizeSearchFields(opts.searchIn)).sort()]),
+        page: undefined,
+        format: outputFormat,
+      });
+
+      if (opts?.ifChanged && meta.etag === opts.ifChanged) {
+        emitUnchanged(session, meta.etag, outputFormat, opts?.timing);
+        return;
+      }
+
+      if (outputFormat === 'json' || outputFormat === 'jsonl') {
+        emitReadEnvelope({
+          session,
+          messages: [],
+          meta,
+          summary,
+          includeSummary: shouldIncludeSummary(opts),
+          outputFormat,
+          timing: opts?.timing,
+          preset,
+          detail,
+        });
+      } else {
+        process.stdout.write(`No messages found in requested cursor range.\n`);
+      }
+      return;
+    }
+
+    if ((from < 1 || to > totalMessages || from > to) && !(messages.length === 0 && opts?.search)) {
       throw new InvalidRangeError(from, to, totalMessages);
     }
 
     // Apply range first (positional/cursor)
-    let sliced = selectedTurn
-      ? messages.filter(m => m.index >= from && m.index <= to)
-      : messages.slice(from - 1, to);
+    let sliced = messages.filter((message) => message.index >= from && message.index <= to);
 
-    // Always apply token budget (8K max enforced)
+    // Directional anchor defaulting:
     const anchor = opts?.search
-      ? 'search' as const
-      : (requestedAnchor ?? 'head');
+      ? ('search' as const)
+      : (opts?.anchor
+          ? requestedAnchor
+          : (opts?.before != null
+              ? 'tail'
+              : (opts?.after != null ? 'head' : (requestedAnchor ?? 'head'))));
 
     const sliceResult = sliceByTokenBudget(
       sliced,
@@ -472,33 +583,29 @@ export async function readCommand(
       anchor,
       opts?.search,
       preset,
-      { preserveTrailing: selectedTurn !== undefined },
+      opts?.searchIn,
+      totalMessages,
+      {
+        preserveTrailing: selectedTurn !== undefined,
+        window: selectedTurn ? { from: selectedTurn.startIndex, to: selectedTurn.endIndex } : undefined,
+      },
     );
 
     if (selectedTurn) {
       for (const cursor of Object.values(sliceResult.meta.cursor)) {
-        if (cursor) cursor.command += ` --turn ${selectedTurn.id}`;
+        // --page is rejected together with --turn: the first chunk of a turn is the turn itself.
+        if (cursor) cursor.command = cursor.command.replace(/ --page \d+/, '') + ` --turn ${selectedTurn.id}`;
       }
     }
     let meta = injectNextAction(sliceResult.meta);
-    if (selectedTurn) {
-      const { facts: _facts, contextWindow: _contextWindow, ...turnOutput } = selectedTurn;
-      const externalTurn = toExternal({ ...turnOutput, prompt: { ...turnOutput.prompt, text: detail === 'meta' ? '' : turnOutput.prompt.text.slice(0, preset.maxContentChars) } }) as Record<string, unknown>;
-      // Tool input is opaque user data, not part of the envelope naming contract.
-      if (selectedTurn.pendingToolCalls) {
-        externalTurn.pending_tool_calls = selectedTurn.pendingToolCalls.map(({ input, ...call }) => ({
-          ...(toExternal(call) as Record<string, unknown>), ...(preset.showToolArgs ? { input } : {}),
-        }));
-      }
-      meta.turn = externalTurn as unknown as Turn;
-      meta.turns = (session.turns ?? segmentTurns(session)).map(t => toExternal({ id: t.id, turnIndex: t.turnIndex, startIndex: t.startIndex, endIndex: t.endIndex, completed: t.completed, interrupted: t.interrupted }) as Turn);
-    }
+    meta.pending_tool_calls = pendingToolCalls;
+    if (selectedTurn) attachTurnMeta(meta, selectedTurn, session, preset, detail);
     meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
     meta = attachETag(meta, session, {
       preset,
       tokenBudget,
       anchor,
-      search: opts?.search,
+      search: opts?.search == null ? undefined : JSON.stringify([opts.search, Array.from(normalizeSearchFields(opts.searchIn)).sort()]),
       page: undefined,
       format: outputFormat,
     });
@@ -536,11 +643,29 @@ export async function readCommand(
         timing: opts?.timing,
         preset,
         detail,
+        notice: meta.search && !meta.search.matched ? `Search query "${meta.search.query}" yielded no matches.` : undefined,
       });
     } else {
-      process.stdout.write(
-        formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta) + '\n',
-      );
+      if (warnings.length > 0) {
+        for (const w of warnings) {
+          if (isTTY && !process.env.NO_COLOR) {
+            process.stderr.write(`${chalk.yellow('warning:')} ${w}\n`);
+          } else {
+            process.stderr.write(`warning: ${w}\n`);
+          }
+        }
+      }
+      if (outputMessages.length === 0 && meta.search && !meta.search.matched) {
+        process.stdout.write(
+          (isTTY && !process.env.NO_COLOR
+            ? chalk.yellow(`Search query "${meta.search.query}" yielded no matches.`)
+            : `Search query "${meta.search.query}" yielded no matches.`) + '\n',
+        );
+      } else {
+        process.stdout.write(
+          formatter.read(session, outputMessages, meta.range.from, meta.range.to, preset, meta) + '\n',
+        );
+      }
     }
 
     // Signal partial reads (truncated by token budget) via PARTIAL exit code
@@ -559,7 +684,7 @@ export async function readCommand(
           ...(isSre && err.suggestion ? { suggestion: err.suggestion } : {}),
           retryable: isSre ? err.retry : false,
         }),
-        { format: outputFormat, timing: opts?.timing },
+        { format: opts?.batch ? 'jsonl' : outputFormat, timing: opts?.timing },
       );
     } else {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -616,7 +741,7 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
     // (success OR failure) is exactly one JSONL line and the batch continues.
     try {
       const session = await loadSession(id, opts.source as SessionSource | undefined);
-      let messages = session.messages;
+      let messages = filterByPreset(session.messages, preset);
       if (validatedRoles) {
         messages = filterByRole(messages, validatedRoles);
       }
@@ -629,14 +754,18 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
         (opts.search ? 'search' : (opts.anchor ?? 'head')) as 'head' | 'tail' | 'search',
         opts.search,
         preset,
+        opts.searchIn,
+        session.stats.totalMessages,
       );
       let meta = injectNextAction(result.meta);
+      meta.pending_tool_calls = computePendingToolCalls(session.messages);
       meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts.preset, detail });
       meta.detail_hint = computeDetailHint(result.messages, session.id, preset, tokenBudget, meta.returned_tokens_estimate);
 
       emitReadEnvelope({
         session,
         messages: result.messages,
+        notice: meta.search && !meta.search.matched ? `Search query "${meta.search.query}" yielded no matches.` : undefined,
         meta,
         summary: buildSessionSummary(session, tokenBudget, preset),
         includeSummary: true,
@@ -767,6 +896,53 @@ interface EmitReadArgs {
  * etag, partial flag, etc.). `actions` are deterministic per-session
  * recommendations agents can run next.
  */
+/**
+ * Attach the selected turn and the turn index to the response meta. Used by both the normal read path and the
+ * empty cursor-boundary response, so `--turn N --after <end>` still says which turn it was scoped to.
+ */
+function attachTurnMeta(
+  meta: SliceMeta,
+  selectedTurn: Turn,
+  session: NormalizedSession,
+  preset: VerbosityPreset,
+  detail: DetailLevel | undefined,
+): void {
+  const { facts: _facts, contextWindow: _contextWindow, ...turnOutput } = selectedTurn;
+  const externalTurn = toExternal({ ...turnOutput, prompt: { ...turnOutput.prompt, text: detail === 'meta' ? '' : turnOutput.prompt.text.slice(0, preset.maxContentChars) } }) as Record<string, unknown>;
+  // Commands are tool arguments: bound them by the preset like every other tool input (0 when args are hidden).
+  const cmdLimit = preset.showToolArgs ? preset.maxToolInputChars : 0;
+  if (Array.isArray(externalTurn.commands)) {
+    externalTurn.commands = (externalTurn.commands as Array<Record<string, unknown>>).map((c) =>
+      typeof c.cmd === 'string' && c.cmd.length > cmdLimit
+        ? { ...c, cmd: c.cmd.slice(0, cmdLimit) + (cmdLimit > 0 ? '…' : ''), cmd_truncated: true }
+        : c);
+  }
+  // Tool input is opaque user data, not part of the envelope naming contract.
+  if (selectedTurn.pendingToolCalls) {
+    externalTurn.pending_tool_calls = selectedTurn.pendingToolCalls.map(({ input, ...call }) => ({
+      ...(toExternal(call) as Record<string, unknown>),
+      ...(preset.showToolArgs ? boundPendingInput(input, preset) : {}),
+    }));
+  }
+  meta.turn = externalTurn as unknown as Turn;
+  meta.turns = (session.turns ?? segmentTurns(session)).map(t => toExternal({ id: t.id, turnIndex: t.turnIndex, startIndex: t.startIndex, endIndex: t.endIndex, completed: t.completed, interrupted: t.interrupted }) as Turn);
+}
+
+/**
+ * Bound a pending tool call's input by the preset's tool-input limit: oversized inputs become a truncated
+ * string, and presets that hide tool args get an empty object. Shared by the whole-session and per-turn lists.
+ */
+function boundPendingInput(
+  callInput: unknown,
+  preset: VerbosityPreset | undefined,
+): { input: unknown; input_truncated: boolean } {
+  const rawInput = JSON.stringify(callInput);
+  const inputLimit = preset?.maxToolInputChars ?? Infinity;
+  const input = preset?.showToolArgs === false ? {}
+    : rawInput.length > inputLimit ? rawInput.slice(0, inputLimit) + '…' : callInput;
+  return { input, input_truncated: input !== callInput };
+}
+
 function emitReadEnvelope(args: EmitReadArgs): void {
   // oc/12 + M3: pass preset/detail so serializeMessage emits ONE channel
   // (content vs blocks) and tool messages in --detail meta keep their
@@ -779,8 +955,18 @@ function emitReadEnvelope(args: EmitReadArgs): void {
   };
   if (args.summary && args.includeSummary) result.session = args.summary;
   if (args.notice) result.notice = args.notice;
+  const pendingToolCalls = args.meta.pending_tool_calls?.map(({ messageIndex, ...call }) => {
+    const bounded = boundPendingInput(call.input, args.preset);
+    return { ...call, input: bounded.input, message_index: messageIndex, input_truncated: bounded.input_truncated };
+  });
+  if (pendingToolCalls) result.pending_tool_calls = pendingToolCalls;
 
-  const meta: V2Meta = { ...args.meta } as unknown as V2Meta;
+  const { pending_tool_calls, pendingToolCalls: _unusedAlias, ...sliceMeta } = args.meta;
+  const meta: V2Meta = { ...sliceMeta } as unknown as V2Meta;
+  if (pending_tool_calls) {
+    meta.pending_tool_call_count = pending_tool_calls.length;
+    meta.pending_tool_call_ids = pending_tool_calls.map((call) => call.id);
+  }
   meta.session_id = args.meta.session_id;
   meta.source = args.meta.source;
   // Note: SliceMeta already lives flat under meta — V2Meta extends Record
