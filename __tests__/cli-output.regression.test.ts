@@ -227,3 +227,32 @@ describe('oc/06 — help with --output json exits 0 and emits v2 envelope', () =
     expect(obj.result.exit_codes['0']).toBe('ok');
   });
 });
+
+// Issue #11: exercise Commander's actual defaults as well as the readCommand unit walk.
+describe('exclusive read cursors through the compiled CLI', () => {
+  it('defaults --before to the immediately preceding tail and accepts --after 0', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const home = mkdtempSync(join(tmpdir(), 'sessionr-cursor-'));
+    try {
+      const project = join(home, '.claude', 'projects', 'fixture');
+      mkdirSync(project, { recursive: true });
+      const id = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+      const records = Array.from({ length: 31 }, (_, i) => ({
+        type: i % 2 === 0 ? 'user' : 'assistant', sessionId: id,
+        timestamp: '2026-01-01T00:00:00Z', cwd: home,
+        message: { role: i % 2 === 0 ? 'user' : 'assistant', content: 'x'.repeat(100) },
+      }));
+      writeFileSync(join(project, `${id}.jsonl`), records.map(r => JSON.stringify(r)).join('\n'));
+      const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: join(home, '.claude'), CODEX_HOME: join(home, '.codex') };
+      const before = spawnSync('node', [CLI, 'read', id, '--before', '17', '--tokens', '120', '--output', 'json'], { encoding: 'utf8', env });
+      const body = JSON.parse(before.stdout);
+      expect(body.ok).toBe(true);
+      expect(body.meta.anchor).toBe('tail');
+      expect(body.meta.range.to).toBe(16);
+      expect(body.meta.range.from).toBeGreaterThan(1);
+      const afterZero = spawnSync('node', [CLI, 'read', id, '--after', '0', '--tokens', '120', '--output', 'json'], { encoding: 'utf8', env });
+      expect(JSON.parse(afterZero.stdout).meta.range.from).toBe(1);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});

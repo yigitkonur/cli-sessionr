@@ -16,7 +16,8 @@ export type BuiltinSessionSource =
   | 'codex' | 'claude'
   | 'gemini' | 'copilot' | 'cursor-agent' | 'commandcode'
   | 'goose' | 'opencode' | 'kiro' | 'zed'
-  | 'factory';
+  | 'factory'
+  | 'antigravity';
 
 export type SessionSource = BuiltinSessionSource | (string & {});
 
@@ -28,6 +29,18 @@ export type ContentBlock =
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean };
 
+// ── Message Source ──────────────────────────────────────────────────────────
+
+export type MessageSource =
+  | 'prompt'
+  | 'queued'
+  | 'system'
+  | 'local_command'
+  // Interrupt-to-prompt references are deferred to the turns model (Issue #25).
+  | 'interrupt'
+  | 'task_notification'
+  | 'injected';
+
 // ── Normalized Message ─────────────────────────────────────────────────────
 
 export interface CompactionMeta {
@@ -35,6 +48,14 @@ export interface CompactionMeta {
   preTokens?: number;
   postTokens?: number;
   summary?: string;
+}
+
+export interface MessageUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  context_tokens?: number;
 }
 
 export interface NormalizedMessage {
@@ -46,14 +67,24 @@ export interface NormalizedMessage {
   content: string;
   /** All content blocks for rich rendering */
   blocks: ContentBlock[];
-  /** Original JSONL line number for debugging */
+  /** Claude: physical zero-based JSONL line; other adapters may use parsed-record indices */
   rawLineIndex?: number;
   /** Source classification for origin/provenance */
-  source?: string;
+  source?: MessageSource;
+  /** Original attachment origin.kind; absent on legacy records. */
+  originKind?: string;
   /** Kind classification (e.g. compaction, turn_duration) */
-  kind?: 'compaction' | 'turn_duration' | string;
+  kind?: string;
   /** Compaction metadata */
   compactionMeta?: CompactionMeta;
+  usage?: MessageUsage;
+  contextTokens?: number;
+  model?: string;
+  contextWindow?: number;
+  reasoningEffort?: string;
+  rateLimits?: CodexRateLimits;
+  terminal?: 'complete' | 'interrupted';
+  durationMs?: number;
 }
 
 // ── Session Metadata ───────────────────────────────────────────────────────
@@ -77,6 +108,9 @@ export interface SessionMetadata {
 export interface SessionStats {
   totalMessages: number;
   byRole: {
+    /** Human prompting, including steers absorbed mid-turn (source "queued").
+     * Slash commands, interrupts, system preambles and task notifications are excluded,
+     * as are attachments whose origin.kind is not "human". */
     user: number;
     assistant: number;
     system: number;
@@ -125,16 +159,6 @@ export interface TurnCommand {
   duration_ms?: number;
 }
 
-export interface PendingToolCall {
-  id?: string;
-  tool_use_id?: string;
-  name: string;
-  input: any;
-  messageIndex?: number;
-  index?: number;
-  timestamp?: string;
-}
-
 export interface TurnExecutionFacts {
   filesChanged: TurnFilesChanged;
   commands: TurnCommand[];
@@ -160,9 +184,9 @@ export interface TurnUsage {
 }
 
 export interface CodexRateLimitTier {
-  usedPercent: number;
-  windowMinutes: number;
-  resetsAt: string;
+  usedPercent?: number;
+  windowMinutes?: number;
+  resetsAt?: string | number;
 }
 
 export interface CodexRateLimits {
@@ -198,7 +222,28 @@ export interface Turn {
   rateLimits?: CodexRateLimits;
 }
 
+// ── Pending Tool Calls ──────────────────────────────────────────────────────
+
+export interface PendingToolCall {
+  /** A later user prompt exists; this is historical, not necessarily a current waiter. */
+  superseded: boolean;
+  id: string;
+  tool_use_id?: string;
+  name: string;
+  input: Record<string, unknown>;
+  messageIndex: number;
+  index: number;
+  timestamp?: string;
+}
+
 // ── Normalized Session ─────────────────────────────────────────────────────
+
+export interface TurnEndEvent {
+  timestamp: Date;
+  durationMs: number;
+  /** Claude physical JSONL index when available; otherwise parsed-record index. */
+  rawLineIndex: number;
+}
 
 export interface NormalizedSession {
   id: string;
@@ -206,8 +251,12 @@ export interface NormalizedSession {
   filePath: string;
   metadata: SessionMetadata;
   messages: NormalizedMessage[];
+  /** Per-turn completion records, separate from the conversation messages. */
+  turnEnds?: TurnEndEvent[];
   stats: SessionStats;
   turns?: Turn[];
+  pendingToolCalls?: PendingToolCall[];
+  pending_tool_calls?: PendingToolCall[];
 }
 
 // ── Session List Entry (lightweight, for list command) ─────────────────────
@@ -300,7 +349,10 @@ export interface SessionSummary {
   context_window?: number;
   context_tokens?: number;
   reasoning_effort?: string;
-  rate_limits?: CodexRateLimits;
+  rate_limits?: {
+    primary?: { used_percent?: number; window_minutes?: number; resets_at?: string | number };
+    secondary?: { used_percent?: number; window_minutes?: number; resets_at?: string | number };
+  };
 }
 
 // ── Cursor Commands (copy-paste ready + machine-readable tokens) ──────────
@@ -379,8 +431,20 @@ export interface SliceMeta {
   };
   turns?: Turn[];
   turn?: Turn;
-  pending_tool_calls?: PendingToolCall[];
   pendingToolCalls?: PendingToolCall[];
+  pending_tool_calls?: PendingToolCall[];
+  search?: SearchMeta;
+}
+
+// ── Search Field Types (Issue #10) ──────────────────────────────────────────
+
+export type SearchField = 'content' | 'tool_input' | 'tool_result';
+
+export interface SearchMeta {
+  query: string;
+  matched: boolean;
+  match_index: number | null;
+  fields?: SearchField[];
 }
 
 // ── Output Resolution Options ──────────────────────────────────────────────

@@ -13,6 +13,7 @@ export const SOURCES_LIST = [
   'kiro',
   'zed',
   'factory',
+  'antigravity',
 ] as const satisfies readonly SessionSource[];
 
 // dc/05: alias map — let agents use the names they think in (`cc` for
@@ -30,6 +31,8 @@ const SOURCE_ALIASES: Partial<Record<string, SessionSource>> = {
   oai: 'codex',
   droid: 'factory',
   gm: 'gemini',
+  agy: 'antigravity',
+  'antigravity-cli': 'antigravity',
 };
 
 export const SOURCE_ALIASES_LIST = Object.entries(SOURCE_ALIASES).map(

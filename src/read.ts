@@ -10,6 +10,7 @@ import { getPreset, getDefaultTokenBudget } from './config.js';
 import { InvalidRangeError, SessionReaderError, EXIT } from './errors.js';
 import { segmentTurns, getTurn, findTurnPendingToolCalls } from './turns.js';
 import { computeETag } from './etag.js';
+import { toExternal } from './output/serialize.js';
 import type {
   NormalizedSession,
   ReadOptions,
@@ -56,7 +57,7 @@ function buildSessionSummary(
     context_window: session.metadata.contextWindow,
     context_tokens: session.stats.tokenUsage?.contextTokens,
     reasoning_effort: session.metadata.reasoningEffort,
-    rate_limits: session.metadata.rateLimits,
+    rate_limits: toExternal(session.metadata.rateLimits) as SessionSummary['rate_limits'],
   };
 }
 

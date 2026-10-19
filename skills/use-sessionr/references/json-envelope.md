@@ -100,7 +100,7 @@ Every command returns `--output json` as a single top-level object.  Some keys a
     "has_more_before": false,
     "has_more_after": true,
     "cursor_before": null,
-    "cursor_after": 23,
+    "cursor_after": 22,
     "cursor": {
       "next": "sessionr read <id> --after 22 --tokens 8000",
       "prev": null,

@@ -50,7 +50,7 @@ export function computeETag(session: NormalizedSession, opts: ETagOptions = {}):
       hash.update('\x1f');
       hash.update(b.type);
       if (b.type === 'text' || b.type === 'thinking') hash.update(b.text);
-      else if (b.type === 'tool_use') hash.update(`${b.id}:${b.name}`);
+      else if (b.type === 'tool_use') hash.update(`${b.id}:${b.name}:${JSON.stringify(b.input)}`);
       else if (b.type === 'tool_result') hash.update(`${b.toolUseId}:${String(b.isError)}:${b.content}`);
     }
   }

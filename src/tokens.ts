@@ -65,6 +65,11 @@ export function estimateRenderedMessageTokens(msg: NormalizedMessage, preset: Ve
       }
     }
   }
+  // A compaction summary is emitted outside content/blocks, and only at full detail (see serializeMessage),
+  // both as `summary` and inside `compaction_meta`. Count what is actually written so --tokens stays honest.
+  if (preset.name === 'full' && msg.compactionMeta?.summary) {
+    tokens += 2 * estimateTokens(msg.compactionMeta.summary);
+  }
   return tokens;
 }
 

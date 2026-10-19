@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { segmentTurns, getTurn, deriveContextWindow } from '../src/turns.js';
+import { describe, it, expect, vi } from 'vitest';
+import { segmentTurns, getTurn, extractTurnFacts, extractTurnFilesChanged, deriveContextWindow } from '../src/turns.js';
 import type { NormalizedMessage, NormalizedSession } from '../src/types.js';
 
 function makeMsg(index: number, role: 'user' | 'assistant' | 'system' | 'tool_use' | 'tool_result', content: string, source?: string): NormalizedMessage {
@@ -132,6 +132,99 @@ describe('Turn Segmentation (Issue #12)', () => {
   });
 });
 
+
+describe('Turn review regressions', () => {
+  const use = (index: number, id: string, name: string, input: Record<string, unknown>): NormalizedMessage => ({ ...makeMsg(index, 'tool_use', name), blocks: [{type: 'tool_use', id, name, input}] });
+  const result = (index: number, id: string, isError = false, content = ''): NormalizedMessage => ({ ...makeMsg(index, 'tool_result', content), blocks: [{type: 'tool_result', toolUseId: id, isError, content}] });
+  it('rejects non-finite and fractional numeric turn selectors', () => {
+    const turns = segmentTurns([makeMsg(1, 'user', 'prompt')]);
+    for (const value of [NaN, Infinity, 1.5]) expect(() => getTurn(turns, value)).toThrow();
+  });
+  it('counts failed commands and failed edits once each', () => {
+    const facts = extractTurnFacts([use(1,'bash','Bash',{command:'npm test'}), use(2,'edit','Edit',{file_path:'a.ts'}), result(3,'bash',true,'exit code 2'), result(4,'edit',true,'permission denied')]);
+    expect(facts.errorCount).toBe(2);
+    expect(facts.filesChanged.edited).toEqual([]);
+  });
+  it('only reports successful edits, not failed or pending writes', () => {
+    const messages = [use(1,'ok','Edit',{file_path:'a.ts'}), result(2,'ok'), use(3,'fail','Write',{file_path:'b.ts'}), result(4,'fail',true),use(5,'pending','Edit',{file_path:'c.ts'})];
+    expect(extractTurnFilesChanged(messages)).toEqual({created:[],edited:['a.ts'],deleted:[]});
+  });
+  it('classifies each file in a multi-file git diff independently', () => {
+    const patch = 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.ts b/b.ts\n--- /dev/null\n+++ b/b.ts\n+new';
+    expect(extractTurnFilesChanged([use(1,'patch','apply_patch',{input:patch}),result(2,'patch')])).toEqual({created:['b.ts'],edited:['a.ts'],deleted:[]});
+  });
+  it('matches late results to the launching turn without counting them twice', () => {
+    const turns=segmentTurns([makeMsg(1,'user','one'),use(2,'cmd','Bash',{command:'npm test'}),makeMsg(3,'user','two'),result(4,'cmd',true,'exit code 1'),makeMsg(5,'assistant','done')]);
+    expect(turns[0].pendingToolCalls).toBeUndefined();
+    expect(turns[0].commands[0].exitCode).toBe(1);
+    expect(turns[0].errorCount).toBe(1);
+    expect(turns[1].errorCount).toBe(0);
+  });
+  it('does not complete an earlier turn while a tool remains pending', () => {
+    const turns=segmentTurns([makeMsg(1,'user','one'),use(2,'cmd','Bash',{command:'sleep 7'}),makeMsg(3,'user','two'),makeMsg(4,'assistant','done')]);
+    expect(turns[0].completed).toBe(false);
+  });
+  it('recognizes tool-use interruptions without scanning tool output', () => {
+    const turns=segmentTurns([makeMsg(1,'user','one'),makeMsg(2,'user','[Request interrupted by user for tool use]'),makeMsg(3,'user','two'),result(4,'unknown',false,'source: [Request interrupted by user]'),makeMsg(5,'assistant','done')]);
+    expect(turns[0].interrupted).toBe(true);
+    expect(turns[1].interrupted).toBe(false);
+    expect(turns[1].finalMessageIndex).toBe(5);
+  });
+  it('infers zero for a successful command result without an explicit status', () => {
+    expect(extractTurnFacts([use(1,'cmd','Bash',{command:'pwd'}),result(2,'cmd',false,'/repo')]).commands[0].exitCode).toBe(0);
+  });
+});
+
+
+describe('Source event turn regressions', () => {
+  it('uses Codex UserMessage provenance, folds steers, and preserves terminal facts', async () => {
+    const common = await import('../src/parsers/common.js');
+    const { parseCodexSession } = await import('../src/parsers/codex.js');
+    const at='2026-10-12T00:00:00Z';
+    const response = (role: string, text: string, phase?: string) => ({timestamp:at,type:'response_item',payload:{type:'message',role,phase,content:[{type:role==='user'?'input_text':'output_text',text}]}});
+    const event = (type: string, extra={}) => ({timestamp:at,type:'event_msg',payload:{type,...extra}});
+    const user = (text: string) => event('item_completed',{item:{type:'UserMessage',content:[{type:'text',text}]}});
+    const records = [event('task_started'),response('user','injected context'),response('user','prompt'),user('prompt'),response('assistant','working','commentary'),response('user','steer'),user('steer'),response('assistant','done','final_answer'),event('task_complete',{duration_ms:1234}),event('task_started'),response('user','/model custom'),user('/model custom'),response('assistant','working','commentary'),event('turn_aborted',{duration_ms:4321})];
+    vi.spyOn(common,'readJsonlFile').mockResolvedValue(records);
+    vi.spyOn(common,'getFileStats').mockResolvedValue({bytes:100,lines:records.length});
+    try {
+      const turns=segmentTurns(await parseCodexSession('/scratch/source.jsonl'));
+      expect(turns).toHaveLength(2);
+      expect(turns.map(t=>t.prompt.text)).toEqual(['prompt','/model custom']);
+      expect(turns[0].durationMs).toBe(1234);
+      expect(turns[0].completed).toBe(true);
+      expect(turns[1].interrupted).toBe(true);
+      expect(turns[1].completed).toBe(false);
+    } finally { vi.restoreAllMocks(); }
+  });
+  it('does not treat Codex commentary with a resolved tool as a completed final response', async () => {
+    const common = await import('../src/parsers/common.js');
+    const { parseCodexSession } = await import('../src/parsers/codex.js');
+    const at='2026-10-12T00:00:00Z';
+    const records=[{timestamp:at,type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'prompt'}]}},{timestamp:at,type:'response_item',payload:{type:'message',role:'assistant',phase:'commentary',content:[{type:'output_text',text:'working'}]}}];
+    vi.spyOn(common,'readJsonlFile').mockResolvedValue(records);vi.spyOn(common,'getFileStats').mockResolvedValue({bytes:100,lines:2});
+    try { expect(segmentTurns(await parseCodexSession('/scratch/running.jsonl'))[0].completed).toBe(false); } finally {vi.restoreAllMocks();}
+  });
+  it('retains full Codex patch input for per-turn file extraction', async () => {
+    const common = await import('../src/parsers/common.js');const {parseCodexSession}=await import('../src/parsers/codex.js');const at='2026-10-12T00:00:00Z';
+    const patch='*** Begin Patch\n*** Update File: a.ts\n@@\n+'+'x'.repeat(350)+'\n*** Add File: b.ts\n+new\n*** End Patch';
+    const records=[{timestamp:at,type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'edit'}]}},{timestamp:at,type:'response_item',payload:{type:'custom_tool_call',name:'apply_patch',call_id:'p',input:patch}},{timestamp:at,type:'response_item',payload:{type:'custom_tool_call_output',call_id:'p',output:'Success'}}];
+    vi.spyOn(common,'readJsonlFile').mockResolvedValue(records);vi.spyOn(common,'getFileStats').mockResolvedValue({bytes:100,lines:3});
+    try { expect(segmentTurns(await parseCodexSession('/scratch/patch.jsonl'))[0].filesChanged).toEqual({created:['b.ts'],edited:['a.ts'],deleted:[]}); } finally {vi.restoreAllMocks();}
+  });
+});
+
+
+describe('Shell edit facts', () => {
+  it('tracks all literal operands of successful simple commands without matching quoted scripts', () => {
+    const messages: NormalizedMessage[] = [];
+    for (const [id,command] of [['touch','touch a.ts "b file.ts"'],['rm','rm -f c.ts d.ts'],['echo','echo "rm fake.ts"']]) {
+      messages.push({...makeMsg(messages.length+1,'tool_use','Bash'),blocks:[{type:'tool_use',id,name:'Bash',input:{command}}]}, {...makeMsg(messages.length+2,'tool_result','ok'),blocks:[{type:'tool_result',toolUseId:id,isError:false,content:'ok'}]});
+    }
+    expect(extractTurnFilesChanged(messages)).toEqual({created:['a.ts','b file.ts'],edited:[],deleted:['c.ts','d.ts']});
+  });
+});
+
 describe('Turn Execution Facts (Issue #13)', () => {
   it('extracts files changed with created, edited, and deleted classifications', () => {
     const msgs: NormalizedMessage[] = [
@@ -178,7 +271,11 @@ describe('Turn Execution Facts (Issue #13)', () => {
           },
         ],
       },
-      makeMsg(5, 'assistant', 'Done with edits.'),
+      ...['call-write-1', 'call-edit-1', 'call-del-1'].map((toolUseId, i): NormalizedMessage => ({
+        ...makeMsg(5 + i, 'tool_result', 'Success'),
+        blocks: [{ type: 'tool_result', toolUseId, isError: false, content: 'Success' }],
+      })),
+      makeMsg(8, 'assistant', 'Done with edits.'),
     ];
 
     const session = makeSession(msgs);
@@ -271,13 +368,38 @@ describe('Turn Execution Facts (Issue #13)', () => {
   });
 });
 
+
+it('reports two successful edits and a non-zero test exit in the same turn (Issue #13 acceptance)', () => {
+  const messages: NormalizedMessage[] = [makeMsg(1,'user','Edit both files and test')];
+  for (const [id,name,input,isError,content] of [
+    ['edit-a','Edit',{file_path:'a.ts'},false,'Success'],
+    ['edit-b','Edit',{file_path:'b.ts'},false,'Success'],
+    ['test','Bash',{command:'npm test'},true,'exit code 2'],
+  ] as const) {
+    messages.push({...makeMsg(messages.length+1,'tool_use',name),blocks:[{type:'tool_use',id,name,input}]});
+    messages.push({...makeMsg(messages.length+1,'tool_result',content),blocks:[{type:'tool_result',toolUseId:id,isError,content}]});
+  }
+  const turn=segmentTurns(messages)[0];
+  expect(turn.filesChanged.edited).toEqual(['a.ts','b.ts']);
+  expect(turn.commands[0].exitCode).toBe(2);
+  expect(turn.errorCount).toBe(1);
+});
+
+it('reports successful NotebookEdit notebook_path targets', () => {
+  const messages: NormalizedMessage[] = [
+    {...makeMsg(1,'tool_use','NotebookEdit'),blocks:[{type:'tool_use',id:'nb',name:'NotebookEdit',input:{notebook_path:'analysis.ipynb'}}]},
+    {...makeMsg(2,'tool_result','Success'),blocks:[{type:'tool_result',toolUseId:'nb',isError:false,content:'Success'}]},
+  ];
+  expect(extractTurnFilesChanged(messages).edited).toEqual(['analysis.ipynb']);
+});
+
 describe('Turn Token Usage and Context Window (Issue #8)', () => {
   it('derives context window size correctly from model and metadata', () => {
     expect(deriveContextWindow('claude-3-5-sonnet')).toBe(200_000);
     expect(deriveContextWindow('claude-3-7-sonnet-20250219')).toBe(200_000);
     expect(deriveContextWindow('gpt-4o')).toBe(128_000);
     expect(deriveContextWindow('gemini-1.5-pro')).toBe(2_000_000);
-    expect(deriveContextWindow('unknown-model')).toBe(128_000);
+    expect(deriveContextWindow('unknown-model')).toBeUndefined();
     expect(deriveContextWindow('unknown-model', { contextWindow: 32_768 } as any)).toBe(32_768);
   });
 

@@ -1,5 +1,6 @@
 import type { SessionSource, SessionListEntry, NormalizedSession } from '../types.js';
 import { resolveSource } from '../utils/validate.js';
+export { resolveSource };
 
 export interface SourceAdapter {
   name: SessionSource | (string & {});

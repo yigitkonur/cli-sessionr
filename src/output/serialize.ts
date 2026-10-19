@@ -61,9 +61,17 @@ export function serializeMessage(
   const resolved: SerializeMessageOpts =
     typeof opts === 'string' ? { preset: opts } : (opts ?? {});
 
+  if (m.kind === 'compaction') {
+    const { preTokens, postTokens } = m.compactionMeta ?? {};
+    const content = `Context compacted${preTokens !== undefined && postTokens !== undefined ? ` from ${preTokens} to ${postTokens} tokens` : ''}`;
+    m = { ...m, content, blocks: [{ type: 'text', text: content }] };
+  }
+
   const msg: Record<string, unknown> = {
     index: m.index,
     role: m.role,
+    ...(m.source ? { source: m.source } : {}),
+    ...(m.originKind ? { origin_kind: m.originKind } : {}),
     timestamp: m.timestamp,
     tokens_estimate: estimateMessageTokens(m),
     content: m.content,
@@ -79,23 +87,19 @@ export function serializeMessage(
     msg.kind = m.kind;
   }
   if (m.compactionMeta !== undefined) {
-    msg.compaction_meta = m.compactionMeta;
+    const { trigger, preTokens, postTokens, summary } = m.compactionMeta;
+    const showSummary = resolved.preset === 'full' && resolved.detail !== 'meta';
+    msg.compaction_meta = {
+      ...(trigger !== undefined ? { trigger } : {}),
+      ...(preTokens !== undefined ? { pre_tokens: preTokens } : {}),
+      ...(postTokens !== undefined ? { post_tokens: postTokens } : {}),
+      ...(showSummary && summary !== undefined ? { summary } : {}),
+    };
     if (m.kind === 'compaction') {
-      if (m.compactionMeta.trigger !== undefined) {
-        msg.trigger = m.compactionMeta.trigger;
-      }
-      if (m.compactionMeta.preTokens !== undefined) {
-        msg.pre_tokens = m.compactionMeta.preTokens;
-      }
-      if (m.compactionMeta.postTokens !== undefined) {
-        msg.post_tokens = m.compactionMeta.postTokens;
-      }
-      if (
-        m.compactionMeta.summary !== undefined &&
-        (resolved.preset === 'verbose' || resolved.preset === 'full' || !resolved.preset)
-      ) {
-        msg.summary = m.compactionMeta.summary;
-      }
+      if (trigger !== undefined) msg.trigger = trigger;
+      if (preTokens !== undefined) msg.pre_tokens = preTokens;
+      if (postTokens !== undefined) msg.post_tokens = postTokens;
+      if (showSummary && summary !== undefined) msg.summary = summary;
     }
   }
 
@@ -244,6 +248,8 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   toolFrequency: 'tool_frequency',
   filesModified: 'files_modified',
   durationMs: 'duration_ms',
+  turnEnds: 'turn_ends',
+  rawLineIndex: 'raw_line_index',
   gitBranch: 'git_branch',
   gitRepo: 'git_repo',
   createdAt: 'created_at',
@@ -255,6 +261,7 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   isError: 'is_error',
   toolUseId: 'tool_use_id',
   isEmpty: 'is_empty',
+  originKind: 'origin_kind',
   // Nested enum-style keys that also surface as map keys in byRole /
   // byBlockType / tokenUsage. Because the camelCase form is unambiguous
   // (only ever a contract-leak in our types), we rename them globally
@@ -273,13 +280,8 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   pendingToolCalls: 'pending_tool_calls',
   contextWindowSize: 'context_window_size',
   contextWindow: 'context_window',
-  contextTokens: 'context_tokens',
   reasoningEffort: 'reasoning_effort',
   rateLimits: 'rate_limits',
-  usedPercent: 'used_percent',
-  windowMinutes: 'window_minutes',
-  resetsAt: 'resets_at',
-  cacheWrite: 'cache_write',
   preTokens: 'pre_tokens',
   postTokens: 'post_tokens',
   compactionMeta: 'compaction_meta',
@@ -287,6 +289,16 @@ const CAMEL_TO_SNAKE_KEYS: Record<string, string> = {
   exitCode: 'exit_code',
   startedAt: 'started_at',
   messageIndex: 'message_index',
+  cacheWrite: 'cache_write',
+  contextTokens: 'context_tokens',
+  inputTokens: 'input_tokens',
+  outputTokens: 'output_tokens',
+  cacheReadTokens: 'cache_read_tokens',
+  cacheWriteTokens: 'cache_write_tokens',
+  usedPercent: 'used_percent',
+  windowMinutes: 'window_minutes',
+  resetsAt: 'resets_at',
+  matchIndex: 'match_index',
 };
 
 /**
