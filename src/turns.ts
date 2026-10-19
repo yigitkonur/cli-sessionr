@@ -12,6 +12,7 @@ import type {
   CodexRateLimits,
 } from './types.js';
 import { SessionReaderError, EXIT } from './errors.js';
+import { computePendingToolCalls } from './slicer.js';
 
 /**
  * Model context window sizes in tokens.
@@ -154,32 +155,11 @@ function safeIsoString(d: Date | unknown): string {
 }
 
 /**
- * Identify pending tool calls within given messages.
+ * Identify pending tool calls within given messages. Delegates to the slicer's tracker so a turn reports
+ * the same shape (id, messageIndex, superseded) as session.pending_tool_calls.
  */
 export function findTurnPendingToolCalls(messages: NormalizedMessage[]): PendingToolCall[] {
-  const pendingMap = new Map<string, PendingToolCall>();
-  for (const msg of messages) {
-    if (msg.role === 'tool_use') {
-      for (const b of msg.blocks) {
-        if (b.type === 'tool_use') {
-          pendingMap.set(b.id, {
-            index: msg.index,
-            tool_use_id: b.id,
-            name: b.name,
-            input: b.input ?? {},
-            timestamp: safeIsoString(msg.timestamp),
-          });
-        }
-      }
-    } else if (msg.role === 'tool_result') {
-      for (const b of msg.blocks) {
-        if (b.type === 'tool_result' && b.toolUseId) {
-          pendingMap.delete(b.toolUseId);
-        }
-      }
-    }
-  }
-  return Array.from(pendingMap.values());
+  return computePendingToolCalls(messages);
 }
 
 /**

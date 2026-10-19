@@ -16,7 +16,8 @@ export type SessionSource =
   | 'codex' | 'claude'
   | 'gemini' | 'copilot' | 'cursor-agent' | 'commandcode'
   | 'goose' | 'opencode' | 'kiro' | 'zed'
-  | 'factory';
+  | 'factory'
+  | 'antigravity';
 
 // ── Content Blocks ─────────────────────────────────────────────────────────
 
@@ -25,6 +26,18 @@ export type ContentBlock =
   | { type: 'thinking'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean };
+
+// ── Message Source ──────────────────────────────────────────────────────────
+
+export type MessageSource =
+  | 'prompt'
+  | 'queued'
+  | 'system'
+  | 'local_command'
+  // Interrupt-to-prompt references are deferred to the turns model (Issue #25).
+  | 'interrupt'
+  | 'task_notification'
+  | 'injected';
 
 // ── Normalized Message ─────────────────────────────────────────────────────
 
@@ -37,10 +50,12 @@ export interface NormalizedMessage {
   content: string;
   /** All content blocks for rich rendering */
   blocks: ContentBlock[];
-  /** Original JSONL line number for debugging */
+  /** Claude: physical zero-based JSONL line; other adapters may use parsed-record indices */
   rawLineIndex?: number;
   /** Source classification for origin/provenance */
-  source?: string;
+  source?: MessageSource;
+  /** Original attachment origin.kind; absent on legacy records. */
+  originKind?: string;
   /** Kind classification (e.g. compaction, turn_duration) */
   kind?: string;
   terminal?: 'complete' | 'interrupted';
@@ -68,6 +83,9 @@ export interface SessionMetadata {
 export interface SessionStats {
   totalMessages: number;
   byRole: {
+    /** Human prompting, including steers absorbed mid-turn (source "queued").
+     * Slash commands, interrupts, system preambles and task notifications are excluded,
+     * as are attachments whose origin.kind is not "human". */
     user: number;
     assistant: number;
     system: number;
@@ -111,16 +129,6 @@ export interface TurnCommand {
   is_error?: boolean;
   started_at?: string;
   duration_ms?: number;
-}
-
-export interface PendingToolCall {
-  id?: string;
-  tool_use_id?: string;
-  name: string;
-  input: any;
-  messageIndex?: number;
-  index?: number;
-  timestamp?: string;
 }
 
 export interface TurnExecutionFacts {
@@ -186,7 +194,28 @@ export interface Turn {
   rateLimits?: CodexRateLimits;
 }
 
+// ── Pending Tool Calls ──────────────────────────────────────────────────────
+
+export interface PendingToolCall {
+  /** A later user prompt exists; this is historical, not necessarily a current waiter. */
+  superseded: boolean;
+  id: string;
+  tool_use_id?: string;
+  name: string;
+  input: Record<string, unknown>;
+  messageIndex: number;
+  index: number;
+  timestamp?: string;
+}
+
 // ── Normalized Session ─────────────────────────────────────────────────────
+
+export interface TurnEndEvent {
+  timestamp: Date;
+  durationMs: number;
+  /** Claude physical JSONL index when available; otherwise parsed-record index. */
+  rawLineIndex: number;
+}
 
 export interface NormalizedSession {
   id: string;
@@ -194,8 +223,12 @@ export interface NormalizedSession {
   filePath: string;
   metadata: SessionMetadata;
   messages: NormalizedMessage[];
+  /** Per-turn completion records, separate from the conversation messages. */
+  turnEnds?: TurnEndEvent[];
   stats: SessionStats;
   turns?: Turn[];
+  pendingToolCalls?: PendingToolCall[];
+  pending_tool_calls?: PendingToolCall[];
 }
 
 // ── Session List Entry (lightweight, for list command) ─────────────────────
@@ -361,6 +394,20 @@ export interface SliceMeta {
   };
   turns?: Turn[];
   turn?: Turn;
+  pendingToolCalls?: PendingToolCall[];
+  pending_tool_calls?: PendingToolCall[];
+  search?: SearchMeta;
+}
+
+// ── Search Field Types (Issue #10) ──────────────────────────────────────────
+
+export type SearchField = 'content' | 'tool_input' | 'tool_result';
+
+export interface SearchMeta {
+  query: string;
+  matched: boolean;
+  match_index: number | null;
+  fields?: SearchField[];
 }
 
 // ── Output Resolution Options ──────────────────────────────────────────────
@@ -383,6 +430,7 @@ export interface ReadOptions {
   tokens?: number;
   anchor?: string;
   search?: string;
+  searchIn?: string | string[];
   role?: string;
   before?: number;
   after?: number;

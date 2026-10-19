@@ -21,3 +21,6 @@ import './zed.js';
 
 // Tier 3: Anthropic-block compatible parsers
 import './factory.js';
+
+// Antigravity CLI parser
+import './antigravity.js';
