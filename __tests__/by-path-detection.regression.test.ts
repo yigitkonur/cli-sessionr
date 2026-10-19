@@ -42,7 +42,10 @@ describe('Direct-path source detection', () => {
   it('never treats an agy canonical path as a Gemini JSON session', async () => {
     const file = fixture('.gemini/antigravity-cli/brain/synthetic/.system_generated/logs/transcript_full.jsonl',
       JSON.stringify({ type: 'USER_INPUT', step_index: 0, created_at: '2026-10-12T00:00:00Z', content: 'synthetic' }));
-    await expect(loadSessionByPath(file)).rejects.toMatchObject({ code: 'SOURCE_UNAVAILABLE' });
+    // #17 added the Antigravity adapter, so the canonical agy root now resolves to it (and never to Gemini).
+    const session = await loadSessionByPath(file);
+    expect(session.source).toBe('antigravity');
+    expect(session.source).not.toBe('gemini');
   });
 
   it('reports ambiguous record formats instead of returning zero messages', async () => {
