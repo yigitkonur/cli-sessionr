@@ -600,6 +600,7 @@ function collectTurnEnds(lines: RawLine[]): TurnEndEvent[] {
 function computeStats(
   messages: NormalizedMessage[],
   turnEnds: TurnEndEvent[],
+  unattachedUsage: MessageUsage[] = [],
 ): SessionStats {
   const byRole = { user: 0, assistant: 0, system: 0, toolUse: 0, toolResult: 0 };
   const byBlockType: Record<string, number> = {};
@@ -690,6 +691,13 @@ function computeStats(
     cacheRead += u.cache_read_input_tokens ?? 0;
     cacheCreation += u.cache_creation_input_tokens ?? 0;
     if (u.context_tokens !== undefined) contextTokens = u.context_tokens;
+  }
+  for (const u of unattachedUsage) {
+    hasTokens = true;
+    inputTokens += u.input_tokens ?? 0;
+    outputTokens += u.output_tokens ?? 0;
+    cacheRead += u.cache_read_input_tokens ?? 0;
+    cacheCreation += u.cache_creation_input_tokens ?? 0;
   }
 
   // Aggregate the same completion events exposed on the normalized session.
@@ -783,18 +791,25 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     }
     exploded.push(...chunks);
   }
+  // A response with usage but nothing to render (empty or interrupted) has no message to carry it; it still
+  // counts toward session totals, just not toward any turn.
+  const unattachedUsage: MessageUsage[] = [];
   for (const [key, line] of usageLines) {
     const target = usageTargets.get(key);
-    if (!target) continue;
     const u = line.message!.usage!;
-    target.usage = {
+    const usage: MessageUsage = {
       input_tokens: u.input_tokens ?? 0,
       output_tokens: u.output_tokens ?? 0,
       cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
       cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
       context_tokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
     };
-    target.contextTokens = target.usage.context_tokens;
+    if (!target) {
+      unattachedUsage.push(usage);
+      continue;
+    }
+    target.usage = usage;
+    target.contextTokens = usage.context_tokens;
   }
 
   // Assign 1-based indexes
@@ -836,7 +851,7 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
 
   // 6. Compute stats from deduplicated raw lines (for token usage)
   const turnEnds = collectTurnEnds(deduped);
-  const stats = computeStats(messages, turnEnds);
+  const stats = computeStats(messages, turnEnds, unattachedUsage);
 
   const metadata: SessionMetadata = {
     cwd: meta.cwd || path.dirname(filePath),
