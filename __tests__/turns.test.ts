@@ -225,6 +225,165 @@ describe('Shell edit facts', () => {
   });
 });
 
+describe('Turn Execution Facts (Issue #13)', () => {
+  it('extracts files changed with created, edited, and deleted classifications', () => {
+    const msgs: NormalizedMessage[] = [
+      makeMsg(1, 'user', 'Implement changes'),
+      {
+        index: 2,
+        role: 'tool_use',
+        timestamp: new Date(),
+        content: 'Write file',
+        blocks: [
+          {
+            type: 'tool_use',
+            id: 'call-write-1',
+            name: 'write_to_file',
+            input: { TargetFile: '/root/dev/src/newfile.ts', CodeContent: 'hello' },
+          },
+        ],
+      },
+      {
+        index: 3,
+        role: 'tool_use',
+        timestamp: new Date(),
+        content: 'Edit file',
+        blocks: [
+          {
+            type: 'tool_use',
+            id: 'call-edit-1',
+            name: 'replace_file_content',
+            input: { TargetFile: '/root/dev/src/existing.ts', ReplacementContent: 'updated' },
+          },
+        ],
+      },
+      {
+        index: 4,
+        role: 'tool_use',
+        timestamp: new Date(),
+        content: 'Delete file',
+        blocks: [
+          {
+            type: 'tool_use',
+            id: 'call-del-1',
+            name: 'delete_file',
+            input: { path: '/root/dev/src/obsolete.ts' },
+          },
+        ],
+      },
+      ...['call-write-1', 'call-edit-1', 'call-del-1'].map((toolUseId, i): NormalizedMessage => ({
+        ...makeMsg(5 + i, 'tool_result', 'Success'),
+        blocks: [{ type: 'tool_result', toolUseId, isError: false, content: 'Success' }],
+      })),
+      makeMsg(8, 'assistant', 'Done with edits.'),
+    ];
+
+    const session = makeSession(msgs);
+    const turns = segmentTurns(session);
+    expect(turns).toHaveLength(1);
+    const turn = turns[0];
+
+    expect(turn.filesChanged.created).toEqual(['/root/dev/src/newfile.ts']);
+    expect(turn.filesChanged.edited).toEqual(['/root/dev/src/existing.ts']);
+    expect(turn.filesChanged.deleted).toEqual(['/root/dev/src/obsolete.ts']);
+  });
+
+  it('extracts executed commands with exit codes and error status', () => {
+    const t0 = new Date('2026-10-12T01:00:00Z');
+    const t1 = new Date('2026-10-12T01:00:05Z');
+    const msgs: NormalizedMessage[] = [
+      makeMsg(1, 'user', 'Run tests'),
+      {
+        index: 2,
+        role: 'tool_use',
+        timestamp: t0,
+        content: 'Tool: Bash',
+        blocks: [
+          {
+            type: 'tool_use',
+            id: 'call-bash-1',
+            name: 'Bash',
+            input: { command: 'pnpm test' },
+          },
+        ],
+      },
+      {
+        index: 3,
+        role: 'tool_result',
+        timestamp: t1,
+        content: 'Tests failed with exit code 1',
+        blocks: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call-bash-1',
+            content: 'Tests failed with exit code 1',
+            isError: true,
+          },
+        ],
+      },
+      makeMsg(4, 'assistant', 'Tests failed, investigating.'),
+    ];
+
+    const session = makeSession(msgs);
+    const turns = segmentTurns(session);
+    expect(turns).toHaveLength(1);
+    const turn = turns[0];
+
+    expect(turn.commands).toHaveLength(1);
+    expect(turn.commands[0].cmd).toBe('pnpm test');
+    expect(turn.commands[0].exitCode).toBe(1);
+    expect(turn.commands[0].isError).toBe(true);
+    expect(turn.commands[0].durationMs).toBe(5000);
+    expect(turn.errorCount).toBe(1);
+  });
+
+  it('tracks pending tool calls at turn boundary', () => {
+    const msgs: NormalizedMessage[] = [
+      makeMsg(1, 'user', 'Should we proceed?'),
+      makeMsg(2, 'assistant', 'Let me ask you.'),
+      {
+        index: 3,
+        role: 'tool_use',
+        timestamp: new Date(),
+        content: 'Tool: AskUserQuestion',
+        blocks: [
+          {
+            type: 'tool_use',
+            id: 'ask-1',
+            name: 'AskUserQuestion',
+            input: { question: 'Deploy now?' },
+          },
+        ],
+      },
+    ];
+
+    const session = makeSession(msgs);
+    const turns = segmentTurns(session);
+    expect(turns).toHaveLength(1);
+    const turn = turns[0];
+
+    expect(turn.completed).toBe(false);
+    expect(turn.pendingToolCalls).toHaveLength(1);
+    expect(turn.pendingToolCalls![0].name).toBe('AskUserQuestion');
+  });
+});
+
+
+it('reports two successful edits and a non-zero test exit in the same turn (Issue #13 acceptance)', () => {
+  const messages: NormalizedMessage[] = [makeMsg(1,'user','Edit both files and test')];
+  for (const [id,name,input,isError,content] of [
+    ['edit-a','Edit',{file_path:'a.ts'},false,'Success'],
+    ['edit-b','Edit',{file_path:'b.ts'},false,'Success'],
+    ['test','Bash',{command:'npm test'},true,'exit code 2'],
+  ] as const) {
+    messages.push({...makeMsg(messages.length+1,'tool_use',name),blocks:[{type:'tool_use',id,name,input}]});
+    messages.push({...makeMsg(messages.length+1,'tool_result',content),blocks:[{type:'tool_result',toolUseId:id,isError,content}]});
+  }
+  const turn=segmentTurns(messages)[0];
+  expect(turn.filesChanged.edited).toEqual(['a.ts','b.ts']);
+  expect(turn.commands[0].exitCode).toBe(2);
+  expect(turn.errorCount).toBe(1);
+});
 
 it('reports successful NotebookEdit notebook_path targets', () => {
   const messages: NormalizedMessage[] = [
