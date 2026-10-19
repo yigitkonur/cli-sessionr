@@ -1,0 +1,36 @@
+{"type":"session_meta","payload":{"id":"regression-cases","cwd":"/work/demo"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Synthetic regression cases"}]}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"quoted-key","input":"text(await tools.exec_command({\"cmd\":\"echo hello\"}));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"quoted-key","output":"{\"exit_code\":0,\"output\":\"hello\"}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"poll-name","input":"text(await tools.write_stdin({session_id:123,chars:\"\"}));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"poll-name","output":"{\"exit_code\":1,\"output\":\"failed\"}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","call_id":"patch-literal-native","input":"*** Begin Patch\n*** Add File: generated.js\n+const x = \"tools.exec_command\";\n*** End Patch"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"patch-literal-native","output":"{}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"patch-literal-wrapper","input":"text(await tools.apply_patch(\"*** Begin Patch\\n*** Add File: generated.js\\n+const x = \\\"tools.exec_command\\\";\\n*** End Patch\"));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"patch-literal-wrapper","output":"{}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"git-quoted","input":"{\"tool\":\"apply_patch\",\"patch\":\"diff --git \\\"a/src/with space.ts\\\" \\\"b/src/with space.ts\\\"\\n--- \\\"a/src/with space.ts\\\"\\n+++ \\\"b/src/with space.ts\\\"\\n@@ -1 +1 @@\\n-x\\n+y\"}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"git-quoted","output":"{}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"real-a-directory","input":"text(await tools.apply_patch(\"*** Begin Patch\\n*** Add File: a/test.txt\\n+x\\n*** End Patch\"));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"real-a-directory","output":"{}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"unicode","input":"text(await tools.exec_command({cmd:'echo a\\x62\\u{1F600}'}));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"unicode","output":"{}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"mixed-inner","input":"await tools.apply_patch(\"*** Begin Patch\\n*** Add File: a.txt\\n+hi\\n*** End Patch\"); text(await tools.exec_command({cmd:\"cat a.txt\"}));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"mixed-inner","output":"{}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"nested-error","input":"text(await tools.exec_command({cmd:\"npm test\"}));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"nested-error","output":[{"type":"input_text","text":"Script completed\nOutput:\n"},{"type":"input_text","text":"{\"exit_code\":1,\"output\":\"1 failing\"}"}]}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"later-array-error","input":"text(await tools.exec_command({cmd:\"npm test\"}));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"later-array-error","output":[{"exit_code":0},{"exit_code":1}]}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"array-command","input":"{\"command\":[\"printf\",\"%s\",\"a b\"]}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"array-command","output":"{}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"metadata-error","input":"text(await tools.exec_command({cmd:\"npm test\"}));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"metadata-error","output":"{\"output\":\"failed\",\"metadata\":{\"exit_code\":1}}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"plain-exit-error","input":"text(await tools.exec_command({cmd:\"npm test\"}));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"plain-exit-error","output":"Process exited with code 1\nFinal output:\nfailed"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"long-patch","input":"text(await tools.apply_patch(\"*** Begin Patch\\n*** Add File: long.txt\\n+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n*** End Patch\"));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"long-patch","output":"{}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"hunk-path-false-positive","input":"{\"tool\":\"apply_patch\",\"patch\":\"*** Update File: real.txt\\n@@\\n--- bogus\\n+++ bogus\"}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"hunk-path-false-positive","output":"{}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"null-path","input":"text(await tools.apply_patch(\"*** Add File: null\\n+x\"));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"null-path","output":"{}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"comma-path","input":"text(await tools.apply_patch(\"*** Add File: name,\\n+x\"));"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"comma-path","output":"{}"}}

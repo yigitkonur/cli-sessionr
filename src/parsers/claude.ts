@@ -4,14 +4,16 @@ import * as os from 'os';
 
 import type {
   ContentBlock,
+  MessageSource,
   NormalizedMessage,
   NormalizedSession,
   SessionListEntry,
   SessionMetadata,
   SessionStats,
   MessageUsage,
+  TurnEndEvent,
 } from '../types.js';
-import { readJsonlFile, scanJsonlHead, getFileStats } from './common.js';
+import { readJsonlFile, readJsonlFileWithLineIndex, scanJsonlHead, getFileStats } from './common.js';
 import { registerSource } from './registry.js';
 import { deriveContextWindow } from '../turns.js';
 
@@ -24,6 +26,7 @@ type RawType =
   | 'user'
   | 'assistant'
   | 'system'
+  | 'attachment'
   | 'queue-operation'
   | 'file-history-snapshot'
   | 'progress'
@@ -68,6 +71,17 @@ interface RawLine {
   model?: string;
   isCompactSummary?: boolean;
   isMeta?: boolean;
+  rawLineIndex?: number;
+  attachment?: {
+    type?: string;
+    prompt?: unknown;
+    timestamp?: string;
+    commandMode?: string;
+    isMeta?: boolean;
+    origin?: { kind?: string };
+    [key: string]: unknown;
+  };
+  durationMs?: number;
   message?: RawMessage;
   [key: string]: unknown;
 }
@@ -90,7 +104,8 @@ function extractToolResultContent(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
-      .filter((b: { type?: string; text?: string }) => b.type === 'text' && b.text)
+      .filter((b): b is { type: 'text'; text: string } =>
+        b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
       .map((b: { text?: string }) => b.text!)
       .join('\n');
   }
@@ -200,9 +215,71 @@ interface ExplodedMessage {
   model?: string;
   contextWindow?: number;
   reasoningEffort?: string;
+  source?: MessageSource;
+  originKind?: string;
+}
+
+export function classifyUserSource(text: string, line: RawLine): MessageSource {
+  if (line.source && typeof line.source === 'string') {
+    return line.source as MessageSource;
+  }
+  if (line.promptSource && typeof line.promptSource === 'string') {
+    if (line.origin && (line.origin as any).kind === 'task-notification') {
+      return 'task_notification';
+    }
+    if (line.promptSource === 'system') {
+      return 'system';
+    }
+  }
+  if (line.origin && (line.origin as any).kind === 'task-notification') {
+    return 'task_notification';
+  }
+  if (line.type === 'attachment' && (line as any).attachment?.type === 'queued_command') {
+    return 'queued';
+  }
+  const trimmed = text.trim();
+  if (/^\[Request interrupted by user(?: for tool use(?: "[^"\n]+")?)?\]$/.test(trimmed)) {
+    return 'interrupt';
+  }
+  // Explicit human provenance wins over heuristics for conversational text.
+  if ((line.origin as { kind?: string } | undefined)?.kind === 'human') {
+    return 'prompt';
+  }
+  if (trimmed.startsWith('<task-notification') || trimmed.startsWith('<task-id>')) {
+    return 'task_notification';
+  }
+  if (
+    trimmed.startsWith('<command-name>') ||
+    trimmed.startsWith('<command-message>') ||
+    trimmed.startsWith('<command-args>') ||
+    trimmed.startsWith('<local-command-') ||
+    line.subtype === 'local_command' ||
+    /^\/(compact|clear|model|effort|config|copy|export|doctor|cost)(\s|$|<)/.test(trimmed)
+  ) {
+    return 'local_command';
+  }
+  if (
+    line.isMeta ||
+    trimmed.startsWith('<environment_context>') ||
+    trimmed.startsWith('<system-reminder>') ||
+    /^<agent-message(?:\s|>)/.test(trimmed) ||
+    /^Another Claude session sent a message:\s*<teammate-message(?:\s|>)/.test(trimmed) ||
+    trimmed.startsWith('This session is being continued from a previous conversation')
+  ) {
+    return 'system';
+  }
+  return 'prompt';
 }
 
 function shouldSkipLine(line: RawLine): boolean {
+  // Allow queued_command attachments mid-turn
+  if (line.type === 'attachment') {
+    if (line.isMeta || line.attachment?.isMeta) return true;
+    const mode = line.attachment?.commandMode;
+    return line.attachment?.type !== 'queued_command' ||
+      (mode !== undefined && mode !== 'prompt' && mode !== 'task-notification');
+  }
+
   // Skip non-conversation types
   if (
     line.type === 'system' ||
@@ -229,7 +306,32 @@ function shouldSkipLine(line: RawLine): boolean {
   return false;
 }
 
+function explodeAttachmentMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
+  const ts = new Date(line.attachment?.timestamp || line.timestamp);
+  const extracted = extractToolResultContent(line.attachment?.prompt);
+  const prompt = extracted.trim() ? extracted : '[queued command]';
+  const trimmedPrompt = prompt.trimStart();
+  const notification =
+    line.attachment?.commandMode === 'task-notification' ||
+    line.attachment?.origin?.kind === 'task-notification' ||
+    trimmedPrompt.startsWith('<task-notification') ||
+    trimmedPrompt.startsWith('<task-id>');
+  return [
+    {
+      role: notification ? 'system' : 'user',
+      content: prompt,
+      blocks: [{ type: 'text', text: prompt }],
+      timestamp: ts,
+      rawLineIndex: typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex,
+      source: notification ? 'task_notification' : 'queued',
+      ...(typeof line.attachment?.origin?.kind === 'string'
+        ? { originKind: line.attachment.origin.kind } : {}),
+    },
+  ];
+}
+
 function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
+  const actualLineIndex = typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex;
   const results: ExplodedMessage[] = [];
   const ts = new Date(line.timestamp);
   const content = line.message?.content;
@@ -261,7 +363,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
         content: text,
         blocks: [{ type: 'text', text }],
         timestamp: ts,
-        rawLineIndex: lineIndex,
+        rawLineIndex: actualLineIndex,
         usage,
         contextTokens,
       });
@@ -310,7 +412,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
             content: flushedContent,
             blocks: [...textBlocks],
             timestamp: ts,
-            rawLineIndex: lineIndex,
+            rawLineIndex: actualLineIndex,
           });
           textBlocks.length = 0;
           textContent = '';
@@ -327,7 +429,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
           content: `Tool: ${block.name || 'unknown'}`,
           blocks: [toolBlock],
           timestamp: ts,
-          rawLineIndex: lineIndex,
+          rawLineIndex: actualLineIndex,
         });
         break;
       }
@@ -346,7 +448,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
           content: resultContent,
           blocks: [resultBlock],
           timestamp: ts,
-          rawLineIndex: lineIndex,
+          rawLineIndex: actualLineIndex,
         });
         break;
       }
@@ -373,7 +475,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
       content: flushedContent,
       blocks: [...textBlocks],
       timestamp: ts,
-      rawLineIndex: lineIndex,
+      rawLineIndex: actualLineIndex,
     });
   }
 
@@ -389,6 +491,7 @@ function explodeAssistantMessage(line: RawLine, lineIndex: number): ExplodedMess
 }
 
 function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[] {
+  const actualLineIndex = typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex;
   const results: ExplodedMessage[] = [];
   const ts = new Date(line.timestamp);
   const content = line.message?.content;
@@ -398,12 +501,14 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
   // Simple string content
   if (typeof content === 'string') {
     if (content.trim()) {
+      const source = classifyUserSource(content, line);
       results.push({
-        role: 'user',
+        role: source === 'system' || source === 'task_notification' ? 'system' : 'user',
         content,
         blocks: [{ type: 'text', text: content }],
         timestamp: ts,
-        rawLineIndex: lineIndex,
+        rawLineIndex: actualLineIndex,
+        source,
       });
     }
     return results;
@@ -427,7 +532,7 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
           content: resultContent,
           blocks: [resultBlock],
           timestamp: ts,
-          rawLineIndex: lineIndex,
+          rawLineIndex: actualLineIndex,
         });
         break;
       }
@@ -448,12 +553,14 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
   // Combine real user text blocks into a single user message
   if (textBlocks.length > 0) {
     const joined = textBlocks.join('\n');
+    const source = classifyUserSource(joined, line);
     results.push({
-      role: 'user',
+      role: source === 'system' || source === 'task_notification' ? 'system' : 'user',
       content: joined,
       blocks: textBlocks.map((t) => ({ type: 'text' as const, text: t })),
       timestamp: ts,
-      rawLineIndex: lineIndex,
+      rawLineIndex: actualLineIndex,
+      source,
     });
   }
 
@@ -462,8 +569,37 @@ function explodeUserMessage(line: RawLine, lineIndex: number): ExplodedMessage[]
 
 // ── Stats computation ────────────────────────────────────────────────────────
 
+function collectTurnEnds(lines: RawLine[]): TurnEndEvent[] {
+  const turnEnds: TurnEndEvent[] = [];
+  for (const [lineIndex, line] of lines.entries()) {
+    if (
+      line.type === 'system' &&
+      line.subtype === 'turn_duration'
+    ) {
+      const dur =
+        typeof line.durationMs === 'number'
+          ? line.durationMs
+          : typeof (line as any).duration_ms === 'number'
+            ? (line as any).duration_ms
+            : undefined;
+      const timestamp = new Date(line.timestamp);
+      // A malformed timestamp would later throw in toISOString(); skip the record instead.
+      if (typeof dur === 'number' && Number.isFinite(dur) && dur >= 0 && !Number.isNaN(timestamp.getTime())) {
+        turnEnds.push({
+          timestamp,
+          durationMs: dur,
+          rawLineIndex: typeof line.rawLineIndex === 'number' ? line.rawLineIndex : lineIndex,
+        });
+      }
+    }
+  }
+
+  return turnEnds;
+}
+
 function computeStats(
   messages: NormalizedMessage[],
+  turnEnds: TurnEndEvent[],
 ): SessionStats {
   const byRole = { user: 0, assistant: 0, system: 0, toolUse: 0, toolResult: 0 };
   const byBlockType: Record<string, number> = {};
@@ -476,7 +612,13 @@ function computeStats(
   for (const msg of messages) {
     switch (msg.role) {
       case 'user':
-        byRole.user++;
+        // A message counts as a user prompt only if it is a prompt/queued steer AND not a non-human origin.
+        if (
+          (!msg.source || msg.source === 'prompt' || msg.source === 'queued') &&
+          (!msg.originKind || msg.originKind === 'human')
+        ) {
+          byRole.user++;
+        }
         break;
       case 'assistant':
         byRole.assistant++;
@@ -550,9 +692,11 @@ function computeStats(
     if (u.context_tokens !== undefined) contextTokens = u.context_tokens;
   }
 
-  // Duration from first to last timestamp
+  // Aggregate the same completion events exposed on the normalized session.
   let durationMs: number | undefined;
-  if (messages.length >= 2) {
+  if (turnEnds.length > 0) {
+    durationMs = turnEnds.reduce((sum, end) => sum + end.durationMs, 0);
+  } else if (messages.length >= 2) {
     const first = messages[0]!.timestamp.getTime();
     const last = messages[messages.length - 1]!.timestamp.getTime();
     if (last > first) durationMs = last - first;
@@ -584,8 +728,8 @@ function computeStats(
 // ── Main parser ──────────────────────────────────────────────────────────────
 
 export async function parseClaudeSession(filePath: string): Promise<NormalizedSession> {
-  // 1. Read all JSONL lines
-  const rawLines = await readJsonlFile<RawLine>(filePath);
+  // 1. Read all JSONL lines preserving physical line indices
+  const rawLines = await readJsonlFileWithLineIndex<RawLine>(filePath);
   const { lines: rawLineCount, bytes: fileBytes } = await getFileStats(filePath);
 
   // 2. Deduplicate by UUID (last entry wins)
@@ -621,7 +765,9 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     if (shouldSkipLine(line)) continue;
 
     const chunks = line.type === 'assistant' ? explodeAssistantMessage(line, i)
-      : line.type === 'user' ? explodeUserMessage(line, i) : [];
+      : line.type === 'user' ? explodeUserMessage(line, i)
+      : line.type === 'attachment' && line.attachment?.type === 'queued_command' ? explodeAttachmentMessage(line, i)
+      : [];
     for (const chunk of chunks) {
       delete chunk.usage;
       delete chunk.contextTokens;
@@ -663,6 +809,8 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
       model: e.model,
       contextWindow: e.contextWindow,
       reasoningEffort: e.reasoningEffort,
+      ...(e.source ? { source: e.source } : {}),
+      ...(e.originKind ? { originKind: e.originKind } : {}),
     };
     if (e.usage) m.usage = e.usage;
     if (e.contextTokens !== undefined) m.contextTokens = e.contextTokens;
@@ -687,7 +835,8 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
   const sessionId = meta.sessionId || basename;
 
   // 6. Compute stats from deduplicated raw lines (for token usage)
-  const stats = computeStats(messages);
+  const turnEnds = collectTurnEnds(deduped);
+  const stats = computeStats(messages, turnEnds);
 
   const metadata: SessionMetadata = {
     cwd: meta.cwd || path.dirname(filePath),
@@ -707,6 +856,7 @@ export async function parseClaudeSession(filePath: string): Promise<NormalizedSe
     filePath,
     metadata,
     messages,
+    turnEnds,
     stats,
   };
 }
