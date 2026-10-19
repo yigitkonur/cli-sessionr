@@ -33,6 +33,7 @@ const SPAWN_BINS: Record<SessionSource, string> = {
   kiro: 'kiro',
   zed: 'zed',
   factory: 'factory',
+  antigravity: 'antigravity',
 };
 
 interface DoctorSource {
