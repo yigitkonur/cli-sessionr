@@ -171,6 +171,7 @@ export async function loadSessionByPath(
   if (source) {
     const adapter = getAdapter(source as SessionSource);
     if (adapter) {
+      assertInsideStore(filePath, adapter.name);
       return adapter.parse(filePath);
     }
     throw new SessionReaderError(`Unknown source "${source}".`, {
@@ -229,6 +230,20 @@ export async function loadSessionByPath(
       suggestion: 'Pass an explicit source to loadSessionByPath(path, source).',
     },
   );
+}
+
+// Goose and OpenCode resolve a session's messages from their own global stores by id, not from the file that
+// was passed in, so a copied or imported file would silently return whatever local session shares its id.
+const STORE_BACKED_SOURCES = new Set(['goose', 'opencode']);
+
+function assertInsideStore(filePath: string, sourceName: string): void {
+  const name = sourceName.toLowerCase();
+  if (!STORE_BACKED_SOURCES.has(name) || detectCanonicalSource(filePath) === name) return;
+  throw new SessionReaderError(` sessions can only be read from 's own session store.`, {
+    code: 'SOURCE_STORE_PATH_REQUIRED', errorClass: 'validation', exitCode: EXIT.USAGE,
+    detail: { file_path: filePath, source: sourceName },
+    suggestion: 'Pass a file inside the tool\'s own session store, or read the session by id.',
+  });
 }
 
 function detectCanonicalSource(filePath: string): string | undefined {
