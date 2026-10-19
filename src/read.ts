@@ -130,6 +130,9 @@ export async function read(ref: SessionRef, opts?: ReadOptions): Promise<ReadEnv
     selectedTurn = getTurn(turns, opts.turn);
     from = selectedTurn.startIndex;
     to = selectedTurn.endIndex;
+    // Cursors are strictly exclusive and clamp the turn window inward, as in the CLI.
+    if (opts.after != null) from = Math.max(from, opts.after + 1);
+    if (opts.before != null) to = Math.min(to, opts.before - 1);
   } else if (opts?.before != null) {
     // Strictly exclusive before (< opts.before)
     from = 1;
@@ -205,6 +208,12 @@ export async function read(ref: SessionRef, opts?: ReadOptions): Promise<ReadEnv
     anchor,
     opts?.search,
     preset,
+    opts?.searchIn,
+    totalMessages,
+    {
+      preserveTrailing: selectedTurn !== undefined,
+      window: selectedTurn ? { from: selectedTurn.startIndex, to: selectedTurn.endIndex } : undefined,
+    },
   );
 
   const etag = computeETag(session, {
