@@ -29,6 +29,7 @@ const SPAWN_BINS: Record<SessionSource, string> = {
   kiro: 'kiro',
   zed: 'zed',
   factory: 'factory',
+  antigravity: 'antigravity',
 };
 
 const _spawnBinCache = new Map<SessionSource, boolean>();
