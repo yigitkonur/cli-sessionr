@@ -16,7 +16,8 @@ export type SessionSource =
   | 'codex' | 'claude'
   | 'gemini' | 'copilot' | 'cursor-agent' | 'commandcode'
   | 'goose' | 'opencode' | 'kiro' | 'zed'
-  | 'factory';
+  | 'factory'
+  | 'antigravity';
 
 // ── Content Blocks ─────────────────────────────────────────────────────────
 
