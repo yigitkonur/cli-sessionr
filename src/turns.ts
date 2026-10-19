@@ -10,6 +10,7 @@ import type {
   PendingToolCall,
   TurnUsage,
   CodexRateLimits,
+  TurnEndEvent,
 } from './types.js';
 import { SessionReaderError, EXIT } from './errors.js';
 import { computePendingToolCalls } from './slicer.js';
@@ -147,6 +148,21 @@ export function isGenuinePrompt(msg: NormalizedMessage): boolean {
   return true;
 }
 
+/**
+ * Command inputs may be argv arrays (Codex shell/exec_command). Join those with spaces instead of letting
+ * String() produce "ls,-la"; otherwise take the first non-empty value, as before.
+ */
+function joinCommand(...candidates: unknown[]): string {
+  for (const value of candidates) {
+    if (Array.isArray(value)) {
+      if (value.length > 0) return value.map(String).join(' ');
+    } else if (value) {
+      return String(value);
+    }
+  }
+  return '';
+}
+
 function safeIsoString(d: Date | unknown): string {
   if (d instanceof Date && !isNaN(d.getTime())) {
     return d.toISOString();
@@ -243,7 +259,7 @@ export function extractTurnFilesChanged(messages: NormalizedMessage[]): TurnFile
           // Only infer literal, standalone touch/rm operands. A shell script or quoted
           // command embedded in echo/ssh/heredoc text is not proof of a local edit.
           if (['bash', 'exec_command', 'run_command', 'execute_command', 'terminal'].includes(name)) {
-            const cmd = String(inp.command || inp.CommandLine || inp.cmd || '');
+            const cmd = joinCommand(inp.command, inp.CommandLine, inp.cmd);
             const simple = cmd.match(/^\s*(?:git\s+)?(touch|rm)\s+(.+?)\s*$/);
             if (simple && !/[\r\n;|&`$<>]/.test(cmd)) {
               const operands = simple[2].match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [];
@@ -319,7 +335,7 @@ export function extractTurnCommands(messages: NormalizedMessage[]): TurnCommand[
             (name === 'exec' && (inp.tool === 'exec_command' || typeof inp.command === 'string'));
 
           if (isCommandTool) {
-            const cmd = String(inp.command || inp.CommandLine || inp.cmd || inp.script || '');
+            const cmd = joinCommand(inp.command, inp.CommandLine, inp.cmd, inp.script);
             if (!cmd) continue;
 
             const res = resultsByToolUseId.get(b.id);
@@ -486,6 +502,22 @@ export function extractTurnFacts(messages: NormalizedMessage[], sessionMessages:
 }
 
 /**
+ * Claude keeps each turn's reported duration in session.turnEnds (system records are not messages), so a
+ * turn owns the ends whose physical line sits between its prompt and the next prompt.
+ */
+function reportedTurnDuration(
+  turnEnds: TurnEndEvent[] | undefined,
+  firstRawLine: number | undefined,
+  nextRawLine: number | undefined,
+): number | undefined {
+  if (!turnEnds?.length || firstRawLine === undefined) return undefined;
+  const owned = turnEnds.filter(
+    (e) => e.rawLineIndex >= firstRawLine && (nextRawLine === undefined || e.rawLineIndex < nextRawLine),
+  );
+  return owned.length > 0 ? owned.reduce((sum, e) => sum + e.durationMs, 0) : undefined;
+}
+
+/**
  * Segment a session into discrete Turn objects.
  */
 export function segmentTurns(
@@ -498,6 +530,7 @@ export function segmentTurns(
   const meta = Array.isArray(sessionOrMessages)
     ? metadata
     : (sessionOrMessages.metadata || metadata);
+  const turnEnds = Array.isArray(sessionOrMessages) ? undefined : sessionOrMessages.turnEnds;
 
   if (!messages || messages.length === 0) {
     if (!Array.isArray(sessionOrMessages)) {
@@ -541,6 +574,15 @@ export function segmentTurns(
 
     const facts = extractTurnFacts(turnMessages, resultsById);
 
+    const reported = reportedTurnDuration(
+      turnEnds,
+      promptMsg.rawLineIndex,
+      i + 1 < promptIndices.length ? messages[promptIndices[i + 1]].rawLineIndex : undefined,
+    );
+    if (reported !== undefined) {
+      facts.durationMs = reported;
+      facts.duration_ms = reported;
+    }
     let durationMs = facts.durationMs;
     if (durationMs === undefined && turnMessages.length > 1) {
       const t0 = promptMsg.timestamp?.getTime?.() ?? 0;
