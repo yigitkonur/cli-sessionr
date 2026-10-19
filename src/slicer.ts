@@ -334,8 +334,8 @@ export function sliceByPage(
     range: { from: firstIdx, to: lastIdx },
     has_more_before: pageIdx > 0,
     has_more_after: pageIdx < totalPages - 1,
-    cursor_before: pageIdx > 0 ? firstIdx - 1 : null,
-    cursor_after: pageIdx < totalPages - 1 ? lastIdx + 1 : null,
+    cursor_before: pageIdx > 0 ? firstIdx : null,
+    cursor_after: pageIdx < totalPages - 1 ? lastIdx : null,
     cursor: { prev: null, next: null, first: null },
     page: { current: pageIdx + 1, total: totalPages },
   };
@@ -437,10 +437,11 @@ export function sliceByTokenBudget(
   }
 
   const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor, preset);
-  // Search windows are centered on the match and never trimmed; head/tail trims must keep unresolved tool calls.
-  const trimmed = anchor === 'search'
-    ? selected
-    : trimToAssistantLast(selected, getUnresolvedToolCallIds(allMessages));
+  // Only head windows trim a trailing non-assistant message: tail walks keep a trailing prompt (#24) and
+  // search windows are centered on the match (#23). Unresolved tool calls are never trimmed.
+  const trimmed = anchor === 'head'
+    ? trimToAssistantLast(selected, getUnresolvedToolCallIds(allMessages))
+    : selected;
 
   const returnedTokens = preset
     ? estimateRenderedSessionTokens(trimmed, preset)
@@ -464,8 +465,8 @@ export function sliceByTokenBudget(
     range: { from: firstIdx, to: lastIdx },
     has_more_before: firstIdx > 1,
     has_more_after: lastIdx < totalMessages,
-    cursor_before: firstIdx > 1 ? firstIdx - 1 : null,
-    cursor_after: lastIdx < totalMessages ? lastIdx + 1 : null,
+    cursor_before: firstIdx > 1 ? firstIdx : null,
+    cursor_after: lastIdx < totalMessages ? lastIdx : null,
     cursor: { prev: null, next: null, first: null },
     partial: firstIdx > sliceFirstIdx || lastIdx < sliceLastIdx,
   };

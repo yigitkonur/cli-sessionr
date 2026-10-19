@@ -156,13 +156,13 @@ program
   .option('-p, --preset <name>', PRESET_HELP)
   .option('-d, --detail <level>', `Detail level (${DETAIL_LEVELS.join(', ')})`)
   .option('--tokens <n>', 'Token budget (env: SESSIONREADER_MAX_TOKENS)')
-  .option('--anchor <anchor>', 'Slice anchor: head, tail, search', 'head')
+  .option('--anchor <anchor>', 'Slice anchor: head, tail, search (default: head; before cursor: tail)')
   .option('--search <query>', 'Search query (sets anchor=search)')
   .option('--search-in <fields>', 'Search fields: content, tool_input, tool_result (comma-separated, default: content)')
   .option('--role <roles>', 'Filter by role (comma-separated: user, assistant, system, tool_use, tool_result)')
   .option('--page <n>', 'Page number (1-based, from head)')
-  .option('--before <cursor>', 'Cursor: show messages before this index')
-  .option('--after <cursor>', 'Cursor: show messages after this index')
+  .option('--before <cursor>', 'Cursor: show messages strictly before this index (< cursor)')
+  .option('--after <cursor>', 'Cursor: show messages strictly after this index (> cursor)')
   .option('--if-changed <etag>', 'Only return data if changed since ETag')
   .option('--include-summary', 'Include session summary even after page 1')
   .option('--batch <path>', 'Read newline-separated session IDs as streaming JSONL')
@@ -197,7 +197,7 @@ Examples:
         role: opts.role as string | undefined,
         page: parseOptionalBounded('--page', opts.page, 1),
         before: parseOptionalBounded('--before', opts.before, 1),
-        after: parseOptionalBounded('--after', opts.after, 1),
+        after: parseOptionalBounded('--after', opts.after, 0),
         ifChanged: opts.ifChanged as string | undefined,
         includeSummary: opts.includeSummary as boolean | undefined,
         batch: opts.batch as string | undefined,

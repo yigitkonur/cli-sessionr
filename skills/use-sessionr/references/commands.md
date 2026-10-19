@@ -73,8 +73,8 @@ sessionr read <session-id> [from] [to]
   --search <query>          Slice around first match (sets anchor=search)
   --role <r1,r2>            user, assistant, system, tool_use, tool_result
   --page <n>                Page number (1-based)
-  --before <cursor>         Show messages before this index
-  --after <cursor>          Show messages after this index
+  --before <cursor>         Show messages strictly before this index (< cursor)
+  --after <cursor>          Show messages strictly after this index (> cursor)
   --if-changed <etag>       304-style polling
   --include-summary         Include summary on every page (default: page 1 only)
   --batch <path>            Newline-separated IDs → JSONL stream
