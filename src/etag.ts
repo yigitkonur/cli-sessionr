@@ -10,6 +10,7 @@ export interface ETagOptions {
   search?: string;
   page?: number;
   format?: string;
+  role?: string;
 }
 
 export function computeETag(session: NormalizedSession, opts: ETagOptions = {}): string {
@@ -34,6 +35,7 @@ export function computeETag(session: NormalizedSession, opts: ETagOptions = {}):
     opts.search ?? '',
     opts.page ?? '',
     opts.format ?? '',
+    [...new Set((opts.role ?? '').split(',').map((role) => role.trim()).filter(Boolean))].sort().join(','),
   ].join('|'));
 
   // Content digest: role + content + per-block-type signature for each message.

@@ -1,5 +1,5 @@
 import { EXIT, SessionReaderError } from '../errors.js';
-import type { SessionSource } from '../types.js';
+import type { BuiltinSessionSource, SessionSource } from '../types.js';
 
 export const SOURCES_LIST = [
   'claude',
@@ -114,7 +114,7 @@ export function parseBounded(
   return n;
 }
 
-function isKnownSource(s: string): s is SessionSource {
+export function isKnownSource(s: string): s is BuiltinSessionSource {
   return (SOURCES_LIST as readonly string[]).includes(s);
 }
 

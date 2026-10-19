@@ -368,7 +368,7 @@ export function sliceByTokenBudget(
   let totalSessionMessages: number | undefined;
 
   if (arg3 === 'head' || arg3 === 'tail' || arg3 === 'search') {
-    anchor = arg3;
+    anchor = arg3 as 'head' | 'tail' | 'search';
     searchQuery = typeof arg4 === 'string' ? arg4 : undefined;
     if (typeof arg5 === 'object') preset = arg5;
     else if (arg5 === 'head' || arg5 === 'tail' || arg5 === 'search') anchor = arg5;

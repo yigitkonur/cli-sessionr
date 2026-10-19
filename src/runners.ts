@@ -1,5 +1,6 @@
 import { EXIT, SessionReaderError } from './errors.js';
 import type { SessionSource } from './types.js';
+import { isKnownSource } from './utils/validate.js';
 
 export interface RunCommand {
   bin: string;
@@ -10,7 +11,7 @@ export interface RunCommand {
  * Build the resume-an-existing-session command for `source`. Every branch
  * returns a fully-populated RunCommand or throws a SessionReaderError — never
  * returns undefined (wp/01 prevention). The trailing `_exhaustive: never`
- * triggers a compile-time check that every SessionSource value is handled.
+ * triggers a compile-time check that every built-in source is handled.
  */
 export function buildResumeCommand(
   source: SessionSource | undefined,
@@ -23,6 +24,13 @@ export function buildResumeCommand(
       exitCode: EXIT.NOT_FOUND,
       errorClass: 'not_found',
       suggestion: 'Verify the session exists with: sessionr list --output json',
+    });
+  }
+
+  if (!isKnownSource(source)) {
+    throw new SessionReaderError(`Unsupported source: ${source}`, {
+      code: 'UNSUPPORTED_SOURCE', exitCode: EXIT.USAGE,
+      errorClass: 'validation', detail: { source },
     });
   }
 
@@ -64,7 +72,7 @@ export function buildResumeCommand(
       return { bin: 'antigravity', args: ['--resume', sessionId, message] };
   }
 
-  // Compile-time exhaustiveness check: if a new SessionSource is added without
+  // Compile-time exhaustiveness check: if a new built-in source is added without
   // a case above, TypeScript flags this assignment.
   const _exhaustive: never = source;
   throw new SessionReaderError(`Unsupported source: ${String(_exhaustive)}`, {
@@ -90,6 +98,13 @@ export function buildNewCommand(
       exitCode: EXIT.NOT_FOUND,
       errorClass: 'not_found',
       suggestion: 'Specify a source, e.g. sessionr send --new --source claude -f prompt.md',
+    });
+  }
+
+  if (!isKnownSource(source)) {
+    throw new SessionReaderError(`Unsupported source: ${source}`, {
+      code: 'UNSUPPORTED_SOURCE', exitCode: EXIT.USAGE,
+      errorClass: 'validation', detail: { source },
     });
   }
 
@@ -137,5 +152,5 @@ export function buildNewCommand(
 }
 
 export function canSend(source: SessionSource): boolean {
-  return source !== 'zed';
+  return isKnownSource(source) && source !== 'zed';
 }
