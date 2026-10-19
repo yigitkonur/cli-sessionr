@@ -585,12 +585,16 @@ export async function readCommand(
       preset,
       opts?.searchIn,
       totalMessages,
-      { preserveTrailing: selectedTurn !== undefined },
+      {
+        preserveTrailing: selectedTurn !== undefined,
+        window: selectedTurn ? { from: selectedTurn.startIndex, to: selectedTurn.endIndex } : undefined,
+      },
     );
 
     if (selectedTurn) {
       for (const cursor of Object.values(sliceResult.meta.cursor)) {
-        if (cursor) cursor.command += ` --turn ${selectedTurn.id}`;
+        // --page is rejected together with --turn: the first chunk of a turn is the turn itself.
+        if (cursor) cursor.command = cursor.command.replace(/ --page \d+/, '') + ` --turn ${selectedTurn.id}`;
       }
     }
     let meta = injectNextAction(sliceResult.meta);
@@ -905,6 +909,14 @@ function attachTurnMeta(
 ): void {
   const { facts: _facts, contextWindow: _contextWindow, ...turnOutput } = selectedTurn;
   const externalTurn = toExternal({ ...turnOutput, prompt: { ...turnOutput.prompt, text: detail === 'meta' ? '' : turnOutput.prompt.text.slice(0, preset.maxContentChars) } }) as Record<string, unknown>;
+  // Commands are tool arguments: bound them by the preset like every other tool input (0 when args are hidden).
+  const cmdLimit = preset.showToolArgs ? preset.maxToolInputChars : 0;
+  if (Array.isArray(externalTurn.commands)) {
+    externalTurn.commands = (externalTurn.commands as Array<Record<string, unknown>>).map((c) =>
+      typeof c.cmd === 'string' && c.cmd.length > cmdLimit
+        ? { ...c, cmd: c.cmd.slice(0, cmdLimit) + (cmdLimit > 0 ? '…' : ''), cmd_truncated: true }
+        : c);
+  }
   // Tool input is opaque user data, not part of the envelope naming contract.
   if (selectedTurn.pendingToolCalls) {
     externalTurn.pending_tool_calls = selectedTurn.pendingToolCalls.map(({ input, ...call }) => ({

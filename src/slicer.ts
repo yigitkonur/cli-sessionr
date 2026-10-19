@@ -357,7 +357,7 @@ export function sliceByTokenBudget(
   arg7?: VerbosityPreset,
   arg8?: number | SearchField[] | string | string[] | Set<SearchField>,
   arg9?: number,
-  arg10?: { preserveTrailing?: boolean },
+  arg10?: { preserveTrailing?: boolean; window?: { from: number; to: number } },
 ): SliceResult {
   let sessionId = 'default';
   let source: SessionSource = 'claude';
@@ -388,9 +388,10 @@ export function sliceByTokenBudget(
 
   const totalTokens = estimateSessionTokens(allMessages);
   const totalMessages = totalSessionMessages ?? allMessages.length;
-  // Turn-scoped reads (--turn) treat the turn's own window as the boundaries for has_more_* and keep its
-  // final message; every other read pages against the whole session.
-  const turnScoped = arg10?.preserveTrailing === true;
+  // Turn-scoped reads (--turn) keep the turn's final message and page against the turn's own window (passed in,
+  // because a cursor may already have clamped allMessages); every other read pages against the whole session.
+  const preserveTrailing = arg10?.preserveTrailing === true;
+  const turnWindow = arg10?.window;
 
   if (allMessages.length === 0 && !(anchor === 'search' && searchQuery !== undefined)) {
     return {
@@ -444,7 +445,7 @@ export function sliceByTokenBudget(
   // Only head windows trim a trailing non-assistant message: tail walks keep a trailing prompt (#24), search
   // windows are centered on the match (#23) and turn-scoped reads keep the turn's final message (#25).
   // Unresolved tool calls are never trimmed.
-  const trimmed = anchor === 'head' && !turnScoped
+  const trimmed = anchor === 'head' && !preserveTrailing
     ? trimToAssistantLast(selected, getUnresolvedToolCallIds(allMessages))
     : selected;
 
@@ -458,8 +459,8 @@ export function sliceByTokenBudget(
   // truncated. has_more_* and the cursors page against the session (or the turn window in --turn mode).
   const sliceFirstIdx = allMessages[0].index;
   const sliceLastIdx = allMessages[allMessages.length - 1].index;
-  const boundsFirstIdx = turnScoped ? sliceFirstIdx : 1;
-  const boundsLastIdx = turnScoped ? sliceLastIdx : totalMessages;
+  const boundsFirstIdx = turnWindow ? turnWindow.from : 1;
+  const boundsLastIdx = turnWindow ? turnWindow.to : totalMessages;
 
   const meta: SliceMeta = {
     session_id: sessionId,
