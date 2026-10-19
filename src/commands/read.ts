@@ -29,6 +29,7 @@ const SPAWN_BINS: Record<SessionSource, string> = {
   kiro: 'kiro',
   zed: 'zed',
   factory: 'factory',
+  antigravity: 'antigravity',
 };
 
 const _spawnBinCache = new Map<SessionSource, boolean>();
@@ -269,6 +270,13 @@ function computeDetailHint(
   };
 }
 
+function filterByPreset(messages: NormalizedMessage[], preset: VerbosityPreset): NormalizedMessage[] {
+  if (preset.name !== 'minimal' && preset.name !== 'standard') return messages;
+  // Keep human prompts (including absorbed steers) and normal assistant/tool
+  // messages. Original indices remain stable for later, higher-detail reads.
+  return messages.filter((m) => !m.source || m.source === 'prompt' || m.source === 'queued');
+}
+
 export async function readCommand(
   sessionId: string,
   fromStr?: string,
@@ -328,6 +336,8 @@ export async function readCommand(
     const preset = detail
       ? getPresetForDetail(detail)
       : getPreset(presetName!);
+
+    messages = filterByPreset(messages, preset);
 
     // Token budget: --tokens flag > SESSIONREADER_MAX_TOKENS env > default 8K, always capped
     if (opts?.tokens != null && (!Number.isFinite(opts.tokens) || opts.tokens <= 0)) {
@@ -590,7 +600,7 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
     // (success OR failure) is exactly one JSONL line and the batch continues.
     try {
       const session = await loadSession(id, opts.source as SessionSource | undefined);
-      let messages = session.messages;
+      let messages = filterByPreset(session.messages, preset);
       if (validatedRoles) {
         messages = filterByRole(messages, validatedRoles);
       }

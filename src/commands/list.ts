@@ -5,9 +5,9 @@ import { emit } from '../output/emit.js';
 import { toExternal } from '../output/serialize.js';
 import { EXIT, exitCodeForError, SessionReaderError } from '../errors.js';
 import { cmdPrefix } from '../util/invocation.js';
+import { SOURCES_LIST } from '../utils/validate.js';
 import type { SessionSource, OutputFormat, SessionListEntry, V2Meta } from '../types.js';
 
-const SOURCES_LIST = ['claude', 'codex', 'gemini', 'copilot', 'cursor-agent', 'commandcode', 'goose', 'opencode', 'kiro', 'zed', 'factory'];
 
 // dc/06: strict numeric validation for --limit / --offset. Reject anything
 // outside [min,max] with INVALID_RANGE so callers see a clean envelope-coded
