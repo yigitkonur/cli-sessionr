@@ -525,6 +525,7 @@ export async function readCommand(
       let meta = injectNextAction(emptyMeta);
       // Polling past the end is exactly when an unanswered tool call matters: keep it in the envelope.
       meta.pending_tool_calls = pendingToolCalls;
+      if (selectedTurn) attachTurnMeta(meta, selectedTurn, session, preset, detail);
       meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
       meta = attachETag(meta, session, {
         preset,
@@ -594,18 +595,7 @@ export async function readCommand(
     }
     let meta = injectNextAction(sliceResult.meta);
     meta.pending_tool_calls = pendingToolCalls;
-    if (selectedTurn) {
-      const { facts: _facts, contextWindow: _contextWindow, ...turnOutput } = selectedTurn;
-      const externalTurn = toExternal({ ...turnOutput, prompt: { ...turnOutput.prompt, text: detail === 'meta' ? '' : turnOutput.prompt.text.slice(0, preset.maxContentChars) } }) as Record<string, unknown>;
-      // Tool input is opaque user data, not part of the envelope naming contract.
-      if (selectedTurn.pendingToolCalls) {
-        externalTurn.pending_tool_calls = selectedTurn.pendingToolCalls.map(({ input, ...call }) => ({
-          ...(toExternal(call) as Record<string, unknown>), ...(preset.showToolArgs ? { input } : {}),
-        }));
-      }
-      meta.turn = externalTurn as unknown as Turn;
-      meta.turns = (session.turns ?? segmentTurns(session)).map(t => toExternal({ id: t.id, turnIndex: t.turnIndex, startIndex: t.startIndex, endIndex: t.endIndex, completed: t.completed, interrupted: t.interrupted }) as Turn);
-    }
+    if (selectedTurn) attachTurnMeta(meta, selectedTurn, session, preset, detail);
     meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
     meta = attachETag(meta, session, {
       preset,
@@ -902,6 +892,45 @@ interface EmitReadArgs {
  * etag, partial flag, etc.). `actions` are deterministic per-session
  * recommendations agents can run next.
  */
+/**
+ * Attach the selected turn and the turn index to the response meta. Used by both the normal read path and the
+ * empty cursor-boundary response, so `--turn N --after <end>` still says which turn it was scoped to.
+ */
+function attachTurnMeta(
+  meta: SliceMeta,
+  selectedTurn: Turn,
+  session: NormalizedSession,
+  preset: VerbosityPreset,
+  detail: DetailLevel | undefined,
+): void {
+  const { facts: _facts, contextWindow: _contextWindow, ...turnOutput } = selectedTurn;
+  const externalTurn = toExternal({ ...turnOutput, prompt: { ...turnOutput.prompt, text: detail === 'meta' ? '' : turnOutput.prompt.text.slice(0, preset.maxContentChars) } }) as Record<string, unknown>;
+  // Tool input is opaque user data, not part of the envelope naming contract.
+  if (selectedTurn.pendingToolCalls) {
+    externalTurn.pending_tool_calls = selectedTurn.pendingToolCalls.map(({ input, ...call }) => ({
+      ...(toExternal(call) as Record<string, unknown>),
+      ...(preset.showToolArgs ? boundPendingInput(input, preset) : {}),
+    }));
+  }
+  meta.turn = externalTurn as unknown as Turn;
+  meta.turns = (session.turns ?? segmentTurns(session)).map(t => toExternal({ id: t.id, turnIndex: t.turnIndex, startIndex: t.startIndex, endIndex: t.endIndex, completed: t.completed, interrupted: t.interrupted }) as Turn);
+}
+
+/**
+ * Bound a pending tool call's input by the preset's tool-input limit: oversized inputs become a truncated
+ * string, and presets that hide tool args get an empty object. Shared by the whole-session and per-turn lists.
+ */
+function boundPendingInput(
+  callInput: unknown,
+  preset: VerbosityPreset | undefined,
+): { input: unknown; input_truncated: boolean } {
+  const rawInput = JSON.stringify(callInput);
+  const inputLimit = preset?.maxToolInputChars ?? Infinity;
+  const input = preset?.showToolArgs === false ? {}
+    : rawInput.length > inputLimit ? rawInput.slice(0, inputLimit) + '…' : callInput;
+  return { input, input_truncated: input !== callInput };
+}
+
 function emitReadEnvelope(args: EmitReadArgs): void {
   // oc/12 + M3: pass preset/detail so serializeMessage emits ONE channel
   // (content vs blocks) and tool messages in --detail meta keep their
@@ -915,11 +944,8 @@ function emitReadEnvelope(args: EmitReadArgs): void {
   if (args.summary && args.includeSummary) result.session = args.summary;
   if (args.notice) result.notice = args.notice;
   const pendingToolCalls = args.meta.pending_tool_calls?.map(({ messageIndex, ...call }) => {
-    const rawInput = JSON.stringify(call.input);
-    const inputLimit = args.preset?.maxToolInputChars ?? Infinity;
-    const input = args.preset?.showToolArgs === false ? {}
-      : rawInput.length > inputLimit ? rawInput.slice(0, inputLimit) + '…' : call.input;
-    return { ...call, input, message_index: messageIndex, input_truncated: input !== call.input };
+    const bounded = boundPendingInput(call.input, args.preset);
+    return { ...call, input: bounded.input, message_index: messageIndex, input_truncated: bounded.input_truncated };
   });
   if (pendingToolCalls) result.pending_tool_calls = pendingToolCalls;
 
