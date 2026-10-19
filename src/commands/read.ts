@@ -128,6 +128,10 @@ function buildSessionSummary(session: NormalizedSession, tokenBudget: number | u
       tool_use: session.stats.byRole.toolUse,
       tool_result: session.stats.byRole.toolResult,
     },
+    context_window: session.metadata.contextWindow,
+    context_tokens: session.stats.tokenUsage?.contextTokens,
+    reasoning_effort: session.metadata.reasoningEffort,
+    rate_limits: toExternal(session.metadata.rateLimits) as SessionSummary['rate_limits'],
   };
 }
 
@@ -969,6 +973,8 @@ function emitReadEnvelope(args: EmitReadArgs): void {
   }
   meta.session_id = args.meta.session_id;
   meta.source = args.meta.source;
+  meta.context_window = args.session.metadata.contextWindow;
+  meta.context_tokens = args.session.stats.tokenUsage?.contextTokens;
   // Note: SliceMeta already lives flat under meta — V2Meta extends Record
   // so all its keys (range, anchor, cursor, partial, etag, next_action,
   // detail_hint, etc.) survive intact.

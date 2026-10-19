@@ -41,6 +41,14 @@ export type MessageSource =
 
 // ── Normalized Message ─────────────────────────────────────────────────────
 
+export interface MessageUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  context_tokens?: number;
+}
+
 export interface NormalizedMessage {
   /** 1-based position after normalization (tool blocks exploded into separate entries) */
   index: number;
@@ -58,6 +66,12 @@ export interface NormalizedMessage {
   originKind?: string;
   /** Kind classification (e.g. compaction, turn_duration) */
   kind?: string;
+  usage?: MessageUsage;
+  contextTokens?: number;
+  model?: string;
+  contextWindow?: number;
+  reasoningEffort?: string;
+  rateLimits?: CodexRateLimits;
   terminal?: 'complete' | 'interrupted';
   durationMs?: number;
 }
@@ -99,10 +113,12 @@ export interface SessionStats {
     cacheRead?: number;
     cacheCreation?: number;
     thinking?: number;
+    contextTokens?: number;
   };
   toolFrequency: Array<{ name: string; count: number; errors: number }>;
   filesModified: string[];
   durationMs?: number;
+  rateLimits?: CodexRateLimits;
 }
 
 // ── Turn Data Model (Issues #8, #12, #13) ───────────────────────────────────
@@ -156,9 +172,9 @@ export interface TurnUsage {
 }
 
 export interface CodexRateLimitTier {
-  usedPercent: number;
-  windowMinutes: number;
-  resetsAt: string;
+  usedPercent?: number;
+  windowMinutes?: number;
+  resetsAt?: string | number;
 }
 
 export interface CodexRateLimits {
@@ -318,6 +334,13 @@ export interface SessionSummary {
     tool_use: number;
     tool_result: number;
   };
+  context_window?: number;
+  context_tokens?: number;
+  reasoning_effort?: string;
+  rate_limits?: {
+    primary?: { used_percent?: number; window_minutes?: number; resets_at?: string | number };
+    secondary?: { used_percent?: number; window_minutes?: number; resets_at?: string | number };
+  };
 }
 
 // ── Cursor Commands (copy-paste ready + machine-readable tokens) ──────────
@@ -353,6 +376,8 @@ export interface SliceMeta {
   total_messages: number;
   total_tokens_estimate: number;
   returned_tokens_estimate: number;
+  context_window?: number;
+  context_tokens?: number;
   token_budget: number | null;
   anchor: 'head' | 'tail' | 'search' | 'page' | null;
   range: { from: number; to: number };

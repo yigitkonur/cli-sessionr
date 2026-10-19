@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { segmentTurns, getTurn, extractTurnFacts, extractTurnFilesChanged } from '../src/turns.js';
+import { segmentTurns, getTurn, extractTurnFacts, extractTurnFilesChanged, deriveContextWindow } from '../src/turns.js';
 import type { NormalizedMessage, NormalizedSession } from '../src/types.js';
 
 function makeMsg(index: number, role: 'user' | 'assistant' | 'system' | 'tool_use' | 'tool_result', content: string, source?: string): NormalizedMessage {
@@ -391,4 +391,76 @@ it('reports successful NotebookEdit notebook_path targets', () => {
     {...makeMsg(2,'tool_result','Success'),blocks:[{type:'tool_result',toolUseId:'nb',isError:false,content:'Success'}]},
   ];
   expect(extractTurnFilesChanged(messages).edited).toEqual(['analysis.ipynb']);
+});
+
+describe('Turn Token Usage and Context Window (Issue #8)', () => {
+  it('derives context window size correctly from model and metadata', () => {
+    expect(deriveContextWindow('claude-3-5-sonnet')).toBe(200_000);
+    expect(deriveContextWindow('claude-3-7-sonnet-20250219')).toBe(200_000);
+    expect(deriveContextWindow('gpt-4o')).toBe(128_000);
+    expect(deriveContextWindow('gemini-1.5-pro')).toBe(2_000_000);
+    expect(deriveContextWindow('unknown-model')).toBeUndefined();
+    expect(deriveContextWindow('unknown-model', { contextWindow: 32_768 } as any)).toBe(32_768);
+  });
+
+  it('extracts per-turn token usage including contextTokens, cacheRead, cacheWrite', () => {
+    const msgs: NormalizedMessage[] = [
+      makeMsg(1, 'user', 'Analyze data'),
+      {
+        index: 2,
+        role: 'assistant',
+        timestamp: new Date(),
+        content: 'Analyzing...',
+        blocks: [{ type: 'text', text: 'Analyzing...' }],
+        usage: {
+          input_tokens: 1500,
+          output_tokens: 300,
+          cache_read_input_tokens: 800,
+          cache_creation_input_tokens: 200,
+          context_tokens: 2500,
+        },
+      } as any,
+    ];
+
+    const session = makeSession(msgs);
+    const turns = segmentTurns(session);
+    expect(turns).toHaveLength(1);
+    const turn = turns[0];
+
+    expect(turn.usage).toBeDefined();
+    expect(turn.usage!.input).toBe(1500);
+    expect(turn.usage!.output).toBe(300);
+    expect(turn.usage!.cacheRead).toBe(800);
+    expect(turn.usage!.cacheWrite).toBe(200);
+    expect(turn.usage!.contextTokens).toBe(2500);
+  });
+
+  it('surfaces reasoningEffort and rateLimits on turn when present in metadata or message', () => {
+    const rateLimits = {
+      primary: { usedPercent: 45, windowMinutes: 60, resetsAt: '2026-10-12T03:00:00.000Z' },
+    };
+    const msgs: NormalizedMessage[] = [
+      makeMsg(1, 'user', 'Run deep reasoning task'),
+      {
+        index: 2,
+        role: 'assistant',
+        timestamp: new Date(),
+        content: 'Reasoned answer',
+        blocks: [{ type: 'text', text: 'Reasoned answer' }],
+        rateLimits,
+      } as any,
+    ];
+
+    const session = makeSession(msgs);
+    session.metadata.reasoningEffort = 'high';
+    session.metadata.model = 'o3-mini';
+
+    const turns = segmentTurns(session);
+    expect(turns).toHaveLength(1);
+    const turn = turns[0];
+
+    expect(turn.reasoningEffort).toBe('high');
+    expect(turn.contextWindowSize).toBe(200_000);
+    expect(turn.rateLimits).toEqual(rateLimits);
+  });
 });

@@ -75,22 +75,18 @@ export function deriveContextWindow(
   if (!model) return undefined;
   const normalized = model.toLowerCase().trim();
 
-  for (const [prefix, windowSize] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
-    if (normalized === prefix || normalized.startsWith(prefix) || normalized.includes(prefix)) {
+  if (/\[1m\]|-1m\b/.test(normalized)) return 1_000_000;
+  if (/^claude-(?:opus|sonnet|haiku)-[45](?:[.-]|$)/.test(normalized)) return 200_000;
+
+  const entries = Object.entries(MODEL_CONTEXT_WINDOWS).sort(([a], [b]) => b.length - a.length);
+  for (const [prefix, windowSize] of entries) {
+    const suffix = normalized.slice(prefix.length);
+    if (normalized === prefix || (normalized.startsWith(prefix) && /^-(?:\d{4,8}|latest)$/.test(suffix))) {
       return windowSize;
     }
   }
 
-  const kMatch = normalized.match(/(\d+)k\b/);
-  if (kMatch && kMatch[1]) {
-    return parseInt(kMatch[1], 10) * 1024;
-  }
-  const mMatch = normalized.match(/(\d+)m\b/);
-  if (mMatch && mMatch[1]) {
-    return parseInt(mMatch[1], 10) * 1_000_000;
-  }
-
-  return 128_000;
+  return undefined;
 }
 
 /**
@@ -404,7 +400,7 @@ export function extractTurnUsage(messages: NormalizedMessage[]): TurnUsage | und
   let output = 0;
   let cacheRead = 0;
   let cacheWrite = 0;
-  let contextTokens = 0;
+  let contextTokens: number | undefined;
   let hasUsage = false;
 
   for (const m of messages) {
@@ -429,7 +425,7 @@ export function extractTurnUsage(messages: NormalizedMessage[]): TurnUsage | und
     output,
     cacheRead: cacheRead || undefined,
     cacheWrite: cacheWrite || undefined,
-    contextTokens: contextTokens || (input + cacheRead),
+    contextTokens: contextTokens ?? (input + cacheRead + cacheWrite),
     inputTokens: input,
     outputTokens: output,
     cacheReadTokens: cacheRead || undefined,
@@ -603,16 +599,15 @@ export function segmentTurns(
       (terminal === undefined && finalAssistant !== undefined && lastActivity.role === 'assistant'));
 
     const usage = extractTurnUsage(turnMessages);
-    const model = meta?.model;
-    const contextWindowSize = deriveContextWindow(model, meta);
-    const reasoningEffort = meta?.reasoningEffort;
+    const settings = [...turnMessages].reverse().find(m => m.model !== undefined || m.contextWindow !== undefined || m.reasoningEffort !== undefined);
+    const model = settings ? settings.model : meta?.model;
+    const contextWindowSize = settings ? settings.contextWindow ?? deriveContextWindow(model) : deriveContextWindow(model, meta);
+    const reasoningEffort = settings ? settings.reasoningEffort : meta?.reasoningEffort;
 
     // Look for rate limits attached to any message in this turn
-    let rateLimits: CodexRateLimits | undefined;
-    for (const m of turnMessages) {
-      if ((m as any).rateLimits) {
-        rateLimits = (m as any).rateLimits;
-      }
+    let rateLimits: CodexRateLimits | undefined = settings?.rateLimits;
+    if (!settings) for (const m of turnMessages) {
+      if (m.rateLimits) rateLimits = m.rateLimits;
     }
 
     const turn: Turn = {
