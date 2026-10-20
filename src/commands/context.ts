@@ -3,7 +3,7 @@ import { loadSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
-import { SessionReaderError, exitCodeForError } from '../errors.js';
+import { SessionReaderError, EXIT, exitCodeForError } from '../errors.js';
 import { sliceByTokenBudget } from '../slicer.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getDefaultTokenBudget } from '../config.js';
@@ -36,6 +36,16 @@ export async function contextExportCommand(
   });
 
   try {
+    if (opts.format !== undefined && opts.format !== 'messages' && opts.format !== 'summary') {
+      throw new SessionReaderError(`Unknown --format "${opts.format}"`, {
+        code: 'INVALID_FORMAT',
+        errorClass: 'validation',
+        exitCode: EXIT.USAGE,
+        detail: { provided: opts.format, valid: ['messages', 'summary'] },
+        suggestion: `${cmdPrefix()} context <id> --format summary`,
+      });
+    }
+
     const session = await loadSession(
       sessionId,
       opts.source as SessionSource | undefined,
