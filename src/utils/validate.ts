@@ -35,6 +35,8 @@ const SOURCE_ALIASES: Partial<Record<string, SessionSource>> = {
   'antigravity-cli': 'antigravity',
 };
 
+export const SOURCE_ALIAS_NAMES = Object.keys(SOURCE_ALIASES);
+
 export const SOURCE_ALIASES_LIST = Object.entries(SOURCE_ALIASES).map(
   ([alias, canonical]) => `${alias}→${canonical}`,
 );

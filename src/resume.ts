@@ -56,7 +56,7 @@ const TOOL_DIRECTS: Record<SessionSource, ToolDirect | null> = {
     verified: true,
   },
   antigravity: {
-    cmd: (id) => `antigravity --resume ${shellQuote(id)} "$(cat prompt.md)"`,
+    cmd: (id) => `antigravity --conversation ${shellQuote(id)} -p "$(cat prompt.md)"`,
     verified: false,
   },
 };

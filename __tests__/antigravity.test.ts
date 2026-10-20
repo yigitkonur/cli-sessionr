@@ -374,8 +374,8 @@ describe('Antigravity resume hints', () => {
     expect(hint.resume).toContain(`send ${literal} -f prompt.md --source antigravity`);
     expect(hint.resume_async).toBe(`${hint.resume} --async`);
     const runner = buildResumeCommand('antigravity', id, 'prompt text');
-    expect(runner.args).toEqual(['--resume', id, 'prompt text']);
-    expect(hint.direct).toBe(`${runner.bin} --resume ${literal} "$(cat prompt.md)"`);
+    expect(runner.args).toEqual(['--conversation', id, '-p', 'prompt text']);
+    expect(hint.direct).toBe(`${runner.bin} --conversation ${literal} -p "$(cat prompt.md)"`);
     expect(hint.verified).toBe(false);
     expect(getResumeHint('codex', id).resume).toContain(`send ${literal} -f prompt.md`);
   });

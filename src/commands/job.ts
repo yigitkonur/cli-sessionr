@@ -6,6 +6,8 @@ import { emit } from '../output/emit.js';
 import { SessionReaderError, EXIT, exitCodeForError } from '../errors.js';
 import type { Job, JobStatus, OutputFormat, V2Action, V2Meta } from '../types.js';
 
+const JOB_STATUSES: readonly JobStatus[] = ['running', 'completed', 'failed', 'cancelled'];
+
 /**
  * wp/04 fix: derive the displayed job status from the persisted `exit_code`
  * sidecar, not from any stderr-grep heuristic. `finalizeJob` (in src/jobs.ts)
@@ -201,12 +203,22 @@ export async function jobListCommand(opts: JobCommandOpts): Promise<void> {
 
   try {
     const statusFilter = opts.status as JobStatus | undefined;
-    let jobs = listJobs(statusFilter);
+    if (statusFilter !== undefined && !JOB_STATUSES.includes(statusFilter)) {
+      throw new SessionReaderError(`Unknown job status "${opts.status}"`, {
+        code: 'INVALID_STATUS',
+        errorClass: 'validation',
+        exitCode: EXIT.USAGE,
+        detail: { provided: opts.status, valid: [...JOB_STATUSES] },
+        suggestion: `${cmdPrefix()} jobs --status running`,
+      });
+    }
 
     // Lazy-finalize running jobs and apply the wp/04 status refinement so
     // SIGINT-killed jobs (exit_code 130) surface as `cancelled` rather than
-    // `failed` in the displayed listing.
-    jobs = jobs.map((j) => refineJobStatus(j.status === 'running' ? finalizeJob(j) : j));
+    // `failed` in the displayed listing. Filter on that displayed status: a
+    // job that finished but was not finalized yet is still `running` on disk.
+    let jobs = listJobs().map((j) => refineJobStatus(j.status === 'running' ? finalizeJob(j) : j));
+    if (statusFilter) jobs = jobs.filter((j) => j.status === statusFilter);
     const firstRunning = jobs.find((j) => j.status === 'running');
     const firstCompleted = jobs.find((j) => j.status === 'completed' && j.session_id);
 

@@ -9,6 +9,7 @@ import { getAdapters } from '../parsers/registry.js';
 import { isSqliteAvailable } from '../parsers/sqlite.js';
 import { SessionReaderError, exitCodeForError } from '../errors.js';
 import { which } from '../utils/which.js';
+import { spawnBin } from '../runners.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
 import type { OutputFormat, SessionSource } from '../types.js';
@@ -20,21 +21,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SESSIONR_VERSION = (
   JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8')) as { version: string }
 ).version;
-
-const SPAWN_BINS: Record<SessionSource, string> = {
-  claude: 'claude',
-  codex: 'codex',
-  gemini: 'gemini',
-  copilot: 'copilot',
-  'cursor-agent': 'cursor-agent',
-  commandcode: 'commandcode',
-  goose: 'goose',
-  opencode: 'opencode',
-  kiro: 'kiro',
-  zed: 'zed',
-  factory: 'factory',
-  antigravity: 'antigravity',
-};
 
 interface DoctorSource {
   name: SessionSource;
@@ -60,8 +46,8 @@ export async function doctorCommand(opts?: {
 
     for (const adapter of getAdapters()) {
       const dataDir = typeof adapter.getDataDir === 'function' ? adapter.getDataDir() : '';
-      const spawnBin = (SPAWN_BINS as Record<string, string>)[adapter.name] ?? adapter.name;
-      const spawnBinPath = which(spawnBin);
+      const bin = spawnBin(adapter.name as SessionSource);
+      const spawnBinPath = which(bin);
       let sessionCount = 0;
 
       try {
@@ -75,7 +61,7 @@ export async function doctorCommand(opts?: {
         data_dir: dataDir,
         data_dir_exists: fs.existsSync(dataDir),
         session_count: sessionCount,
-        spawn_bin: spawnBin,
+        spawn_bin: bin,
         spawn_bin_resolvable: spawnBinPath !== null,
         ...(spawnBinPath ? { spawn_bin_path: spawnBinPath } : {}),
       });

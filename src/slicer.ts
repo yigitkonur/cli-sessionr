@@ -114,26 +114,25 @@ export function buildCursorCommands(
   meta: { range: { from: number; to: number }; has_more_before: boolean; has_more_after: boolean; token_budget: number | null; total_messages: number },
 ): CursorCommands {
   const budget = meta.token_budget ?? 4000;
-  const shortId = sessionId.length > 8 ? sessionId.slice(0, 8) : sessionId;
 
   return {
     prev: meta.has_more_before
       ? {
-          command: `sessionr read ${shortId} --before ${meta.range.from} --tokens ${budget}`,
+          command: `sessionr read ${sessionId} --before ${meta.range.from} --tokens ${budget}`,
           offset: meta.range.from,
           limit: budget,
         }
       : null,
     next: meta.has_more_after
       ? {
-          command: `sessionr read ${shortId} --after ${meta.range.to} --tokens ${budget}`,
+          command: `sessionr read ${sessionId} --after ${meta.range.to} --tokens ${budget}`,
           offset: meta.range.to,
           limit: budget,
         }
       : null,
     first: meta.range.from > 1
       ? {
-          command: `sessionr read ${shortId} --page 1 --tokens ${budget}`,
+          command: `sessionr read ${sessionId} --page 1 --tokens ${budget}`,
           offset: 0,
           limit: budget,
         }

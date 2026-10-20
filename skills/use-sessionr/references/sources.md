@@ -1,11 +1,11 @@
-# Sources — 11 backends
+# Sources — 12 backends
 
 Sessionr discovers AI-coding-tool sessions from these on-disk locations. Use `sessionr doctor --output json` to verify any source's state on the current machine.
 
 | Source name | Aliases | On-disk format | Default data dir | Resume binary | Resume invocation |
 |---|---|---|---|---|---|
-| `claude` | `cc` | JSONL (one event per line) | `~/.claude/projects/*/UUID.jsonl` | `claude` | `claude -p -r <id> "$msg"` |
-| `codex` | `cx` | JSONL | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `codex` | `codex exec resume <id> "$msg"` |
+| `claude` | `cc`, `claude-code` | JSONL (one event per line) | `~/.claude/projects/*/UUID.jsonl` | `claude` | `claude -p -r <id> "$msg"` |
+| `codex` | `cx`, `gpt`, `openai`, `oai` | JSONL | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `codex` | `codex exec resume <id> "$msg"` |
 | `gemini` | `gm` | JSON (single doc) | `~/.gemini/tmp/*/chats/session-*.json` | `gemini` | `gemini -p "$msg" -r <id>` |
 | `copilot` | `cli`, `copilot-cli` | YAML + JSONL | `~/.copilot/session-state/<id>/` | `copilot` | `copilot -p "$msg" --resume=<id>` |
 | `cursor-agent` | — | JSONL | `~/.cursor/projects/*/agent-transcripts/*.jsonl` | `agent` | `agent -p --resume <id> "$msg"` |
@@ -15,10 +15,11 @@ Sessionr discovers AI-coding-tool sessions from these on-disk locations. Use `se
 | `kiro` | — | JSON | `~/.kiro/User/globalStorage/kiro.kiroagent/` | `kiro-cli` | refuses (`UNSUPPORTED_OPERATION`) — Kiro CLI cannot target a specific session by id |
 | `zed` | — | SQLite + zstd | `~/Library/Application Support/Zed/threads/threads.db` | — (GUI-only) | refuses (`UNSUPPORTED_SOURCE`) — Zed AI threads have no CLI send |
 | `factory` | `droid` | JSONL (Anthropic-style content blocks) + sidecar `.settings.json` | `~/.factory/sessions/` | `droid` | `droid exec [-s <id>] "$msg"` |
+| `antigravity` | `agy`, `antigravity-cli` | JSONL transcript (`transcript_full.jsonl`) | `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/` | `antigravity` | `antigravity --conversation <id> -p "$msg"` |
 
 ## Alias resolution
 
-Sessionr accepts the aliases in the table above transparently. Pass `--source cc` and the registry resolves to `claude` before any disk access. Unknown sources return `INVALID_SOURCE` with `error.detail.valid` listing all 11 canonical names.
+Sessionr accepts the aliases in the table above transparently. Pass `--source cc` and the registry resolves to `claude` before any disk access. Unknown sources return `INVALID_SOURCE` with `error.detail.valid` listing all 12 canonical names.
 
 ## Read-only sources
 
@@ -40,6 +41,7 @@ Each adapter's `find()` method walks its data directory(ies) and returns `Sessio
 - **`opencode`**: each session is a directory with metadata.json + messages/*.json files. Sessionr reads them in lexical order.
 - **`kiro`**: JSON dump from VS Code's globalStorage; format changes with kiro extension version. Parser is best-effort.
 - **`zed`**: SQLite database with zstd-compressed message bodies. Requires the `zstd` system binary (or `node:sqlite` for the Sqlite read).
+- **`antigravity`** (`agy`): one conversation per `brain/<id>/` directory; the transcript is `.system_generated/logs/transcript_full.jsonl`. Token usage is reported for the whole session only, so per-turn usage is empty.
 - **`factory`** (`droid`): Anthropic-style content blocks → reuses `src/parsers/explosion.ts`. Tokens come from a sidecar `.settings.json`. ApplyPatch file changes extracted via the `*** Add|Update|Delete File:` regex.
 
 ## "I expected this source to show up but didn't"

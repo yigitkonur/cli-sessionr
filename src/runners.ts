@@ -69,7 +69,7 @@ export function buildResumeCommand(
     case 'factory':
       return { bin: 'droid', args: ['exec', '-s', sessionId, message] };
     case 'antigravity':
-      return { bin: 'antigravity', args: ['--resume', sessionId, message] };
+      return { bin: 'antigravity', args: ['--conversation', sessionId, '-p', message] };
   }
 
   // Compile-time exhaustiveness check: if a new built-in source is added without
@@ -149,6 +149,19 @@ export function buildNewCommand(
     errorClass: 'validation',
     detail: { source: _exhaustive },
   });
+}
+
+/**
+ * The executable `send` spawns for `source`, so doctor/read check the same
+ * binary that will actually run. Sources that cannot be spawned (zed) fall
+ * back to their own name.
+ */
+export function spawnBin(source: SessionSource): string {
+  try {
+    return buildNewCommand(source, '').bin;
+  } catch {
+    return source;
+  }
 }
 
 export function canSend(source: SessionSource): boolean {

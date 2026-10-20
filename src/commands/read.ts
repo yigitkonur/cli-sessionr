@@ -14,31 +14,16 @@ import { segmentTurns, getTurn } from '../turns.js';
 import { estimateSessionTokens } from '../tokens.js';
 import { getResumeHint } from '../resume.js';
 import { which } from '../utils/which.js';
+import { spawnBin } from '../runners.js';
 import { cmdPrefix } from '../util/invocation.js';
 import type { NormalizedMessage, NormalizedSession, SessionSource, ReadOptions, OutputFormat, DetailLevel, SliceMeta, VerbosityPreset, SessionSummary, DiscoveryWarning, V2Action, V2Meta, Turn, SearchField } from '../types.js';
 
-// it/12: per-source spawn binary, mirroring src/commands/doctor.ts. Looked up
-// once via which() and cached so we don't fork a child every read.
-const SPAWN_BINS: Record<SessionSource, string> = {
-  claude: 'claude',
-  codex: 'codex',
-  gemini: 'gemini',
-  copilot: 'copilot',
-  'cursor-agent': 'cursor-agent',
-  commandcode: 'commandcode',
-  goose: 'goose',
-  opencode: 'opencode',
-  kiro: 'kiro',
-  zed: 'zed',
-  factory: 'factory',
-  antigravity: 'antigravity',
-};
-
+// it/12: looked up once via which() and cached so we don't fork a child every read.
 const _spawnBinCache = new Map<SessionSource, boolean>();
 function isSpawnBinAvailable(source: SessionSource): boolean {
   const cached = _spawnBinCache.get(source);
   if (cached !== undefined) return cached;
-  const bin = SPAWN_BINS[source];
+  const bin = spawnBin(source);
   const found = bin ? which(bin) !== null : false;
   _spawnBinCache.set(source, found);
   return found;
@@ -167,7 +152,6 @@ function emitUnchanged(
   outputFormat: OutputFormat,
   timing: boolean | undefined,
 ): void {
-  const shortSid = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
   const prefix = cmdPrefix();
   emit(
     success(
@@ -182,8 +166,8 @@ function emitUnchanged(
       {
         meta: { etag },
         actions: [
-          { command: `${prefix} read ${shortSid} --if-changed ${etag}`, description: 'Poll again' },
-          { command: `${prefix} read ${shortSid}`, description: 'Bypass etag and fetch' },
+          { command: `${prefix} read ${session.id} --if-changed ${etag}`, description: 'Poll again' },
+          { command: `${prefix} read ${session.id}`, description: 'Bypass etag and fetch' },
         ],
       },
     ),
@@ -989,12 +973,11 @@ function emitReadEnvelope(args: EmitReadArgs): void {
 
 function buildActions(meta: SliceMeta): V2Action[] {
   const sid = meta.session_id;
-  const shortSid = sid.length > 8 ? sid.slice(0, 8) : sid;
   const prefix = cmdPrefix();
   return [
-    { command: `${prefix} stats ${shortSid}`, description: 'Full statistics (tools, tokens, files)' },
-    { command: `${prefix} context ${shortSid} --tokens 8000`, description: 'Export context for agent handoff' },
-    { command: `${prefix} diff ${shortSid} <other-id>`, description: 'Compare with another session' },
+    { command: `${prefix} stats ${sid}`, description: 'Full statistics (tools, tokens, files)' },
+    { command: `${prefix} context ${sid} --tokens 8000`, description: 'Export context for agent handoff' },
+    { command: `${prefix} diff ${sid} <other-id>`, description: 'Compare with another session' },
   ];
 }
 
