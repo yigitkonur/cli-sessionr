@@ -21,7 +21,7 @@ import { jobStatusCommand, jobWaitCommand, jobCancelCommand, jobListCommand } fr
 import { docsCommand } from './commands/docs.js';
 import { PRESET_NAMES, DETAIL_LEVELS } from './config.js';
 import { SessionReaderError, EXIT, exitCodeForError } from './errors.js';
-import { parseBounded, resolveSource, SOURCES_LIST } from './utils/validate.js';
+import { parseBounded, resolveSource, SOURCES_LIST, SOURCE_ALIAS_NAMES } from './utils/validate.js';
 import { markStart } from './output/emit.js';
 import { success } from './output/envelope.js';
 import type { OutputFormat, DetailLevel, ReadOptions, SendOptions } from './types.js';
@@ -35,7 +35,7 @@ markStart();
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_VERSION = (JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')) as { version: string }).version;
 
-const SOURCES = 'claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed, factory (alias: droid)';
+const SOURCES = `${SOURCES_LIST.join(', ')}; aliases: ${SOURCE_ALIAS_NAMES.join(', ')}`;
 const PRESET_HELP = `Verbosity preset (${PRESET_NAMES.join(', ')}; minimal ~200 tokens, standard ~600 tokens, verbose ~1500 tokens, full ~3000+ tokens) [default: verbose for agents, standard for TTY]`;
 const SEND_PRESET_HELP = `Verbosity preset (${PRESET_NAMES.join(', ')}; minimal ~200 tokens, standard ~600 tokens, verbose ~1500 tokens, full ~3000+ tokens)`;
 const TOP_LEVEL_HELP_AFTER = `
@@ -155,7 +155,7 @@ program
   .option('-s, --source <source>', `Filter by source (${SOURCES})`)
   .option('-p, --preset <name>', PRESET_HELP)
   .option('-d, --detail <level>', `Detail level (${DETAIL_LEVELS.join(', ')})`)
-  .option('--tokens <n>', 'Token budget (env: SESSIONREADER_MAX_TOKENS)')
+  .option('--tokens <n>', 'Token budget, capped at 8000 (env: SESSIONREADER_MAX_TOKENS)')
   .option('--anchor <anchor>', 'Slice anchor: head, tail, search (default: head; before cursor: tail)')
   .option('--search <query>', 'Search query (sets anchor=search)')
   .option('--search-in <fields>', 'Search fields: content, tool_input, tool_result (comma-separated, default: content)')
@@ -495,7 +495,7 @@ Examples:
 program
   .command('jobs')
   .description('List all async jobs')
-  .option('--status <status>', 'Filter by status (running, completed, failed)')
+  .option('--status <status>', 'Filter by status (running, completed, failed, cancelled)')
   .addHelpText('after', `
 Examples:
   $ sessionr jobs                               # list all jobs
@@ -598,7 +598,23 @@ for (const sub of ['list', 'read', 'stats', 'info', 'search', 'diff', 'tag', 'pr
 
 // ── Machine-readable help ──────────────────────────────────────────────────
 
-program.addHelpCommand('help [command]', 'Display help (supports --output json)');
+// Explicit `help` command (not Commander's implicit one): `help <unknown>` used to print nothing
+// and exit 0 because Commander's stderr is suppressed off-TTY, and `help <command>` ignored --output json.
+program.addHelpCommand(false);
+program
+  .command('help')
+  .argument('[command]')
+  .description('Display help (supports --output json)')
+  .action((name?: string) => {
+    if (!name) return program.help();
+    const sub = program.commands.find((c) => c.name() === name || c.aliases().includes(name));
+    if (!sub) throw new CommanderError(2, 'commander.unknownCommand', `error: unknown command '${name}'`);
+    if (program.opts().output === 'json') {
+      process.stdout.write(JSON.stringify(success(describeCommand(sub))) + '\n');
+      return;
+    }
+    sub.help();
+  });
 
 const originalHelp = program.helpInformation.bind(program);
 program.helpInformation = function () {
@@ -617,9 +633,8 @@ program.helpInformation = function () {
   return originalHelp() + TOP_LEVEL_HELP_AFTER;
 };
 
-function buildHelpSchema(cmd: Command): Record<string, unknown> {
-  const PRIMARY = new Set(['list', 'read', 'send', 'doctor']);
-  const mapCmd = (c: Command) => ({
+function describeCommand(c: Command) {
+  return {
     name: c.name(),
     description: c.description(),
     arguments: (c.registeredArguments ?? []).map((a) => ({
@@ -632,9 +647,14 @@ function buildHelpSchema(cmd: Command): Record<string, unknown> {
       description: o.description,
       default: o.defaultValue,
     })),
-  });
+  };
+}
 
-  const allCmds = cmd.commands.filter((c) => c.name() !== 'session');
+function buildHelpSchema(cmd: Command): Record<string, unknown> {
+  const PRIMARY = new Set(['list', 'read', 'send', 'doctor']);
+  const mapCmd = describeCommand;
+
+  const allCmds = cmd.commands.filter((c) => c.name() !== 'session' && c.name() !== 'help');
   const primary = allCmds.filter((c) => PRIMARY.has(c.name())).map(mapCmd);
   const all = allCmds.filter((c) => !(c as unknown as Record<string, boolean>)._hidden || !PRIMARY.has(c.name())).map(mapCmd);
 
