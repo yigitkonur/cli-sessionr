@@ -634,6 +634,7 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
   // ── 1. Extract metadata from session_meta + turn_context ──────────────
 
   let sessionId = extractIdFromFilename(filePath);
+  let idFromMeta = false;
   let cwd = '';
   let gitBranch: string | undefined;
   let gitRepo: string | undefined;
@@ -653,7 +654,9 @@ export async function parseCodexSession(filePath: string): Promise<NormalizedSes
 
     if (event.type === 'session_meta' && event.payload) {
       const p = event.payload;
-      if (typeof p.id === 'string' && p.id) sessionId = p.id;
+      // A forked rollout opens with its own session_meta and then replays the parent's. The first one is this
+      // file's identity; letting later ones overwrite it made a fork report (and page as) its parent.
+      if (!idFromMeta && typeof p.id === 'string' && p.id) { sessionId = p.id; idFromMeta = true; }
       if (typeof p.cwd === 'string' && p.cwd) cwd = p.cwd;
       const git = p.git as Record<string, unknown> | undefined;
       if (git) {
