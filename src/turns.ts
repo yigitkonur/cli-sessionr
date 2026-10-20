@@ -544,6 +544,14 @@ export function segmentTurns(
   }
 
   if (promptIndices.length === 0) {
+    // A session started from a slash command that invokes a skill/plugin has no typed prompt: the
+    // command and its args are the user's instruction, so the first one followed by work opens turn 1.
+    const first = messages.findIndex((m, i) => m.role === 'user' && m.source === 'local_command' &&
+      messages.slice(i + 1).some((n) => n.role === 'assistant' || n.role === 'tool_use'));
+    if (first >= 0) promptIndices.push(first);
+  }
+
+  if (promptIndices.length === 0) {
     if (!Array.isArray(sessionOrMessages)) {
       sessionOrMessages.turns = [];
     }
