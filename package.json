@@ -1,7 +1,7 @@
 {
   "name": "sessionr",
   "version": "4.0.0",
-  "description": "read, search, paginate, resume, and orchestrate AI coding sessions from 11 tools. npx sessionr — zero install, zero config.",
+  "description": "read, search, paginate, resume, and orchestrate AI coding sessions from 12 tools. npx sessionr — zero install, zero config.",
   "type": "module",
   "bin": {
     "sessionr": "dist/cli.js"
@@ -25,7 +25,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
