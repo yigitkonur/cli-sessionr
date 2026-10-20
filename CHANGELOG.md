@@ -1,3 +1,14 @@
+## [4.0.1](https://github.com/yigitkonur/cli-sessionr/compare/v4.0.0...v4.0.1) (2026-10-20)
+
+### Bug Fixes
+
+* antigravity resume uses --conversation -p, generated commands carry the full session id, doctor checks the spawned binary ([bb681c4](https://github.com/yigitkonur/cli-sessionr/commit/bb681c40c0a60f4c78fc5d6cdbda72658ea3b7d2))
+* **build:** make dist/cli.js executable ([9c6a694](https://github.com/yigitkonur/cli-sessionr/commit/9c6a69494d190077624d95105a6e16ccf63c876b))
+* **cli:** help <command> works and rejects unknown commands, source lists include antigravity ([e6df2fc](https://github.com/yigitkonur/cli-sessionr/commit/e6df2fcb6fb2158643c337faa641dee8f9325312))
+* **context:** reject an unknown --format with INVALID_FORMAT (exit 2) ([719359d](https://github.com/yigitkonur/cli-sessionr/commit/719359d70cf2fbeb6e72539e65a302d72e74bffc))
+* **jobs:** filter by the displayed status and reject unknown --status values ([66ad72f](https://github.com/yigitkonur/cli-sessionr/commit/66ad72f3fc41b7b016eb33a84d09778f9d4a4325))
+* **turns:** a Claude session started from a slash command gets turn 1 ([01c188f](https://github.com/yigitkonur/cli-sessionr/commit/01c188f9dffa1d8b671a8b0c6051bdb4ec34945f))
+
 ## [4.0.0](https://github.com/yigitkonur/cli-sessionr/compare/v3.0.0...v4.0.0) (2026-10-20)
 
 ### ⚠ BREAKING CHANGES

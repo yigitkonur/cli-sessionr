@@ -1,6 +1,6 @@
 {
   "name": "sessionr",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "read, search, paginate, resume, and orchestrate AI coding sessions from 12 tools. npx sessionr — zero install, zero config.",
   "type": "module",
   "bin": {
