@@ -40,6 +40,8 @@ the whole thing is ~250kb, two runtime deps (chalk + commander), works on node 1
 | opencode | `~/.local/share/opencode/storage/` | json |
 | kiro | `~/.kiro/User/globalStorage/` | json |
 | zed | `~/Library/Application Support/Zed/` | sqlite+zstd |
+| factory droid | `~/.factory/sessions/` | jsonl |
+| antigravity cli | `~/.gemini/antigravity-cli/brain/` | jsonl |
 
 all auto-discovered. no config file. no env vars. it just finds them.
 

@@ -1,13 +1,13 @@
 ---
 name: use-sessionr
-description: Use skill if you are listing, reading, searching, resuming, or pruning AI coding sessions via the sessionr CLI — `sessionr list/read/search/info/stats/doctor/send/job/wait/cancel/context/diff/tag/prune` across claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed, factory/droid sources. Triggers on "find sessions", "what did Claude do yesterday", "resume session abc123", "session of another agent", a UUID-shaped session id pasted in chat, npx sessionr, or any inspect/replay/handoff/cleanup of an AI coding-tool transcript.
+description: Use skill if you are listing, reading, searching, resuming, or pruning AI coding sessions via the sessionr CLI — `sessionr list/read/search/info/stats/doctor/send/job/wait/cancel/context/diff/tag/prune` across claude, codex, gemini, copilot, cursor-agent, commandcode, goose, opencode, kiro, zed, factory/droid, antigravity/agy sources. Triggers on "find sessions", "what did Claude do yesterday", "resume session abc123", "session of another agent", a UUID-shaped session id pasted in chat, npx sessionr, or any inspect/replay/handoff/cleanup of an AI coding-tool transcript.
 ---
 
 # Use sessionr
 
-Agent-first interface to AI-coding-tool session transcripts via the `sessionr` CLI (npm: `sessionr`, `npx sessionr`). One zero-install command surfaces every Claude / Codex / Gemini / Copilot / cursor-agent / commandcode / goose / opencode / kiro / zed / factory(droid) session on the local machine, with token-budgeted reads, ETag polling, structured JSON envelopes, and a write path back into the underlying tools.
+Agent-first interface to AI-coding-tool session transcripts via the `sessionr` CLI (npm: `sessionr`, `npx sessionr`). One zero-install command surfaces every Claude / Codex / Gemini / Copilot / cursor-agent / commandcode / goose / opencode / kiro / zed / factory(droid) / antigravity(agy) session on the local machine, with token-budgeted reads, ETag polling, structured JSON envelopes, and a write path back into the underlying tools.
 
-Use this skill **before** reaching for `cat ~/.claude/projects/...jsonl`, `find ~/.codex -name '*.jsonl'`, `grep -r` against session files, or hand-rolling a parser. Sessionr already does that, normalizes 11 different on-disk formats into one envelope, and emits agent-ready JSON.
+Use this skill **before** reaching for `cat ~/.claude/projects/...jsonl`, `find ~/.codex -name '*.jsonl'`, `grep -r` against session files, or hand-rolling a parser. Sessionr already does that, normalizes 12 different on-disk formats into one envelope, and emits agent-ready JSON.
 
 ## When To Use
 
@@ -51,7 +51,7 @@ Use this skill **before** reaching for `cat ~/.claude/projects/...jsonl`, `find 
 | Concept | What an agent must know |
 |---|---|
 | Install | Zero install: `npx sessionr ...`. The CLI auto-detects `npx` and emits `npx sessionr` in `actions[]` accordingly. |
-| Sources | 11 backends: `claude`, `codex`, `gemini`, `copilot`, `cursor-agent`, `commandcode`, `goose`, `opencode`, `kiro`, `zed`, `factory` (alias: `droid`). Aliases: `cc`→claude, `cli`/`copilot-cli`→copilot, `cx`→codex, `gm`→gemini. See `references/sources.md`. |
+| Sources | 12 backends: `claude`, `codex`, `gemini`, `copilot`, `cursor-agent`, `commandcode`, `goose`, `opencode`, `kiro`, `zed`, `factory` (alias: `droid`), `antigravity` (alias: `agy`). Aliases: `cc`→claude, `cli`/`copilot-cli`→copilot, `cx`→codex, `gm`→gemini. See `references/sources.md`. |
 | Default scope | `--cwd auto` ranks $PWD-matching sessions first, falls back to global. `--cwd current` strict. `--cwd all` disables. `--cwd /abs/path` explicit. |
 | JSON envelope | `{api_version, sessions[]|messages[]|jobs[], meta:{cwd_scope, cwd, etag?, next_action?, search?, warnings?}, cursor:{next, prev, first}, actions:[{command, description}], error?}`. Full shape: `references/json-envelope.md`. |
 | Token budget | `read --tokens N` (default 8K, max ~8K). On truncation: exit 10, `meta.partial=true`, `meta.has_more_after=true`. Iterate via `--page N` or `--before/--after <idx>`. |
@@ -140,7 +140,7 @@ Job records persist under `~/.sessionreader/jobs/`. Async exit codes are real (s
 - **"Compare what these two sessions did"** → `diff <id1> <id2>` for structural; or read both and diff manually if you need text.
 - **"Hand off this session's context to another agent / tool"** → `context <id> --tokens 8000` returns a portable summary + filtered messages.
 - **"Why is the list empty / where are my Claude sessions"** → `sessionr doctor` (per-source data-dir + binary check). Don't guess; the diagnostic is one command.
-- **Unknown source name (`claud`, `gpt`, `gpt-5`)** → returns `INVALID_SOURCE` exit 2 with `detail.valid` listing the 11 supported sources. Use the alias map (`cc`/`cli`/`cx`/`gm`) when the user types shorthand.
+- **Unknown source name (`claud`, `gpt`, `gpt-5`)** → returns `INVALID_SOURCE` exit 2 with `detail.valid` listing the 12 supported sources. Use the alias map (`cc`/`cli`/`cx`/`gm`) when the user types shorthand.
 
 Full ranked recipes (10+ multi-step patterns): `references/recipes.md`.
 
