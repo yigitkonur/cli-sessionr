@@ -147,8 +147,28 @@ export async function contextExportCommand(
         timing: opts.timing,
       });
     } else {
-      // text/table fallback: pretty-print the result so callers still see it.
-      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      const fence = (text: string) => (text.includes('```') ? '~~~' : '```');
+      const lines = [
+        `# Context for ${session.id}`,
+        '',
+        `- Source: ${result.source}${result.model ? ` (${result.model})` : ''}`,
+        `- CWD: ${result.cwd}`,
+        ...(result.git_branch ? [`- Branch: ${result.git_branch}`] : []),
+        `- Estimated tokens: ${result.token_count_estimate}`,
+        '',
+        '## Current task',
+        '',
+        result.current_task ?? '(none)',
+        ...(result.active_files.length > 0 ? ['', '## Active files', '', ...result.active_files.map((f) => `- ${f}`)] : []),
+        '',
+        `## Messages (${result.messages.length})`,
+      ];
+      for (const m of result.messages as Array<{ role: string; content?: string; summary?: string }>) {
+        const text = m.content ?? m.summary ?? '';
+        const f = fence(text);
+        lines.push('', `### ${m.role}`, '', `${f}\n${text}\n${f}`);
+      }
+      process.stdout.write(lines.join('\n') + '\n');
     }
   } catch (err) {
     if (outputFormat === 'json' || outputFormat === 'jsonl') {
