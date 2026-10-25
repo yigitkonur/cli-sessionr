@@ -147,7 +147,7 @@ export async function contextExportCommand(
         timing: opts.timing,
       });
     } else {
-      const fence = (text: string) => (text.includes('```') ? '~~~' : '```');
+      const fence = (text: string) => '`'.repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((r) => r[0].length + 1)));
       const lines = [
         `# Context for ${session.id}`,
         '',
@@ -164,7 +164,7 @@ export async function contextExportCommand(
         `## Messages (${result.messages.length})`,
       ];
       for (const m of result.messages as Array<{ role: string; content?: string; summary?: string }>) {
-        const text = m.content ?? m.summary ?? '';
+        const text = (m.content ?? m.summary ?? '').trim() ? (m.content ?? m.summary)! : '[empty]';
         const f = fence(text);
         lines.push('', `### ${m.role}`, '', `${f}\n${text}\n${f}`);
       }
