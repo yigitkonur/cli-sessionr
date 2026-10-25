@@ -1,3 +1,10 @@
+## [4.0.3](https://github.com/yigitkonur/cli-sessionr/compare/v4.0.2...v4.0.3) (2026-10-25)
+
+### Bug Fixes
+
+* **context:** --output text|table renders markdown instead of JSON ([732f5e7](https://github.com/yigitkonur/cli-sessionr/commit/732f5e7631436d649f3d134cfe94e0031dc945e9))
+* **context:** longer fences for fenced content, [empty] placeholder ([1ecafae](https://github.com/yigitkonur/cli-sessionr/commit/1ecafae5aff8e0690ab73abc11f80ebd11698f34))
+
 ## [4.0.2](https://github.com/yigitkonur/cli-sessionr/compare/v4.0.1...v4.0.2) (2026-10-25)
 
 ### Bug Fixes
