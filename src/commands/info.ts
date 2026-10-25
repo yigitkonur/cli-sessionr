@@ -66,7 +66,18 @@ export async function infoCommand(
         timing: opts.timing,
       });
     } else {
-      process.stdout.write(formatter.stats(session) + '\n');
+      const m = session.metadata;
+      const rows = [
+        ['Session', session.id],
+        ['Source', session.source],
+        ...(m.model ? [['Model', m.model]] : []),
+        ['CWD', m.cwd],
+        ...(m.gitBranch ? [['Branch', m.gitBranch]] : []),
+        ['Created', dateOrNull(m.createdAt) ?? '-'],
+        ['Updated', dateOrNull(m.updatedAt) ?? '-'],
+        ['Messages', String(session.stats.totalMessages)],
+      ];
+      process.stdout.write(`| Field | Value |\n|---|---|\n${rows.map(([k, v]) => `| ${k} | ${v} |`).join('\n')}\n\nFull statistics: ${cmdPrefix()} stats ${session.id}\n`);
     }
   } catch (err) {
     if (outputFormat === 'json' || outputFormat === 'jsonl') {

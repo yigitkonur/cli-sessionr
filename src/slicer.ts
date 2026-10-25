@@ -1,4 +1,5 @@
 import { cmdPrefix } from "./util/invocation.js";
+import { EXIT, SessionReaderError } from "./errors.js";
 import type { NormalizedMessage, SessionSource, SliceMeta, CursorCommands, VerbosityPreset, SearchField, SearchMeta, PendingToolCall } from './types.js';
 import { estimateMessageTokens, estimateSessionTokens, estimateRenderedMessageTokens, estimateRenderedSessionTokens } from './tokens.js';
 
@@ -310,7 +311,16 @@ export function sliceByPage(
   }
 
   const totalPages = pages.length;
-  const pageIdx = Math.max(0, Math.min(page - 1, totalPages - 1));
+  if (page > totalPages) {
+    throw new SessionReaderError(`Page ${page} is out of range (1..${totalPages})`, {
+      code: 'INVALID_RANGE',
+      errorClass: 'validation',
+      exitCode: EXIT.USAGE,
+      detail: { page, total_pages: totalPages },
+      suggestion: `${cmdPrefix()} read ${sessionId} --page ${totalPages} --tokens ${budget}`,
+    });
+  }
+  const pageIdx = Math.max(0, page - 1);
   const pageRange = pages[pageIdx];
   let selected = allMessages.slice(pageRange.from, pageRange.to + 1);
   const unresolvedPageIds = getUnresolvedToolCallIds(allMessages);
@@ -443,8 +453,9 @@ export function sliceByTokenBudget(
   const selected = selectAroundCenter(allMessages, centerIdx, budget, anchor, preset);
   // Only head windows trim a trailing non-assistant message: tail walks keep a trailing prompt (#24), search
   // windows are centered on the match (#23) and turn-scoped reads keep the turn's final message (#25).
+  // A slice the budget did not cut (an explicit range that fits) is returned whole.
   // Unresolved tool calls are never trimmed.
-  const trimmed = anchor === 'head' && !preserveTrailing
+  const trimmed = anchor === 'head' && !preserveTrailing && selected.length < allMessages.length
     ? trimToAssistantLast(selected, getUnresolvedToolCallIds(allMessages))
     : selected;
 

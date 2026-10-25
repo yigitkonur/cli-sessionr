@@ -59,7 +59,8 @@ interface PartFile {
   args?: unknown;
   arguments?: unknown;
   output?: string;
-  state?: { input?: unknown; output?: string };
+  callID?: string;
+  state?: { status?: string; input?: unknown; output?: string; error?: string };
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -100,7 +101,7 @@ function parsePartToBlocks(part: PartFile): ContentBlock | null {
       }
     }
 
-    return { type: 'tool_use', id: part.id || '', name, input };
+    return { type: 'tool_use', id: part.callID || part.id || '', name, input };
   }
 
   // tool-result / tool_result -> tool_result ContentBlock
@@ -375,6 +376,12 @@ export async function parseOpenCodeSession(filePath: string): Promise<Normalized
     for (const part of parts) {
       const block = parsePartToBlocks(part);
       if (block) blocks.push(block);
+      // A real OpenCode `tool` part carries the call and its outcome together in `state`.
+      if (block?.type === 'tool_use' && part.type === 'tool' && (part.state?.output != null || part.state?.error)) {
+        const isError = part.state.status === 'error' || Boolean(part.state.error);
+        const out = part.state.output ?? part.state.error ?? '';
+        blocks.push({ type: 'tool_result', toolUseId: block.id, content: typeof out === 'string' ? out : JSON.stringify(out), isError });
+      }
     }
 
     // If no parts produced content, create a minimal placeholder

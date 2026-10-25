@@ -138,6 +138,8 @@ export async function jobWaitCommand(
     } else {
       process.stdout.write(`Job ${current.id} → ${current.status}\n`);
     }
+    // `sessionr wait <job> && next` must stop when the job did not succeed; the envelope still carries the details.
+    if (current.status === 'failed' || current.status === 'cancelled') process.exitCode = EXIT.ERROR;
   } catch (err) {
     emitError(err, outputFormat, opts.timing, formatter, 'JOB_WAIT_FAILED');
   }

@@ -366,6 +366,13 @@ export async function readCommand(
 
     messages = filterByPreset(messages, preset);
 
+    // JSON/JSONL carry the full message text whatever the preset (only text formats truncate), so the token
+    // budget is measured on the raw messages there, the same way the library read() does.
+    // --detail meta|skeleton and --preset full keep their own accounting (stubs; compaction summaries).
+    const budgetPreset = (outputFormat === 'json' || outputFormat === 'jsonl') && preset.name !== 'full' && detail !== 'meta' && detail !== 'skeleton'
+      ? undefined
+      : preset;
+
     // Token budget: --tokens flag > SESSIONREADER_MAX_TOKENS env > default 8K, always capped
     if (opts?.tokens != null && (!Number.isFinite(opts.tokens) || opts.tokens <= 0)) {
       throw new SessionReaderError('--tokens must be > 0', {
@@ -425,7 +432,7 @@ export async function readCommand(
 
     // ── Page-based pagination (--page N) ──────────────────────────────────
     if (opts?.page != null) {
-      const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, preset);
+      const result = sliceByPage(messages, opts.page, tokenBudget, session.id, session.source, budgetPreset);
       let meta = injectNextAction(result.meta);
       meta.pending_tool_calls = pendingToolCalls;
       meta = annotateMeta(meta, tokenBudget, preset, { requestedPreset: opts?.preset, detail });
@@ -570,7 +577,7 @@ export async function readCommand(
       session.source,
       anchor,
       opts?.search,
-      preset,
+      budgetPreset,
       opts?.searchIn,
       totalMessages,
       {
@@ -686,7 +693,15 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
   // --batch streams one v2 envelope per session as JSONL. Each line is a
   // complete envelope (ok + schema_version + result containing the session
   // payload) so consumers can pipe through `jq -c '.result'` uniformly.
-  const rawIds = await readFile(opts.batch!, 'utf-8');
+  const rawIds = await readFile(opts.batch!, 'utf-8').catch((cause: Error) => {
+    throw new SessionReaderError(`Cannot read batch file "${opts.batch}"`, {
+      code: 'FILE_NOT_READABLE',
+      errorClass: 'validation',
+      exitCode: EXIT.USAGE,
+      detail: { path: opts.batch, cause: cause.message },
+      suggestion: `Check that ${opts.batch} exists and holds one session id per line`,
+    });
+  });
   const ids = rawIds.split(/\r?\n/).map((id) => id.trim()).filter(Boolean);
   const detail = opts.detail as DetailLevel | undefined;
   const presetName = detail
@@ -741,7 +756,7 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
         session.source,
         (opts.search ? 'search' : (opts.anchor ?? 'head')) as 'head' | 'tail' | 'search',
         opts.search,
-        preset,
+        preset.name === 'full' ? preset : undefined, // batch output is JSONL: full text, so measure the budget on raw messages
         opts.searchIn,
         session.stats.totalMessages,
       );

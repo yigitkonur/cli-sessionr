@@ -54,6 +54,16 @@ export async function loadSession(
 }
 
 /**
+ * Parse a session we already found in a listing. `loadSession(id)` re-scans every source to resolve the id,
+ * which made `search`/`list -q` pay that scan once per session they looked at.
+ */
+export async function loadListedSession(entry: SessionListEntry): Promise<NormalizedSession> {
+  const adapter = getAdapter(entry.source);
+  if (!adapter) throw new SessionNotFoundError(entry.id);
+  return adapter.parse(entry.filePath);
+}
+
+/**
  * List sessions from one or all sources, sorted by updatedAt desc.
  * Adapter-level discovery failures are reported through onWarning to preserve
  * the existing array return shape for internal callers.

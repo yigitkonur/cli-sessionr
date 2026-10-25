@@ -1,4 +1,4 @@
-import { listSessions, loadSession } from '../discovery.js';
+import { listSessions, loadListedSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
@@ -115,7 +115,7 @@ export async function searchCommand(
 
     for (const entry of entries) {
       try {
-        const session = await loadSession(entry.id, entry.source);
+        const session = await loadListedSession(entry);
         const matchingMessages = session.messages.filter((msg) => msg.content.toLowerCase().includes(query));
         const matchCount = matchingMessages.length;
         if (matchCount > 0) {

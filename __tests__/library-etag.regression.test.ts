@@ -15,13 +15,13 @@ it('does not reuse an ETag across distinct role-filtered views', async () => {
   registerSource({ name: 'view-key-probe', label: 'View key', color: 'blue', find: async () => [], parse: async () => session });
   const ref = { path: file, source: 'view-key-probe' };
   const first = await read(ref, { role: 'assistant,user', tokens: 4000 });
-  const second = await read(ref, { role: 'assistant,tool_result', tokens: 4000 });
+  const second = await read(ref, { role: 'assistant,tool_result,user', tokens: 4000 });
   expect(first.meta.range).toEqual(second.meta.range);
   expect(first.messages.map((message) => message.index)).not.toEqual(second.messages.map((message) => message.index));
   expect(first.meta.etag).not.toBe(second.meta.etag);
-  const conditional = await read(ref, { role: 'assistant,tool_result', tokens: 4000, ifChanged: first.meta.etag });
+  const conditional = await read(ref, { role: 'assistant,tool_result,user', tokens: 4000, ifChanged: first.meta.etag });
   expect(conditional.meta.unchanged).not.toBe(true);
   expect(conditional.messages.map((message) => message.index)).toEqual(second.messages.map((message) => message.index));
-  const reordered = await read(ref, { role: 'tool_result,assistant,assistant', tokens: 4000 });
+  const reordered = await read(ref, { role: 'user,tool_result,assistant,assistant', tokens: 4000 });
   expect(reordered.meta.etag).toBe(second.meta.etag);
 });

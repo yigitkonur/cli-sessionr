@@ -10,6 +10,7 @@ import { getPreset, getDefaultTokenBudget } from './config.js';
 import { InvalidRangeError, SessionReaderError, EXIT } from './errors.js';
 import { segmentTurns, getTurn, findTurnPendingToolCalls } from './turns.js';
 import { computeETag } from './etag.js';
+import { validateRoles } from './utils/validate.js';
 import { toExternal } from './output/serialize.js';
 import type {
   NormalizedSession,
@@ -113,8 +114,7 @@ export async function read(ref: SessionRef, opts?: ReadOptions): Promise<ReadEnv
 
   let messages = session.messages;
   if (opts?.role) {
-    const roles = opts.role.split(',').map((r) => r.trim()).filter(Boolean);
-    messages = filterByRole(messages, roles);
+    messages = filterByRole(messages, validateRoles(opts.role));
   }
 
   const totalMessages = session.messages.length;
