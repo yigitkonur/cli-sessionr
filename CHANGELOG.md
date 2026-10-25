@@ -1,3 +1,13 @@
+## [4.1.0](https://github.com/yigitkonur/cli-sessionr/compare/v4.0.3...v4.1.0) (2026-10-25)
+
+### Features
+
+* **antigravity:** per-message token usage, so turn.usage is filled ([be9e010](https://github.com/yigitkonur/cli-sessionr/commit/be9e010c6462432a021817673456e6b2b12cd98d))
+
+### Bug Fixes
+
+* **antigravity:** flush usage of silent planner steps at turn end; context tokens are the latest request ([492db99](https://github.com/yigitkonur/cli-sessionr/commit/492db9953bf3e90e626bb1f934b34fb6f382ce92))
+
 ## [4.0.3](https://github.com/yigitkonur/cli-sessionr/compare/v4.0.2...v4.0.3) (2026-10-25)
 
 ### Bug Fixes
