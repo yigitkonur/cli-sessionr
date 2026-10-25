@@ -368,7 +368,10 @@ export async function readCommand(
 
     // JSON/JSONL carry the full message text whatever the preset (only text formats truncate), so the token
     // budget is measured on the raw messages there, the same way the library read() does.
-    const budgetPreset = outputFormat === 'json' || outputFormat === 'jsonl' ? undefined : preset;
+    // --detail meta|skeleton and --preset full keep their own accounting (stubs; compaction summaries).
+    const budgetPreset = (outputFormat === 'json' || outputFormat === 'jsonl') && preset.name !== 'full' && detail !== 'meta' && detail !== 'skeleton'
+      ? undefined
+      : preset;
 
     // Token budget: --tokens flag > SESSIONREADER_MAX_TOKENS env > default 8K, always capped
     if (opts?.tokens != null && (!Number.isFinite(opts.tokens) || opts.tokens <= 0)) {
@@ -753,7 +756,7 @@ async function readBatchCommand(opts: ReadOptions, isTTY: boolean): Promise<void
         session.source,
         (opts.search ? 'search' : (opts.anchor ?? 'head')) as 'head' | 'tail' | 'search',
         opts.search,
-        undefined, // batch output is JSONL: full text, so measure the budget on raw messages
+        preset.name === 'full' ? preset : undefined, // batch output is JSONL: full text, so measure the budget on raw messages
         opts.searchIn,
         session.stats.totalMessages,
       );
