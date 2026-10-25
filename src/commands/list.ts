@@ -1,4 +1,4 @@
-import { listSessionsScoped, loadSession } from '../discovery.js';
+import { listSessionsScoped, loadListedSession } from '../discovery.js';
 import { createFormatter } from '../output/formatter.js';
 import { success, failure } from '../output/envelope.js';
 import { emit } from '../output/emit.js';
@@ -112,7 +112,7 @@ export async function listCommand(
       const matched: typeof allEntries = [];
       for (const entry of searchableEntries) {
         try {
-          const session = await loadSession(entry.id, entry.source);
+          const session = await loadListedSession(entry);
           const hasMatch = session.messages.some(
             (m) => m.content.toLowerCase().includes(query),
           );
