@@ -5,6 +5,7 @@ import * as readline from 'node:readline';
 
 import type {
   ContentBlock,
+  MessageUsage,
   NormalizedMessage,
   NormalizedSession,
   SessionListEntry,
@@ -508,6 +509,8 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
   }
 
   const exploded: ExplodedMessage[] = [];
+  const usageByMessage = new Map<ExplodedMessage, MessageUsage>();
+  let carriedUsage: MessageUsage | undefined;
   const pendingToolCalls: Array<{ id: string; name: string }> = [];
   const backgroundTasks = new Map<string, { id: string; name: string }>();
   const toolCounts = new Map<string, { count: number; errors: number }>();
@@ -528,11 +531,13 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
     const ts = parseDefensiveTimestamp(step.created_at, historyTimestamp || new Date());
     const lineIndex = typeof step.step_index === 'number' ? step.step_index : i;
 
+    const exploredBefore = exploded.length;
     switch (step.type) {
       case 'USER_INPUT':
       case 'USER_MESSAGE': {
         if (typeof step.content !== 'string') break;
         pendingToolCalls.length = 0; // Turn isolation: clear abandoned pending tool calls
+        carriedUsage = undefined; // usage of a step that printed nothing never leaks into the next turn
         const rawContent = step.content;
         const userPrompt = extractUserPrompt(rawContent);
 
@@ -567,6 +572,20 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
         if (typeof step.cache_read_tokens === 'number') {
           cacheReadTokens += step.cache_read_tokens;
           hasTokens = true;
+        }
+        const usage: MessageUsage = {
+          ...(typeof step.input_tokens === 'number' ? { input_tokens: step.input_tokens } : {}),
+          ...(typeof step.output_tokens === 'number' ? { output_tokens: step.output_tokens } : {}),
+          ...(typeof step.cache_read_tokens === 'number' && step.cache_read_tokens > 0 ? { cache_read_input_tokens: step.cache_read_tokens } : {}),
+        };
+        if (Object.keys(usage).length > 0) {
+          carriedUsage = {
+            input_tokens: (carriedUsage?.input_tokens ?? 0) + (usage.input_tokens ?? 0),
+            output_tokens: (carriedUsage?.output_tokens ?? 0) + (usage.output_tokens ?? 0),
+            ...((carriedUsage?.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) > 0
+              ? { cache_read_input_tokens: (carriedUsage?.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) }
+              : {}),
+          };
         }
 
         const assistantBlocks: ContentBlock[] = [];
@@ -759,9 +778,19 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
       default:
         break;
     }
+    // A planner step's token counts belong to the first message it produced; a step that printed nothing
+    // hands them to the next message of the same turn.
+    if (carriedUsage && exploded.length > exploredBefore && exploded[exploredBefore].role !== 'user') {
+      usageByMessage.set(exploded[exploredBefore], carriedUsage);
+      carriedUsage = undefined;
+    }
   }
 
   const messages: NormalizedMessage[] = indexMessages(exploded);
+  messages.forEach((m, i) => {
+    const usage = usageByMessage.get(exploded[i]);
+    if (usage) m.usage = usage;
+  });
 
   // Compute stats
   const byRole = { user: 0, assistant: 0, system: 0, toolUse: 0, toolResult: 0 };
