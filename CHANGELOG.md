@@ -1,3 +1,18 @@
+## [4.0.2](https://github.com/yigitkonur/cli-sessionr/compare/v4.0.1...v4.0.2) (2026-10-25)
+
+### Bug Fixes
+
+* **cli:** closed pipes, missing --batch file, wait exit code, info text ([c8edc89](https://github.com/yigitkonur/cli-sessionr/commit/c8edc89dc4b5153dd68c4a6cf2fc8c18c059872f))
+* **library:** read() rejects unknown roles like the CLI ([7f8099e](https://github.com/yigitkonur/cli-sessionr/commit/7f8099e9a12a7b8443ef5a10ac2a2c979aebf344))
+* **opencode:** emit the tool result stored in a tool part's state ([56f0d8c](https://github.com/yigitkonur/cli-sessionr/commit/56f0d8c3663fb1d78dd8c3a493ce193442528e9e))
+* **read:** JSON output measures the token budget on the text it emits ([c185b47](https://github.com/yigitkonur/cli-sessionr/commit/c185b47df93356dde775785773ac5e9ec27accc8))
+* **read:** keep preset/detail-aware budgeting for --preset full and --detail meta|skeleton ([b6f4e62](https://github.com/yigitkonur/cli-sessionr/commit/b6f4e62c8b569d1a6bcabcc58950bf775070dce2))
+* **slicer:** an explicit range that fits is returned whole; --page past the end is an error ([d8066b8](https://github.com/yigitkonur/cli-sessionr/commit/d8066b892e9dc1bf1494914147795fab1a999043))
+
+### Performance
+
+* **search:** parse listed sessions by path instead of re-scanning every source per session ([005234e](https://github.com/yigitkonur/cli-sessionr/commit/005234e45fcbc1859d23f4e571bbcd641feee683))
+
 ## [4.0.1](https://github.com/yigitkonur/cli-sessionr/compare/v4.0.0...v4.0.1) (2026-10-20)
 
 ### Bug Fixes
