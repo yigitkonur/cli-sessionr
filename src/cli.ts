@@ -30,6 +30,12 @@ import type { OutputFormat, DetailLevel, ReadOptions, SendOptions } from './type
 // when callers pass {timing: true}; harmless no-op if --timing is never set.
 markStart();
 
+// A reader that goes away early (`sessionr read ... | head`) closes our stdout: stop writing quietly
+// instead of dying with an unhandled EPIPE stack trace.
+process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code !== 'EPIPE') throw err;
+});
+
 // Read version from package.json at module init so semantic-release bumps propagate
 // without code changes. dist/cli.js lives at <pkg>/dist/cli.js so ../package.json resolves.
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -358,7 +364,7 @@ Examples:
 
 program
   .command('prune')
-  .description('Delete old sessions')
+  .description('Preview old sessions that would be deleted (--dry-run); real deletion is not implemented yet')
   .requiredOption('--older-than <duration>', 'Duration threshold (e.g., 7d, 24h)')
   .option('--dry-run', 'Preview what would be deleted')
   .option('--yes', 'Skip confirmation')
@@ -530,7 +536,7 @@ Examples:
 program
   .command('wait')
   .argument('<job-id>', 'Job ID to wait for')
-  .description('Block until an async job completes')
+  .description('Block until an async job completes (exit 1 if it failed or was cancelled)')
   .option('--timeout <seconds>', 'Timeout in seconds', '300')
   .option('--interval <seconds>', 'Poll interval in seconds', '2')
   .addHelpText('after', `
