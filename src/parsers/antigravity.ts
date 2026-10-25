@@ -511,6 +511,22 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
   const exploded: ExplodedMessage[] = [];
   const usageByMessage = new Map<ExplodedMessage, MessageUsage>();
   let carriedUsage: MessageUsage | undefined;
+  const flushCarriedUsage = () => {
+    // Tokens of a step that printed nothing still belong to the turn that is ending: fold them into its last message.
+    const last = exploded[exploded.length - 1];
+    if (carriedUsage && last && last.role !== 'user') {
+      const prev = usageByMessage.get(last);
+      usageByMessage.set(last, {
+        ...carriedUsage,
+        input_tokens: (prev?.input_tokens ?? 0) + (carriedUsage.input_tokens ?? 0),
+        output_tokens: (prev?.output_tokens ?? 0) + (carriedUsage.output_tokens ?? 0),
+        ...((prev?.cache_read_input_tokens ?? 0) + (carriedUsage.cache_read_input_tokens ?? 0) > 0
+          ? { cache_read_input_tokens: (prev?.cache_read_input_tokens ?? 0) + (carriedUsage.cache_read_input_tokens ?? 0) }
+          : {}),
+      });
+    }
+    carriedUsage = undefined;
+  };
   const pendingToolCalls: Array<{ id: string; name: string }> = [];
   const backgroundTasks = new Map<string, { id: string; name: string }>();
   const toolCounts = new Map<string, { count: number; errors: number }>();
@@ -537,7 +553,7 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
       case 'USER_MESSAGE': {
         if (typeof step.content !== 'string') break;
         pendingToolCalls.length = 0; // Turn isolation: clear abandoned pending tool calls
-        carriedUsage = undefined; // usage of a step that printed nothing never leaks into the next turn
+        flushCarriedUsage();
         const rawContent = step.content;
         const userPrompt = extractUserPrompt(rawContent);
 
@@ -578,8 +594,11 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
           ...(typeof step.output_tokens === 'number' ? { output_tokens: step.output_tokens } : {}),
           ...(typeof step.cache_read_tokens === 'number' && step.cache_read_tokens > 0 ? { cache_read_input_tokens: step.cache_read_tokens } : {}),
         };
+        // Context size is the latest request's prompt, not the sum over the turn's requests.
+        if (usage.input_tokens !== undefined) usage.context_tokens = usage.input_tokens + (usage.cache_read_input_tokens ?? 0);
         if (Object.keys(usage).length > 0) {
           carriedUsage = {
+            ...(usage.context_tokens !== undefined ? { context_tokens: usage.context_tokens } : carriedUsage?.context_tokens !== undefined ? { context_tokens: carriedUsage.context_tokens } : {}),
             input_tokens: (carriedUsage?.input_tokens ?? 0) + (usage.input_tokens ?? 0),
             output_tokens: (carriedUsage?.output_tokens ?? 0) + (usage.output_tokens ?? 0),
             ...((carriedUsage?.cache_read_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) > 0
@@ -786,6 +805,7 @@ export async function parseAntigravitySession(filePath: string): Promise<Normali
     }
   }
 
+  flushCarriedUsage();
   const messages: NormalizedMessage[] = indexMessages(exploded);
   messages.forEach((m, i) => {
     const usage = usageByMessage.get(exploded[i]);
